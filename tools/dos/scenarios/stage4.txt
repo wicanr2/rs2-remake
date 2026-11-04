@@ -1,0 +1,63 @@
+# 第四關與片尾：第一到第三關以 Ctrl+C 跳過，自然遊玩第四關到頭目，再按 Ctrl+C 看片尾。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 4
+include /tools-dos/scenarios/next-stage.txt
+shot s4_start
+include /tools-dos/scenarios/cheat-god.txt
+palwatch on
+watchtick
+watchwait
+measure s4_fps 12.0
+untilframe 200
+shot s4_f200
+untilframe 400
+shot s4_f400
+untilframe 600
+shot s4_f600
+untilframe 800
+shot s4_f800
+untilframe 1000
+shot s4_f1000
+untilframe 1050
+shot s4_f1050
+untilframe 1075
+shot s4_boss_a
+secs 8
+shot s4_boss_b
+peekw frame 0x1CFE2
+peekw hp1 0x1CFDE
+log === Ctrl+C：進片尾 ===
+chord ctrl+c 0.4 0.1
+secs 1
+shot e00
+secs 2
+shot e01
+secs 2
+shot e02
+secs 2
+shot e03
+secs 3
+shot e04
+secs 3
+shot e05
+secs 3
+shot e06
+secs 3
+shot e07
+secs 4
+shot e08
+secs 4
+shot e09
+secs 5
+shot e10
+secs 5
+shot e11
+secs 8
+shot e12
+secs 8
+shot e13

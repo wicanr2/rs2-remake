@@ -1,0 +1,49 @@
+# 冷啟動：破解組 intro → 文字選單按 V → 密碼畫面 → 開場動畫 → 標題 → 展示模式 → 按鍵回開場 → 標題按鍵 → J1 → 第一關。
+# 路徑 A：ASMDRV 以 TSR 常駐（RS2.BAT 順序），AdLib 存在。
+step 12_000_000
+shot c01_crack_intro_a
+step 45_000_000
+shot c01_crack_intro_b
+bios v
+step 70_000_000
+shot c02_text_menu
+tap v
+step 100_000_000
+shot c03_password_row1
+tap enter
+shot c03_password_row2
+tap enter
+shot c03_password_row3
+tap enter
+untilopen BEG1.BD4 1
+secs 1.0
+shot c04_beg1_planet
+secs 3.65
+shot c05_beg1_hand
+secs 2.25
+shot c06_title_rs2
+secs 1.5
+shot c07_credits
+secs 2.25
+shot c08_act
+untilopen DM1.LCK 2
+secs 5.0
+shot c09_demo1_a
+secs 25.0
+shot c10_demo1_b
+log === 展示模式中按空白鍵：回開場 ===
+tap space 0.3 0
+untilopen BEG1.BD4 2
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1
+secs 3
+shot c11_j1
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8
+until16 0x1CFE2 5 400_000_000
+shot c12_stage1_start
+secs 6
+shot c13_stage1_play
+sheet c_sheet 5 c01_crack_intro_a c01_crack_intro_b c02_text_menu c03_password_row1 c03_password_row3 c04_beg1_planet c05_beg1_hand c06_title_rs2 c07_credits c08_act c09_demo1_a c10_demo1_b c11_j1 c12_stage1_start c13_stage1_play

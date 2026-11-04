@@ -1,0 +1,22 @@
+# 密碼畫面：每列改選不同顏色（左右鍵），確認這份拷貝任意作答都放行。選項順序依畫面 RED WHITE YELLOW BLACK BLUE。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+shot pw_v_0
+tap right 0.15 0.15
+tap right 0.15 0.15
+tap enter 0.15 0.15
+shot pw_v_1
+tap left 0.15 0.15
+tap enter 0.15 0.15
+shot pw_v_2
+tap right 0.15 0.15
+tap right 0.15 0.15
+tap right 0.15 0.15
+tap right 0.15 0.15
+tap enter 0.15 0.15
+untilopen BEG1.BD4 1
+log 三列分別選 YELLOW、BLUE（左一格回 BLACK）、RED（右右右右）後放行
+peekw armed_flag 0x1D3B0

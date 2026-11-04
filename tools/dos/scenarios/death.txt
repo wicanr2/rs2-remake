@@ -1,0 +1,12 @@
+# 不開秘技，第一關原地不動：記錄血量與死亡後的流程。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+trace death
+palwatch on
+untilopen A.MIX 3 700_000_000
+trace off
+shot dead_a
+secs 2
+shot dead_b
+peek players 0x1CFDD 1
+peekw hp1 0x1CFDE

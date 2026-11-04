@@ -1,0 +1,52 @@
+diff --git a/internal/dos/files.go b/internal/dos/files.go
+index c81bcfc..86676aa 100644
+--- a/internal/dos/files.go
++++ b/internal/dos/files.go
+@@ -50,6 +50,13 @@ type handle struct {
+ // 開檔結果——KOL 就是一路跑進沒有映射的記憶體才停，**看起來像模擬器的 bug，
+ // 其實是檔名沒對上**。
+ func (d *DOS) resolve(name string) string {
++	// DOS 的路徑正規化把空白當成分隔、一律略過（DOSBox-X `DOS_MakeName`，
++	// src/dos/dos_files.cpp：短檔名模式 `else if (c==' ') continue;`，結尾空白另有
++	// `while (r>0 && name_int[r-1]==' ') r--;`）。RS-2 的 `MY.GO ` 字串（第 3 個副檔名
++	// 位置留給 sub_1C738 改寫）在彩色模式不被改寫，尾端空白要被 DOS 吃掉才開得到 MY.GO。
++	if strings.Contains(name, " ") {
++		name = strings.ReplaceAll(name, " ", "")
++	}
+ 	// 路徑帶真的存在的子目錄（`SAVEGAME\ITEMS_00.BIN`）時先照目錄找
+ 	// （`docs/spec/198-dos-relative-directories`）；找不到才退回下面兩條規則。
+ 	if p := d.resolveDir(name); p != "" {
+diff --git a/internal/dos/resolve_spaces_test.go b/internal/dos/resolve_spaces_test.go
+new file mode 100644
+index 0000000..030338d
+--- /dev/null
++++ b/internal/dos/resolve_spaces_test.go
+@@ -0,0 +1,28 @@
++package dos
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/wicanr2/dosgolem/internal/machine"
++)
++
++// DOS 的路徑正規化略過名字裡的空白（DOSBox-X `DOS_MakeName`，dos_files.cpp）。
++// RS-2 的 `MY.GO ` 就是這樣：第 3 個副檔名位置留給單色模式改寫成 B，彩色模式不改寫，
++// 尾端空白要被 DOS 吃掉才開得到 MY.GO。沒有這條時遊戲在 sub_1C82C 無限重試。
++func TestResolveIgnoresSpaces(t *testing.T) {
++	root := t.TempDir()
++	if err := os.WriteFile(filepath.Join(root, "MY.GO"), []byte("x"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	d := New(machine.New(), root)
++	for _, name := range []string{"MY.GO ", "MY.GO", "my.go ", " MY .GO"} {
++		if got := d.resolve(name); got == "" {
++			t.Errorf("resolve(%q) 找不到 MY.GO", name)
++		}
++	}
++	if got := d.resolve("MY.GOB"); got != "" {
++		t.Errorf("resolve(MY.GOB) = %q，不該存在", got)
++	}
++}

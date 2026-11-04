@@ -1,0 +1,37 @@
+# 片尾：第一到第三關以 Ctrl+C 跳過，第四關開頭按 Ctrl+C，進片尾；兩次按鍵換畫面，之後是動畫循環。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 4
+include /tools-dos/scenarios/next-stage.txt
+palwatch on shots
+log === 第四關開頭 Ctrl+C：進片尾 ===
+chord ctrl+c 0.4 0.1
+secs 1.5
+shot en_1_pic3
+secs 3
+shot en_1b_pic3_wait
+log === 按空白鍵 ===
+tap space 0.3 0
+secs 1.5
+shot en_2_pic4
+log === 再按空白鍵 ===
+tap space 0.3 0
+secs 2
+shot en_3_loop_a
+secs 5
+shot en_4_loop_b
+secs 10
+shot en_5_loop_c
+peekw frame 0x1CFE2
+log === 按 Ctrl+R（循環內 byte_2749E）===
+chord ctrl+r 0.4 0.3
+secs 2
+shot en_6_after_ctrlr
+log === 按 Q（byte_2749B）離開片尾 ===
+tap q 0.3 0
+secs 3
+shot en_7_after_q

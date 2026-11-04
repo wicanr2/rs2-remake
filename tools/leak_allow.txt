@@ -1,0 +1,5 @@
+# 推送閘門的逐字串例外。格式：完整字串<TAB>原因。只放行識別版本與工具身分的短字串，不放素材內容。
+(c) Copyright 1990 SOFTSTAR Information Co.,Ltd	JGAME.EXE 的版權字串，docs/re/00 用來證明公司名與年代
+SOFTSTAR JOYMOUSE set key utility Ver 1.50	JGAME.EXE 的工具名稱，docs/re/13 用來識別版本
+Can't find configuration file,run SETSW first!!	JGAME.EXE 的錯誤訊息，docs/re/13 用來指出 SETSW 工具的存在
+Turbo-C - Copyright (c) 1988 Borland Intl.	Borland runtime 版權字串，docs/re/13 的編譯器指紋證據

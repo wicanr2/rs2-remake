@@ -1,0 +1,21 @@
+# EGA 模式（選單按 E）：冷啟動到第一關開頭，記錄屬性暫存器與開檔。
+step 45_000_000
+bios v
+step 70_000_000
+tap e
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BD4 1
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1
+secs 3
+shot e_j1
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8
+until16 0x1CFE2 5 400_000_000
+shot e_stage1_start
+peek mode_bytes 0x1CF74 2

@@ -1,0 +1,4 @@
+include /tools-dos/scenarios/prefix-to-j1.txt
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8

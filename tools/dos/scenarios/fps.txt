@@ -1,0 +1,27 @@
+# 時間基準量測：標題音樂、J1 過場、第一關。測 PIT 頻率、遊戲 tick 頻率（word_273B9 的 +1）、幀速率、忙碌步數。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BD4 1
+watchtick
+measure title_intro 5.0
+secs 0.2
+tap space 0.3 0
+untilopen J1.GO 1
+secs 1
+measure j1_screen 3.0
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8
+untilframe 10
+include /tools-dos/scenarios/cheat-god.txt
+watchwait
+measure stage1_a 15.0
+measure stage1_b 15.0
+peekw frame 0x1CFE2
+peekw hp1 0x1CFDE

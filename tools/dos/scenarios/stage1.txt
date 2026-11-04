@@ -1,0 +1,25 @@
+# 第一關：從冷啟動進入，開秘技，自然遊玩到頭目，每階段存畫面與調色盤，量幀速率。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+shot s1_start
+include /tools-dos/scenarios/cheat-god.txt
+palwatch on
+watchtick
+watchwait
+measure s1_fps 12.0
+untilframe 150
+shot s1_f150
+untilframe 300
+shot s1_f300
+untilframe 450
+shot s1_f450
+untilframe 600
+shot s1_f600
+untilframe 622
+shot s1_f622_before_boss_palette
+untilframe 640
+shot s1_boss_a
+secs 8
+shot s1_boss_b
+peekw frame 0x1CFE2
+peekw hp1 0x1CFDE

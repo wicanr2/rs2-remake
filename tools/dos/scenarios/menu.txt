@@ -1,0 +1,57 @@
+# 標題按 C 進選單：難度（LEVEL）與控制方式（CTRL）。上下鍵換列，左右鍵換值，Enter 或空白確認。
+# 方向鍵按住時每個迴圈都累加（sub_1262C 不清按鍵狀態），要單步就只按 3 ms。
+# 確認後回到標題迴圈；再按一般鍵才執行 sub_12438→sub_127A5 並開始遊戲。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BD4 1
+secs 5.2
+peekw diff 0x1D142
+peekw ctrl 0x1D144
+tap c 0.3 0
+secs 1.5
+shot m_0_default
+peekw diff 0x1D142
+peekw ctrl 0x1D144
+peekw row 0x1D140
+peekw mod_b4 0x1E6B4
+peekw mod_b2 0x1E6B2
+peek players 0x1CFDD 1
+log === LEVEL 右一格（HARD）===
+tap right 0.003 0.3
+peekw diff 0x1D142
+peekw mod_b4 0x1E6B4
+peekw mod_b2 0x1E6B2
+shot m_1_hard
+log === 下一列，CTRL 右移（目標 2 PLAYERS）===
+tap down 0.003 0.5
+peekw row 0x1D140
+tap right 0.003 0.5
+peekw ctrl 0x1D144
+tap right 0.003 0.5
+peekw ctrl 0x1D144
+shot m_2_ctrl
+peek players_before_confirm 0x1CFDD 1
+tap enter 0.15 0.3
+peek players_after_confirm 0x1CFDD 1
+secs 3
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+peek players_in_stage 0x1CFDD 1
+peekw hp1 0x1CFDE
+peekw hp2 0x1CFE0
+peekw mod_b4 0x1E6B4
+peekw mod_b2 0x1E6B2
+shot m_3_stage1_two_players
+secs 3
+shot m_4_stage1_two_players_b

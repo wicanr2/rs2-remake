@@ -1,0 +1,14 @@
+# S 鍵（byte_2684E）是否影響 PC 喇叭：第一關，開秘技，三個窗口，窗口內動作相同（每 0.5 秒輕按右 Shift 兩次），比較埠 42h 寫入次數。
+# 窗口 1：S 旗標初值；窗口 2：按 S 之後；窗口 3：再按 S 之後。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+untilframe 30
+peek s_flag 0x2684E 1
+include /tools-dos/scenarios/sound-window.txt
+tap s 0.3 0.3
+peek s_flag 0x2684E 1
+include /tools-dos/scenarios/sound-window.txt
+tap s 0.3 0.3
+peek s_flag 0x2684E 1
+include /tools-dos/scenarios/sound-window.txt

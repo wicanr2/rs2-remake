@@ -1,0 +1,8 @@
+# Ctrl+Q 離開到 DOS（第一關進行中）
+include /tools-dos/scenarios/prefix-to-stage1.txt
+untilframe 10
+log === Ctrl+Q ===
+chord ctrl+q 0.4 0.5
+secs 1
+shot hq_after
+expect-exit

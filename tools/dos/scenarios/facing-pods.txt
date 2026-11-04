@@ -1,0 +1,23 @@
+# 附屬砲座（byte_1DA8D／1DA8E）啟用時，朝向旗標 word_1DA8F 決定砲座的位置、圖與射擊方向（sub_1480A、14876h）。
+# 砲座旗標用 poke 打開（撿道具的路徑沒有走），開秘技避免死亡。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+peekw facing 0x1DA8F
+secs 0.4
+shot p_left_idle
+tap rshift 0.15 0.3
+tap rshift 0.15 0.05
+secs 0.25
+shot p_left_fire
+log === 按 / 切到 3Eh ===
+tap / 0.15 0.5
+peekw facing 0x1DA8F
+shot p_right_idle
+tap rshift 0.15 0.3
+tap rshift 0.15 0.05
+secs 0.25
+shot p_right_fire
+sheet p_sheet 2 p_left_idle p_left_fire p_right_idle p_right_fire

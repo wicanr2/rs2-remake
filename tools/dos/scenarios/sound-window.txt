@@ -1,0 +1,27 @@
+# sound-toggle.txt 的一個窗口：前後各記一次埠累計寫入數。
+portmark sw_begin
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+tap rshift 0.1 0.15
+tap rshift 0.1 0.15
+secs 0.1
+portmark sw_end

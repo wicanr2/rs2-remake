@@ -1,0 +1,51 @@
+# sub_1A8F4 秘技：Alt 歸零 → 1 一次、2 兩次、3 三次 → 小鍵盤 5 武裝 → 空白鍵補血、小鍵盤 * 不減血
+include /tools-dos/scenarios/prefix-to-stage1.txt
+untilframe 10
+trapint 0x60 20
+pokew 0x1CFDE 0x20
+pokew 0x1CFE0 0x10
+log 初始：血量 1P=0x20 2P=0x10（poke）
+peekw cnt1 0x2739F
+peekw cnt2 0x273A1
+peekw cnt3 0x273A3
+peekw armed 0x2739D
+peekw nodmg 0x273A5
+tap alt 0.15 0.15
+log Alt 之後
+peekw cnt1 0x2739F
+tap 1 0.15 0.15
+log 按 1 一次
+peekw cnt1 0x2739F
+tap 2 0.15 0.15
+tap 2 0.15 0.15
+log 按 2 兩次
+peekw cnt2 0x273A1
+tap 3 0.15 0.15
+tap 3 0.15 0.15
+tap 3 0.15 0.15
+log 按 3 三次
+peekw cnt3 0x273A3
+peekw armed 0x2739D
+tap kp5 0.15 0.15
+log 按小鍵盤 5 之後
+peekw armed 0x2739D
+tap kp* 0.15 0.15
+log 按小鍵盤 * 之後
+peekw nodmg 0x273A5
+peekw hp1 0x1CFDE
+tap space 0.15 0.15
+log 按空白鍵之後
+peekw hp1 0x1CFDE
+peekw hp2 0x1CFE0
+peekw armed 0x2739D
+peekw nodmg 0x273A5
+# 錯誤順序對照：Alt 重置後直接按小鍵盤 5 與 *，不應武裝
+pokew 0x1CFDE 0x20
+tap alt 0.15 0.15
+tap kp5 0.15 0.15
+tap kp* 0.15 0.15
+tap space 0.15 0.15
+log 錯誤順序（Alt、5、*、空白）之後
+peekw armed 0x2739D
+peekw nodmg 0x273A5
+peekw hp1 0x1CFDE

@@ -1,0 +1,31 @@
+# 朝向旗標 word_1DA8F（3Ch '<' 與 3Eh '>'）與 Shift（開火）、/（切換朝向）的實跑驗證。第一關，開秘技避免死亡。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+peekw facing 0x1DA8F
+trace face
+log === 朝向 3Ch：右 Shift 第一次按下只武裝（273A7 尚未 Y），第二次才開火 ===
+tap rshift 0.15 0.3
+tap rshift 0.15 0.05
+secs 0.2
+shot f_left_a
+secs 0.25
+shot f_left_b
+peekw facing 0x1DA8F
+log === 按 / 切換朝向 ===
+tap / 0.15 0.3
+peekw facing 0x1DA8F
+tap rshift 0.15 0.05
+secs 0.2
+shot f_right_a
+secs 0.25
+shot f_right_b
+peekw facing 0x1DA8F
+log === 再按 / 切回 ===
+tap / 0.15 0.3
+peekw facing 0x1DA8F
+tap rshift 0.15 0.05
+secs 0.2
+shot f_left2_a
+trace off
+sheet f_sheet 3 f_left_a f_left_b f_right_a f_right_b f_left2_a

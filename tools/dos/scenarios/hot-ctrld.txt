@@ -1,0 +1,14 @@
+# Ctrl+D 重播音樂：ASMDRV 常駐時，記錄 INT 60h 呼叫序列、PIT 與遊戲 tick 是否繼續
+include /tools-dos/scenarios/prefix-to-stage1.txt
+untilframe 10
+trapint 0x60 40
+watchpc 0x1A7B5
+peekw frame 0x1CFE2
+chord ctrl+d 0.4 0.5
+secs 0.5
+peekw frame 0x1CFE2
+peekw tickw 0x273B9
+secs 3
+peekw frame 0x1CFE2
+peekw tickw 0x273B9
+shot hd_after

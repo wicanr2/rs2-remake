@@ -1,0 +1,8 @@
+# 單色模式（CGA/MGA）版的 next-stage.txt：檔名是 J${NEXT}.GOB 與 SHT${NEXT}.BDB。
+chord ctrl+c 0.4 0.1
+untilopen J${NEXT}.GOB 1 500_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT${NEXT}.BDB 1 500_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000

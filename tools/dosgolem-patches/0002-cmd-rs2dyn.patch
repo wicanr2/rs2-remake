@@ -1,0 +1,1563 @@
+diff --git a/cmd/rs2dyn/main.go b/cmd/rs2dyn/main.go
+new file mode 100644
+index 0000000..5955b18
+--- /dev/null
++++ b/cmd/rs2dyn/main.go
+@@ -0,0 +1,118 @@
++// rs2dyn 是 RS-2（大宇資訊，1990）的動態驗證驅動：載入 S.EXE（可先常駐 ASMDRV.EXE），
++// 依腳本送鍵、存畫面、量時間基準、記開檔序列。不認識別的程式。
++//
++//	rs2dyn -root /orig -out /out/run1 -script scenario.txt [-chain ASMDRV.EXE] [-adlib]
++//
++// 腳本與命令表見 script.go 的 doc 註解。位址一律寫 IDA 線性位址（映像基底 10000h），
++// 驅動在執行期用 INT 8 向量（遊戲自己的處理常式在 CS:A7B5）換算成實際線性位址。
++package main
++
++import (
++	"bufio"
++	"flag"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
++	"github.com/wicanr2/dosgolem/internal/dos"
++	"github.com/wicanr2/dosgolem/internal/machine"
++)
++
++func main() {
++	root := flag.String("root", "", "DOS 看得到的目錄（原版，唯讀）")
++	out := flag.String("out", "", "輸出目錄（畫面、日誌）")
++	scratch := flag.String("scratch", "", "可寫的暫存層（遊戲寫檔落在這裡）")
++	prog := flag.String("prog", "S.EXE", "主程式（root 下的檔名）")
++	chain := flag.String("chain", "", "先跑這支（常駐型），結束後接著跑 -prog；例 ASMDRV.EXE")
++	adlib := flag.Bool("adlib", false, "讓 AdLib（OPL2）偵測存在")
++	cpuModel := flag.String("cpu", "386", "8086、186 或 386")
++	script := flag.String("script", "", "腳本檔")
++	tick := flag.Uint64("tick", 0, "釘住計時器間隔（指令數）；0 ＝ 隨 PIT 分頻")
++	maxSteps := flag.Uint64("max-steps", 20_000_000_000, "整體步數上限")
++	statePeek := flag.Bool("verbose", false, "把事件日誌也印到 stdout")
++	flag.Parse()
++	if *root == "" || *out == "" || *script == "" {
++		flag.Usage()
++		os.Exit(2)
++	}
++	if err := os.MkdirAll(*out, 0o755); err != nil {
++		die(err)
++	}
++
++	first := *prog
++	if *chain != "" {
++		first = *chain
++	}
++	img, err := os.ReadFile(filepath.Join(*root, first))
++	if err != nil {
++		die(err)
++	}
++	m := machine.New()
++	m.ProgramPath = `C:\` + strings.ToUpper(first)
++	if *adlib {
++		m.SetAdLib(true)
++	}
++	if *tick > 0 {
++		m.IRQ0Every, m.IRQ0Pinned = *tick, true
++	}
++	switch *cpuModel {
++	case "386":
++	case "186":
++		m.CPU.Model = cpu.Model80186
++		m.CPU.SetFlags(m.CPU.Flags)
++	case "8086":
++		m.CPU.Model = cpu.Model8086
++		m.CPU.SetFlags(m.CPU.Flags)
++	default:
++		die(fmt.Errorf("-cpu 只接受 8086、186、386"))
++	}
++	if len(img) >= 2 && img[0] == 'M' && img[1] == 'Z' {
++		err = m.LoadEXE(img)
++	} else {
++		err = m.LoadCOM(img)
++	}
++	if err != nil {
++		die(err)
++	}
++	d := dos.New(m, *root)
++	d.Scratch = *scratch
++	if *chain != "" {
++		d.Enqueue(*prog, "")
++	}
++	d.Install()
++
++	ev, err := os.Create(filepath.Join(*out, "events.tsv"))
++	if err != nil {
++		die(err)
++	}
++	defer ev.Close()
++	w := bufio.NewWriter(ev)
++	defer w.Flush()
++
++	r := newRT(m, d, *out, w, *statePeek)
++	r.maxSteps = *maxSteps
++	r.logf("config", "root=%s prog=%s chain=%s adlib=%v cpu=%s tick=%d", *root, *prog, *chain, *adlib, *cpuModel, *tick)
++	r.install()
++
++	f, err := os.Open(*script)
++	if err != nil {
++		die(err)
++	}
++	defer f.Close()
++	if err := r.runScript(f); err != nil {
++		r.logf("error", "%v", err)
++		w.Flush()
++		fmt.Fprintln(os.Stderr, "rs2dyn:", err)
++		r.summary()
++		w.Flush()
++		os.Exit(1)
++	}
++	r.summary()
++}
++
++func die(err error) {
++	fmt.Fprintln(os.Stderr, "rs2dyn:", err)
++	os.Exit(1)
++}
+diff --git a/cmd/rs2dyn/rt.go b/cmd/rs2dyn/rt.go
+new file mode 100644
+index 0000000..bfe0bff
+--- /dev/null
++++ b/cmd/rs2dyn/rt.go
+@@ -0,0 +1,807 @@
++package main
++
++import (
++	"bufio"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"fmt"
++	"image"
++	"image/color"
++	"image/png"
++	"os"
++	"path/filepath"
++	"sort"
++	"strings"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
++	"github.com/wicanr2/dosgolem/internal/dos"
++	"github.com/wicanr2/dosgolem/internal/machine"
++)
++
++// 遊戲位址一律用 IDA 線性位址（映像基底 10000h）。執行期線性位址 ＝ base + (L − 10000h)，
++// base ＝ 遊戲 INT 8 處理常式（IDA 1A7B5h，CS:A7B5）所在 CS 的線性位址。
++const (
++	idaBase       = 0x10000
++	idaInt8Entry  = 0x1A7B5 // INT 8 處理常式（sub_1A789 安裝）
++	idaInt9Entry  = 0x1A83D // INT 9 處理常式（sub_1A720 安裝）
++	idaFrame      = 0x1CFE2 // word_1CFE2 幀計數
++	idaTick       = 0x273B9 // word_273B9 sub_11097 等待的 tick
++	idaTick2      = 0x273B7 // word_273B7
++	idaFacing     = 0x1DA8F // word_1DA8F 朝向
++	idaDemoFlag   = 0x1CFE2
++	idaPalSegBias = 0x1CBC0 // dseg:0 的 IDA 線性位址
++)
++
++type namedPal struct {
++	name      string
++	attr, dac uint16 // dseg 位移
++}
++
++var palTable = []namedPal{
++	{"stage1", 0x4EC, 0x4FD}, {"stage1_boss", 0x52D, 0x53E}, {"loader", 0x56E, 0x5A9},
++	{"title_d", 0x598, 0x5A9}, {"title_e", 0x5D9, 0x5EA}, {"menu", 0x61A, 0x62B},
++	{"beg1_a", 0x65B, 0x66C}, {"beg1_b", 0x69C, 0x6AD}, {"j1", 0x6DD, 0x6EE},
++	{"j2", 0x71E, 0x72F}, {"j3", 0x75F, 0x770}, {"j4", 0x7A0, 0x7B1},
++	{"stage2", 0xC14, 0xC25}, {"stage2_b", 0xC55, 0xC66}, {"stage2_d", 0xC96, 0xCA7},
++	{"stage2_c", 0xCD7, 0xCE8}, {"stage3", 0xD18, 0xD29}, {"stage4", 0xD71, 0xD82},
++	{"ending_a", 0xE43, 0xE54}, {"ending_b", 0xE84, 0xE95},
++}
++
++type rt struct {
++	m       *machine.Machine
++	d       *dos.DOS
++	out     string
++	w       *bufio.Writer
++	verbose bool
++
++	maxSteps uint64
++	base     uint32 // 遊戲映像基底的執行期線性位址，0 ＝ 未知
++
++	holdSecs, gapSecs float64
++
++	lastDiv   uint32
++	lastMiss  int
++	lastExecN int
++
++	handlerEntries map[uint32]uint64 // 線性位址 → 進入次數（只記有登記的）
++	watchLin       []uint32
++	flips          uint64
++	lastStart      uint32
++	flipLog        bool
++	portCount      map[uint16]uint64
++	lastCS         uint16
++	shotN          int
++	lastTicks      uint64
++	simSec         float64
++	openCount      map[string]int
++	tr             *tracer
++	palKey         string
++	palWatch       bool
++	palShots       bool
++	palShotN       int
++	traps          map[uint32]*trapInfo
++	gameTicks      uint64
++	vars           map[string]string
++	waitLin        []uint32
++}
++
++func newRT(m *machine.Machine, d *dos.DOS, out string, w *bufio.Writer, verbose bool) *rt {
++	return &rt{m: m, d: d, out: out, w: w, verbose: verbose,
++		holdSecs: 0.15, gapSecs: 0.15, lastDiv: m.PITDivisor(),
++		handlerEntries: map[uint32]uint64{}, portCount: map[uint16]uint64{}, openCount: map[string]int{}}
++}
++
++func (r *rt) logf(kind, f string, a ...any) {
++	line := fmt.Sprintf("%d\t%d\t%.4f\t%s\t%s\n", r.m.Steps, r.m.Ticks, r.simSec, kind, fmt.Sprintf(f, a...))
++	r.w.WriteString(line)
++	if r.verbose {
++		fmt.Print(line)
++	}
++}
++
++// install 掛觀測：開檔、向量表寫入。
++func (r *rt) install() {
++	r.d.OnOpen = func(name string) { r.openCount[strings.ToUpper(name)]++; r.logf("open", "%s", name) }
++	for _, v := range []struct {
++		name string
++		lo   uint32
++	}{{"int08", 0x20}, {"int09", 0x24}, {"int1c", 0x70}, {"int60", 0x180}} {
++		v := v
++		r.m.WatchWrite(v.lo, v.lo+3, func(m *machine.Machine, a uint32, old, nw uint8) {
++			if old == nw {
++				return
++			}
++			cs, ip := m.Insn()
++			r.logf("vec", "%s byte+%d %02X->%02X by %04X:%04X now=%04X:%04X",
++				v.name, a-v.lo, old, nw, cs, ip, m.Read16(v.lo+2), m.Read16(v.lo))
++		})
++	}
++}
++
++// gaddr 把 IDA 線性位址換成執行期線性位址。
++func (r *rt) gaddr(ida uint32) (uint32, error) {
++	if r.base == 0 {
++		seg, off := r.m.Read16(0x22), r.m.Read16(0x20)
++		if off == idaInt8Entry-idaBase {
++			r.base = uint32(seg) * 16
++			r.logf("base", "game image base %05X (INT 8 -> %04X:%04X)", r.base, seg, off)
++		} else if off2 := r.m.Read16(0x24); off2 == idaInt9Entry-idaBase {
++			r.base = uint32(r.m.Read16(0x26)) * 16
++			r.logf("base", "game image base %05X (INT 9)", r.base)
++		}
++	}
++	if r.base == 0 {
++		return 0, fmt.Errorf("遊戲映像基底未知（INT 8／9 還沒指到遊戲的處理常式）")
++	}
++	return r.base + ida - idaBase, nil
++}
++
++func (r *rt) rd16(ida uint32) (uint16, error) {
++	a, err := r.gaddr(ida)
++	if err != nil {
++		return 0, err
++	}
++	return r.m.Read16(a), nil
++}
++
++// step 單步，附帶所有逐指令的觀測。
++func (r *rt) step() error {
++	m, d := r.m, r.d
++	if err := m.Step(); err != nil {
++		return err
++	}
++	if m.Ticks != r.lastTicks {
++		// 虛擬時間 ＝ 送出的 IRQ0 數 ÷ PIT 通道 0 頻率。時基是機器自己的（IRQ0Every × PITHz），
++		// 不是 18.2 Hz 的推算；IF 關著時合併掉的 IRQ0 不補。
++		r.simSec += float64(m.Ticks-r.lastTicks) / m.PITHz()
++		r.lastTicks = m.Ticks
++	}
++	if dv := m.PITDivisor(); dv != r.lastDiv {
++		r.logf("pit", "divisor %d -> %d (%.3f Hz) IRQ0Every=%d", r.lastDiv, dv, m.PITHz(), m.IRQ0Every)
++		r.lastDiv = dv
++	}
++	if n := len(d.Missing); n != r.lastMiss {
++		for _, s := range d.Missing[r.lastMiss:] {
++			r.logf("missing", "%s", s)
++		}
++		r.lastMiss = n
++	}
++	if n := len(d.ExecLog); n != r.lastExecN {
++		for _, e := range d.ExecLog[r.lastExecN:] {
++			r.logf("exec", "%s", e.Name)
++		}
++		r.lastExecN = n
++	}
++	if len(r.watchLin) > 0 {
++		lin := uint32(m.CPU.Seg[cpu.CS])<<4 + uint32(m.CPU.IP)
++		for _, w := range r.watchLin {
++			if lin == w {
++				r.handlerEntries[w]++
++			}
++		}
++	}
++	if r.tr != nil {
++		r.traceTick()
++	}
++	if r.traps != nil {
++		r.trapCheck()
++	}
++	if r.palWatch && m.Steps&0x3FF == 0 {
++		r.palCheck()
++	}
++	if m.Steps&0x3F == 0 {
++		if s := m.DisplayStart(); s != r.lastStart {
++			r.lastStart = s
++			r.flips++
++		}
++	}
++	if m.Steps&0x7FFF == 0 {
++		r.drainPorts()
++	}
++	return nil
++}
++
++func (r *rt) drainPorts() {
++	for _, p := range r.m.PortLog {
++		switch p.Port {
++		case 0x40, 0x43, 0x42, 0x388, 0x389, 0x61:
++			r.portCount[p.Port]++
++		}
++	}
++	r.m.PortLog = r.m.PortLog[:0]
++}
++
++func (r *rt) over() error {
++	if r.m.Steps >= r.maxSteps {
++		return fmt.Errorf("超過整體步數上限 %d", r.maxSteps)
++	}
++	return nil
++}
++
++func (r *rt) runTo(target uint64) error {
++	for r.m.Steps < target && !r.d.Exited {
++		if err := r.step(); err != nil {
++			return err
++		}
++		if err := r.over(); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++// runUntil 每步檢查 cond；超過 budget 步回錯誤。
++func (r *rt) runUntil(what string, cond func() bool, budget uint64) error {
++	end := r.m.Steps + budget
++	for !cond() {
++		if r.d.Exited {
++			return fmt.Errorf("等 %s 時程式結束了（exit=%d）", what, r.d.ExitCode)
++		}
++		if r.m.Steps >= end {
++			return fmt.Errorf("等 %s 超過 %d 步", what, budget)
++		}
++		if err := r.step(); err != nil {
++			return err
++		}
++		if err := r.over(); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func (r *rt) runTicks(n uint64) error {
++	want := r.m.Ticks + n
++	for r.m.Ticks < want && !r.d.Exited {
++		if err := r.step(); err != nil {
++			return err
++		}
++		if err := r.over(); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++// ---- 鍵盤 ----
++
++var scan = map[string]uint8{
++	"esc": 0x01, "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06, "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A, "0": 0x0B,
++	"-": 0x0C, "=": 0x0D, "bksp": 0x0E, "tab": 0x0F,
++	"q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14, "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
++	"enter": 0x1C, "ctrl": 0x1D,
++	"a": 0x1E, "s": 0x1F, "d": 0x20, "f": 0x21, "g": 0x22, "h": 0x23, "j": 0x24, "k": 0x25, "l": 0x26,
++	"lshift": 0x2A, "z": 0x2C, "x": 0x2D, "c": 0x2E, "v": 0x2F, "b": 0x30, "n": 0x31, "m": 0x32,
++	",": 0x33, ".": 0x34, "/": 0x35, "rshift": 0x36, "kp*": 0x37, "alt": 0x38, "space": 0x39,
++	"f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F, "f6": 0x40, "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44,
++	"home": 0x47, "up": 0x48, "pgup": 0x49, "kp-": 0x4A, "left": 0x4B, "kp5": 0x4C, "right": 0x4D, "kp+": 0x4E,
++	"end": 0x4F, "down": 0x50, "pgdn": 0x51,
++}
++
++func keyScan(name string) (uint8, error) {
++	if v, ok := scan[strings.ToLower(name)]; ok {
++		return v, nil
++	}
++	var v uint8
++	if _, err := fmt.Sscanf(name, "0x%x", &v); err == nil {
++		return v, nil
++	}
++	return 0, fmt.Errorf("不認得的鍵名 %q", name)
++}
++
++func (r *rt) down(sc uint8) {
++	r.m.ScheduleKey(r.m.Steps, sc, false)
++	r.logf("key", "down %02X", sc)
++}
++func (r *rt) up(sc uint8) {
++	r.m.ScheduleKey(r.m.Steps, sc, true)
++	r.logf("key", "up %02X", sc)
++}
++
++// chord 依序按下 names，保持 hold 個 tick，反序放開，再等 gap 個 tick。
++func (r *rt) chord(names []string, hold, gap float64) error {
++	scs := make([]uint8, len(names))
++	for i, n := range names {
++		s, err := keyScan(n)
++		if err != nil {
++			return err
++		}
++		scs[i] = s
++	}
++	for _, s := range scs {
++		r.down(s)
++		// 每個鍵至少讓 IRQ1 送得出去：KeyEvery 步以內不會有下一個事件
++		if err := r.runTo(r.m.Steps + r.m.KeyEvery + 1); err != nil {
++			return err
++		}
++	}
++	if err := r.runSecs(hold); err != nil {
++		return err
++	}
++	for i := len(scs) - 1; i >= 0; i-- {
++		r.up(scs[i])
++		if err := r.runTo(r.m.Steps + r.m.KeyEvery + 1); err != nil {
++			return err
++		}
++	}
++	return r.runSecs(gap)
++}
++
++// ---- 畫面 ----
++
++var egaRGB = [16][3]uint8{
++	{0, 0, 0}, {0, 0, 170}, {0, 170, 0}, {0, 170, 170}, {170, 0, 0}, {170, 0, 170}, {170, 85, 0}, {170, 170, 170},
++	{85, 85, 85}, {85, 85, 255}, {85, 255, 85}, {85, 255, 255}, {255, 85, 85}, {255, 85, 255}, {255, 255, 85}, {255, 255, 255},
++}
++
++// shot 存 PNG、掃描線雜湊與調色盤側檔。回畫面 RGB 的 sha256。
++func (r *rt) shot(name string) error {
++	m := r.m
++	mode := m.VideoMode()
++	var img *image.RGBA
++	var rgbHash string
++	kind := ""
++	switch {
++	case mode <= 3 || mode == 7:
++		img, rgbHash = r.textImage()
++		kind = "text"
++		lines := m.TextScreen(0)
++		os.WriteFile(filepath.Join(r.out, name+".txt"), []byte(strings.Join(lines, "\n")+"\n"), 0o644)
++	default:
++		w, h, rgb := m.PlanarRGB()
++		if rgb == nil {
++			if mode != 0x13 {
++				return fmt.Errorf("shot %s：目前模式 %02Xh 不支援", name, mode)
++			}
++			w, h = 320, 200
++			raw, pal := m.VideoRaw(), m.Palette()
++			rgb = make([]uint8, w*h*3)
++			for i := 0; i < w*h && i < len(raw); i++ {
++				c := pal[raw[i]]
++				rgb[i*3], rgb[i*3+1], rgb[i*3+2] = c[0], c[1], c[2]
++			}
++			kind = "mode13"
++		} else {
++			kind = "planar"
++		}
++		img = image.NewRGBA(image.Rect(0, 0, w, h))
++		for i := 0; i < w*h; i++ {
++			img.Set(i%w, i/w, color.RGBA{rgb[i*3], rgb[i*3+1], rgb[i*3+2], 255})
++		}
++		h2 := sha256.Sum256(rgb)
++		rgbHash = hex.EncodeToString(h2[:])
++	}
++	pngPath := filepath.Join(r.out, name+".png")
++	f, err := os.Create(pngPath)
++	if err != nil {
++		return err
++	}
++	if err := png.Encode(f, img); err != nil {
++		f.Close()
++		return err
++	}
++	f.Close()
++	data, _ := os.ReadFile(pngPath)
++	fh := sha256.Sum256(data)
++
++	// 調色盤：屬性暫存器 16+1、DAC 全表（6 位元）、顯示的 16 色
++	var ac [17]uint8
++	for i := 0; i < 16; i++ {
++		ac[i] = m.VGA.Pal(i)
++	}
++	ac[16] = m.VGA.Overscan()
++	var shown [16][3]uint8
++	for i := 0; i < 16; i++ {
++		idx := int(m.VGA.DACIndex(uint8(i)))
++		for c := 0; c < 3; c++ {
++			shown[i][c] = m.DAC[idx*3+c]
++		}
++	}
++	meta := map[string]any{
++		"name": name, "step": m.Steps, "ticks": m.Ticks, "mode": fmt.Sprintf("%02X", mode), "kind": kind,
++		"png_sha256": hex.EncodeToString(fh[:]), "rgb_sha256": rgbHash,
++		"display_start": m.DisplayStart(), "ac": ac, "shown16_dac6": shown,
++		"dac256_hex": hex.EncodeToString(m.DAC[:]),
++	}
++	if fr, err := r.rd16(idaFrame); err == nil {
++		meta["frame_counter"] = fr
++	}
++	if mt := r.matchPals(shown, ac); mt != nil {
++		meta["palette_match"] = mt
++	}
++	mb, _ := json.MarshalIndent(meta, "", " ")
++	os.WriteFile(filepath.Join(r.out, name+".json"), mb, 0o644)
++	r.logf("shot", "%s mode=%02X kind=%s rgb=%s png=%s match=%v", name, mode, kind, rgbHash[:12], hex.EncodeToString(fh[:6]), meta["palette_match"])
++	return nil
++}
++
++func (r *rt) textImage() (*image.RGBA, string) {
++	m := r.m
++	cols := int(m.Read16(0x44A))
++	if cols <= 0 || cols > 132 {
++		cols = 80
++	}
++	img := image.NewRGBA(image.Rect(0, 0, cols*8, 25*8))
++	pal := m.Palette()
++	_ = pal
++	const fontBase = 0xFFA6E
++	for row := 0; row < 25; row++ {
++		for col := 0; col < cols; col++ {
++			a := machine.TextSeg*16 + uint32(row*cols+col)*2
++			ch, at := m.Read8(a), m.Read8(a+1)
++			fg, bg := egaRGB[at&15], egaRGB[(at>>4)&7]
++			for y := 0; y < 8; y++ {
++				bits := m.Read8(fontBase + uint32(ch&0x7F)*8 + uint32(y))
++				for x := 0; x < 8; x++ {
++					c := bg
++					if bits&(0x80>>uint(x)) != 0 {
++						c = fg
++					}
++					img.Set(col*8+x, row*8+y, color.RGBA{c[0], c[1], c[2], 255})
++				}
++			}
++		}
++	}
++	h := sha256.Sum256(img.Pix)
++	return img, hex.EncodeToString(h[:])
++}
++
++type palCand struct {
++	Name      string `json:"name"`
++	DACMatch  int    `json:"dac_match16"`
++	AttrMatch int    `json:"attr_match16"`
++	ExactDAC  bool   `json:"exact_dac"`
++	ExactAttr bool   `json:"exact_attr"`
++}
++
++// matchPalsRaw 把現在顯示的 16 色對遊戲資料段裡 20 組具名調色盤，依 DAC 吻合色數排序。
++func (r *rt) matchPalsRaw(shown [16][3]uint8, ac [17]uint8) []palCand {
++	if r.base == 0 {
++		if _, err := r.gaddr(idaBase); err != nil {
++			return nil
++		}
++	}
++	var cs []palCand
++	for _, p := range palTable {
++		da := r.base + idaPalSegBias - idaBase + uint32(p.dac)
++		aa := r.base + idaPalSegBias - idaBase + uint32(p.attr)
++		c := palCand{Name: p.name}
++		for i := 0; i < 16; i++ {
++			if r.m.Read8(da+uint32(i*3)) == shown[i][0] && r.m.Read8(da+uint32(i*3)+1) == shown[i][1] && r.m.Read8(da+uint32(i*3)+2) == shown[i][2] {
++				c.DACMatch++
++			}
++			if r.m.Read8(aa+uint32(i)) == ac[i] {
++				c.AttrMatch++
++			}
++		}
++		c.ExactDAC, c.ExactAttr = c.DACMatch == 16, c.AttrMatch == 16
++		cs = append(cs, c)
++	}
++	sort.SliceStable(cs, func(i, j int) bool { return cs[i].DACMatch > cs[j].DACMatch })
++	return cs
++}
++
++// matchPals 回傳完全吻合的名稱；沒有完全吻合時看 top3 的吻合色數。
++func (r *rt) matchPals(shown [16][3]uint8, ac [17]uint8) any {
++	cs := r.matchPalsRaw(shown, ac)
++	if cs == nil {
++		return nil
++	}
++	var exact, exactAttr []string
++	for _, c := range cs {
++		if c.ExactDAC {
++			exact = append(exact, c.Name)
++		}
++		if c.ExactAttr {
++			exactAttr = append(exactAttr, c.Name)
++		}
++	}
++	return map[string]any{"exact_dac": exact, "exact_attr": exactAttr, "top3": cs[:3]}
++}
++
++func (r *rt) summary() {
++	r.traceStop()
++	m, d := r.m, r.d
++	r.drainPorts()
++	r.logf("summary", "steps=%d ticks=%d keyIRQs=%d exited=%v exit=%d pit=%d", m.Steps, m.Ticks, m.KeyIRQs, d.Exited, d.ExitCode, m.PITDivisor())
++	for ln, n := range r.handlerEntries {
++		r.logf("summary", "handler %05X entries=%d", ln, n)
++	}
++	ports := make([]int, 0)
++	for p := range r.portCount {
++		ports = append(ports, int(p))
++	}
++	sort.Ints(ports)
++	for _, p := range ports {
++		r.logf("summary", "port %03X writes=%d", p, r.portCount[uint16(p)])
++	}
++	r.logf("summary", "pageflips=%d", r.flips)
++	for _, w := range d.Wrote {
++		r.logf("summary", "wrote %s (%d bytes)", w.Name, w.N)
++	}
++	if u := d.UnimplementedReport(); len(u) > 0 {
++		sort.Strings(u)
++		for _, s := range u {
++			r.logf("summary", "unimplemented %s", s)
++		}
++	}
++	r.w.Flush()
++}
++
++func dosKey(s, a uint8) dos.Key { return dos.Key{Scan: s, ASCII: a} }
++
++// sheet 把已存的 PNG 並排成一張總覽（cols 欄），畫面各自縮成原尺寸，不加標籤。
++func (r *rt) sheet(name string, cols int, names []string) error {
++	var imgs []image.Image
++	maxW, maxH := 0, 0
++	for _, n := range names {
++		f, err := os.Open(filepath.Join(r.out, n+".png"))
++		if err != nil {
++			return err
++		}
++		im, err := png.Decode(f)
++		f.Close()
++		if err != nil {
++			return err
++		}
++		imgs = append(imgs, im)
++		b := im.Bounds()
++		if b.Dx() > maxW {
++			maxW = b.Dx()
++		}
++		if b.Dy() > maxH {
++			maxH = b.Dy()
++		}
++	}
++	rows := (len(imgs) + cols - 1) / cols
++	out := image.NewRGBA(image.Rect(0, 0, cols*(maxW+2), rows*(maxH+2)))
++	for i, im := range imgs {
++		ox, oy := (i%cols)*(maxW+2), (i/cols)*(maxH+2)
++		b := im.Bounds()
++		for y := 0; y < b.Dy(); y++ {
++			for x := 0; x < b.Dx(); x++ {
++				out.Set(ox+x, oy+y, im.At(b.Min.X+x, b.Min.Y+y))
++			}
++		}
++	}
++	f, err := os.Create(filepath.Join(r.out, name+".png"))
++	if err != nil {
++		return err
++	}
++	defer f.Close()
++	r.logf("sheet", "%s %v", name, names)
++	return png.Encode(f, out)
++}
++
++// runSecs 再跑 s 虛擬秒（由 PIT 頻率換算的機器時間）。
++func (r *rt) runSecs(s float64) error {
++	want := r.simSec + s
++	for r.simSec < want && !r.d.Exited {
++		if err := r.step(); err != nil {
++			return err
++		}
++		if err := r.over(); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++// ---- 逐幀追蹤 ----
++
++// traceFields 是每幀記錄的遊戲變數（IDA 線性位址，word 或 byte）。
++var traceFields = []struct {
++	name string
++	ida  uint32
++	w    bool
++}{
++	{"frame", 0x1CFE2, true}, {"tickw", 0x273B9, true}, {"inbyte", 0x1DAA4, false},
++	{"up", 0x274D3, false}, {"down", 0x274DB, false}, {"right", 0x274D8, false}, {"left", 0x274D6, false},
++	{"fire", 0x273A9, false}, {"flip", 0x273AA, false}, {"facing", 0x1DA8F, true},
++	{"spr", 0x1DABD, true}, {"py", 0x1DAC5, true}, {"px", 0x1DAC7, true}, {"yi", 0x1DAC9, true}, {"xi", 0x1DACB, true},
++	{"hp1", 0x1CFDE, true}, {"hp2", 0x1CFE0, true}, {"demo", 0x1CFDC, false}, {"stage", 0x1CFDB, false},
++	{"clear", 0x1CFAD, false},
++}
++
++type tracer struct {
++	f     *os.File
++	w     *bufio.Writer
++	last  uint16
++	lastS uint64
++	n     uint64
++}
++
++func (r *rt) traceStart(name string) error {
++	if _, err := r.gaddr(idaBase); err != nil {
++		return err
++	}
++	f, err := os.Create(filepath.Join(r.out, "trace-"+name+".tsv"))
++	if err != nil {
++		return err
++	}
++	t := &tracer{f: f, w: bufio.NewWriter(f)}
++	t.last, _ = r.rd16(idaFrame)
++	t.lastS = r.m.Steps
++	hdr := "step\tticks\tsec\tdsteps"
++	for _, fl := range traceFields {
++		hdr += "\t" + fl.name
++	}
++	t.w.WriteString(hdr + "\n")
++	r.tr = t
++	r.logf("trace", "start %s", name)
++	return nil
++}
++
++func (r *rt) traceStop() {
++	if r.tr == nil {
++		return
++	}
++	r.tr.w.Flush()
++	r.tr.f.Close()
++	r.logf("trace", "stop rows=%d", r.tr.n)
++	r.tr = nil
++}
++
++func (r *rt) traceTick() {
++	t := r.tr
++	m := r.m
++	fr := m.Read16(r.base + idaFrame - idaBase)
++	if fr == t.last {
++		return
++	}
++	t.last = fr
++	line := fmt.Sprintf("%d\t%d\t%.4f\t%d", m.Steps, m.Ticks, r.simSec, m.Steps-t.lastS)
++	t.lastS = m.Steps
++	for _, fl := range traceFields {
++		a := r.base + fl.ida - idaBase
++		if fl.w {
++			line += fmt.Sprintf("\t%d", m.Read16(a))
++		} else {
++			line += fmt.Sprintf("\t%d", m.Read8(a))
++		}
++	}
++	t.w.WriteString(line + "\n")
++	t.n++
++}
++
++// ---- 調色盤變化監看 ----
++
++// palCheck 取目前顯示的 16 色（屬性暫存器 → DAC），與上一次不同就記一行，附對 20 組具名調色盤的比對。
++func (r *rt) palCheck() {
++	m := r.m
++	var ac [17]uint8
++	for i := 0; i < 16; i++ {
++		ac[i] = m.VGA.Pal(i)
++	}
++	ac[16] = m.VGA.Overscan()
++	var shown [16][3]uint8
++	key := make([]byte, 0, 17+48)
++	key = append(key, ac[:]...)
++	for i := 0; i < 16; i++ {
++		idx := int(m.VGA.DACIndex(uint8(i)))
++		for c := 0; c < 3; c++ {
++			shown[i][c] = m.DAC[idx*3+c]
++			key = append(key, shown[i][c])
++		}
++	}
++	if m.VideoMode() <= 3 {
++		return
++	}
++	if string(key) == r.palKey {
++		return
++	}
++	r.palKey = string(key)
++	fr := int32(-1)
++	if v, err := r.rd16(idaFrame); err == nil {
++		fr = int32(v)
++	}
++	cs := r.matchPalsRaw(shown, ac)
++	var exact, exactAttr []string
++	best := ""
++	for _, c := range cs {
++		if c.ExactDAC {
++			exact = append(exact, c.Name)
++		}
++		if c.ExactAttr {
++			exactAttr = append(exactAttr, c.Name)
++		}
++	}
++	if len(cs) > 0 {
++		best = fmt.Sprintf("%s:%d/16", cs[0].Name, cs[0].DACMatch)
++	}
++	r.logf("pal", "frame=%d exact=%v exact_attr=%v best=%s ac=%v", fr, exact, exactAttr, best, ac)
++	if r.palShots && len(exact) > 0 && r.palShotN < 60 {
++		r.palShotN++
++		if err := r.shot(fmt.Sprintf("pal_%02d_%s", r.palShotN, strings.Join(exact, "+"))); err != nil {
++			r.logf("error", "palshot: %v", err)
++		}
++	}
++}
++
++// ---- 中斷向量陷阱 ----
++
++type trapInfo struct {
++	name string
++	max  int
++	n    int
++}
++
++// addTrapInt 登記「執行到 INT n 向量所指的位址」要記錄暫存器（最多 max 次）。向量要已被程式設定。
++func (r *rt) addTrapInt(n int, max int) error {
++	off, seg := r.m.Read16(uint32(n)*4), r.m.Read16(uint32(n)*4+2)
++	if seg == machine.StubSeg {
++		return fmt.Errorf("INT %02Xh 還指著 dosgolem 的 stub，沒有常駐處理常式", n)
++	}
++	lin := uint32(seg)<<4 + uint32(off)
++	if r.traps == nil {
++		r.traps = map[uint32]*trapInfo{}
++	}
++	r.traps[lin] = &trapInfo{name: fmt.Sprintf("int%02X@%04X:%04X", n, seg, off), max: max}
++	r.logf("trap", "%s lin=%05X max=%d", r.traps[lin].name, lin, max)
++	return nil
++}
++
++func (r *rt) trapCheck() {
++	c := r.m.CPU
++	lin := uint32(c.Seg[cpu.CS])<<4 + uint32(c.IP)
++	if t, ok := r.traps[lin]; ok {
++		t.n++
++		if t.n <= t.max {
++			r.logf("trapped", "%s #%d AX=%04X BX=%04X CX=%04X DX=%04X ES=%04X DI=%04X DS=%04X SI=%04X", t.name, t.n,
++				c.R[cpu.AX], c.R[cpu.BX], c.R[cpu.CX], c.R[cpu.DX], c.Seg[cpu.ES], c.R[cpu.DI], c.Seg[cpu.DS], c.R[cpu.SI])
++		}
++	}
++}
++
++// ---- 遊戲 tick 與等待迴圈計數 ----
++
++// watchTick 監看 word_273B9：每次 +1 算遊戲處理常式收到一個 tick（INT 8 處理常式 `inc word_273B9`），
++// 歸零（sub_11097 結尾）不算。用來量「遊戲看到的 tick 頻率」，與 PIT 通道 0 的頻率分開。
++func (r *rt) watchTick() error {
++	a, err := r.gaddr(idaTick)
++	if err != nil {
++		return err
++	}
++	r.m.WatchWord(a, func(m *machine.Machine, addr uint32, old, nw uint16) {
++		if nw == old+1 {
++			r.gameTicks++
++		}
++	})
++	r.logf("watchtick", "word_273B9 lin=%05X", a)
++	return nil
++}
++
++// watchWait 計數 sub_11097 等待迴圈（IDA 11097h cmp、1109Bh jb）的執行次數。
++func (r *rt) watchWait() error {
++	for _, ida := range []uint32{0x11097, 0x1109B} {
++		a, err := r.gaddr(ida)
++		if err != nil {
++			return err
++		}
++		r.watchLin = append(r.watchLin, a)
++		r.waitLin = append(r.waitLin, a)
++	}
++	r.logf("watchwait", "sub_11097 loop")
++	return nil
++}
++
++func (r *rt) waitSteps() uint64 {
++	var n uint64
++	for _, a := range r.waitLin {
++		n += r.handlerEntries[a]
++	}
++	return n
++}
++
++// dumpPlanes 把四個 EGA 平面各存成 NAME.p0..p3（原始位元組，整個平面）。
++func (r *rt) dumpPlanes(name string) error {
++	for p := 0; p < 4; p++ {
++		pl := r.m.EGAPlane(p)
++		if err := os.WriteFile(filepath.Join(r.out, fmt.Sprintf("%s.p%d", name, p)), pl, 0o644); err != nil {
++			return err
++		}
++	}
++	r.logf("dumpplanes", "%s display_start=%d", name, r.m.DisplayStart())
++	return nil
++}
+diff --git a/cmd/rs2dyn/script.go b/cmd/rs2dyn/script.go
+new file mode 100644
+index 0000000..7705623
+--- /dev/null
++++ b/cmd/rs2dyn/script.go
+@@ -0,0 +1,620 @@
++package main
++
++import (
++	"bufio"
++	"encoding/hex"
++	"fmt"
++	"io"
++	"os"
++	"strconv"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
++	"strings"
++)
++
++// 腳本命令（一行一個，# 之後是註解；數字可用 _ 分隔，0x 開頭是十六進位）：
++//
++//	step N                 跑到絕對步數 N
++//	runsteps N             再跑 N 步
++//	ticks N                再跑 N 個 IRQ0 計時器中斷
++//	untilopen NAME [n [budget]]  跑到累計第 n 次（預設 1）成功開啟這個檔
++//	sheet OUT COLS a b c   把已存的 PNG 拼成一張
++//	untilvec8 [budget]     跑到 INT 8 指到遊戲處理常式（順便定出映像基底）
++//	until16 IDA VAL [budget]   跑到 IDA 位址的 word 等於 VAL
++//	untilframe N [budget]  跑到遊戲幀計數（word_1CFE2）>= N
++//	frames N [budget]      再跑到幀計數增加 N
++//	secs X                 再跑 X 虛擬秒（ticks ÷ PIT 頻率）
++//	hold X / gap X         tap 的預設按住與間隔（虛擬秒，預設 0.15）
++//	tap KEY [hold [gap]]   按下、等 hold 秒、放開、等 gap 秒
++//	chord K1+K2+K3 [hold [gap]]   依序按下、反序放開（Ctrl+Q 之類）
++//	down KEY / up KEY      只按下／只放開（立即排進佇列，不等）
++//	holdkeys K1+K2 SECS    同時按住這些鍵 SECS 秒後放開（方向加開火）
++//	bios KEY               送進 BIOS 緩衝區（只有破解組 intro 讀 int 16h）
++//	shot NAME              存 NAME.png、NAME.json（調色盤、雜湊）
++//	peek NAME IDA LEN      把 IDA 位址起 LEN 位元組寫進日誌
++//	peekw NAME IDA         同上，一個 word
++//	poke IDA HEX           寫位元組
++//	pokew IDA VAL
++//	measure NAME SECS      跑 SECS 虛擬秒，記錄幀、遊戲 tick、翻頁、等待迴圈步數的增量
++//	watchpc IDA            計數執行到這個 IDA 位址的次數（需映像基底）
++//	watchtick              計數 word_273B9 的 +1（遊戲收到的 INT 8 tick）
++//	watchwait              計數 sub_11097 等待迴圈的執行步數
++//	trace NAME / trace off 逐幀記錄遊戲變數到 trace-NAME.tsv
++//	trapint N [max]        記錄進入 INT N 向量所指處理常式時的暫存器
++//	where [NAME]           記錄目前 CS:IP、暫存器與接下來 8 位元組
++//	palwatch on|off       顯示調色盤一變就記一行（含幀計數與具名比對）
++//	set NAME VALUE         之後的行裡 ${NAME} 換成 VALUE
++//	include FILE           執行另一個腳本
++//	log TEXT...            寫一行日誌
++//	expect-exit            要求程式在這個時間點已經結束
++//	expect-running         要求程式還在跑
++func (r *rt) runScript(in io.Reader) error {
++	sc := bufio.NewScanner(in)
++	n := 0
++	for sc.Scan() {
++		n++
++		line := sc.Text()
++		if i := strings.Index(line, "#"); i >= 0 {
++			line = line[:i]
++		}
++		line = os.Expand(line, func(k string) string { return r.vars[k] })
++		f := strings.Fields(line)
++		if len(f) == 0 {
++			continue
++		}
++		if err := r.exec(f); err != nil {
++			return fmt.Errorf("腳本第 %d 行 %q：%w", n, strings.Join(f, " "), err)
++		}
++	}
++	return sc.Err()
++}
++
++func num(s string) (uint64, error) {
++	s = strings.ReplaceAll(s, "_", "")
++	return strconv.ParseUint(s, 0, 64)
++}
++
++func argNum(f []string, i int, def uint64) (uint64, error) {
++	if i >= len(f) {
++		return def, nil
++	}
++	return num(f[i])
++}
++
++func (r *rt) exec(f []string) error {
++	cmd := f[0]
++	need := func(k int) error {
++		if len(f) < k+1 {
++			return fmt.Errorf("%s 需要 %d 個參數", cmd, k)
++		}
++		return nil
++	}
++	switch cmd {
++	case "step":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		return r.runTo(v)
++	case "runsteps":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		return r.runTo(r.m.Steps + v)
++	case "ticks":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		return r.runTicks(v)
++	case "untilvec8":
++		b, err := argNum(f, 1, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.runUntil("INT 8 指到遊戲", func() bool {
++			_, e := r.gaddr(idaBase)
++			return e == nil
++		}, b)
++	case "until16":
++		if err := need(2); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		v, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 3, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.runUntil(fmt.Sprintf("word %X == %X", a, v), func() bool {
++			x, e := r.rd16(uint32(a))
++			return e == nil && uint64(x) == v
++		}, b)
++	case "untilframe":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 2, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.runUntil(fmt.Sprintf("幀計數 >= %d", v), func() bool {
++			x, e := r.rd16(idaFrame)
++			return e == nil && uint64(x) >= v
++		}, b)
++	case "frames":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 2, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		x0, err := r.rd16(idaFrame)
++		if err != nil {
++			return err
++		}
++		return r.runUntil(fmt.Sprintf("幀計數增加 %d", v), func() bool {
++			x, _ := r.rd16(idaFrame)
++			return uint64(x-x0) >= v && x >= x0
++		}, b)
++	case "secs":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := argFloat(f, 1, 0)
++		if err != nil {
++			return err
++		}
++		return r.runSecs(v)
++	case "hold":
++		v, err := argFloat(f, 1, 0.15)
++		r.holdSecs = v
++		return err
++	case "gap":
++		v, err := argFloat(f, 1, 0.15)
++		r.gapSecs = v
++		return err
++	case "tap":
++		if err := need(1); err != nil {
++			return err
++		}
++		h, err := argFloat(f, 2, r.holdSecs)
++		if err != nil {
++			return err
++		}
++		g, err := argFloat(f, 3, r.gapSecs)
++		if err != nil {
++			return err
++		}
++		return r.chord([]string{f[1]}, h, g)
++	case "chord":
++		if err := need(1); err != nil {
++			return err
++		}
++		h, err := argFloat(f, 2, r.holdSecs)
++		if err != nil {
++			return err
++		}
++		g, err := argFloat(f, 3, r.gapSecs)
++		if err != nil {
++			return err
++		}
++		return r.chord(strings.Split(f[1], "+"), h, g)
++	case "holdkeys":
++		if err := need(2); err != nil {
++			return err
++		}
++		h, err := argFloat(f, 2, 0)
++		if err != nil {
++			return err
++		}
++		return r.chord(strings.Split(f[1], "+"), h, 0)
++	case "down", "up":
++		if err := need(1); err != nil {
++			return err
++		}
++		s, err := keyScan(f[1])
++		if err != nil {
++			return err
++		}
++		if cmd == "down" {
++			r.down(s)
++		} else {
++			r.up(s)
++		}
++		return nil
++	case "bios":
++		if err := need(1); err != nil {
++			return err
++		}
++		s, err := keyScan(f[1])
++		if err != nil {
++			return err
++		}
++		var ascii uint8
++		if len(f[1]) == 1 {
++			ascii = f[1][0]
++		}
++		switch strings.ToLower(f[1]) {
++		case "enter":
++			ascii = 13
++		case "space":
++			ascii = ' '
++		case "esc":
++			ascii = 27
++		}
++		r.d.PushKey(dosKey(s, ascii))
++		r.logf("key", "bios scan=%02X ascii=%02X", s, ascii)
++		return nil
++	case "shot":
++		if err := need(1); err != nil {
++			return err
++		}
++		return r.shot(f[1])
++	case "sheet":
++		if err := need(3); err != nil {
++			return err
++		}
++		c, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		return r.sheet(f[1], int(c), f[3:])
++	case "untilopen":
++		// untilopen NAME [n [budget]]：跑到累計第 n 次（預設 1）成功開啟這個檔（不分大小寫）
++		if err := need(1); err != nil {
++			return err
++		}
++		nth, err := argNum(f, 2, 0)
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 3, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		want := strings.ToUpper(f[1])
++		target := uint64(1)
++		if nth > 0 {
++			target = nth
++		}
++		return r.runUntil("開檔 "+want, func() bool { return uint64(r.openCount[want]) >= target }, b)
++	case "peek":
++		if err := need(3); err != nil {
++			return err
++		}
++		a, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		l, err := num(f[3])
++		if err != nil {
++			return err
++		}
++		la, err := r.gaddr(uint32(a))
++		if err != nil {
++			return err
++		}
++		b := make([]byte, l)
++		for i := range b {
++			b[i] = r.m.Read8(la + uint32(i))
++		}
++		r.logf("peek", "%s ida=%X lin=%05X %s", f[1], a, la, hex.EncodeToString(b))
++		return nil
++	case "peekw":
++		if err := need(2); err != nil {
++			return err
++		}
++		a, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		v, err := r.rd16(uint32(a))
++		if err != nil {
++			return err
++		}
++		r.logf("peek", "%s ida=%X word=%04X (%d)", f[1], a, v, v)
++		return nil
++	case "poke":
++		if err := need(2); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := hex.DecodeString(f[2])
++		if err != nil {
++			return err
++		}
++		la, err := r.gaddr(uint32(a))
++		if err != nil {
++			return err
++		}
++		for i, v := range b {
++			r.m.Write8(la+uint32(i), v)
++		}
++		r.logf("poke", "ida=%X lin=%05X %s", a, la, f[2])
++		return nil
++	case "pokew":
++		if err := need(2); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		v, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		la, err := r.gaddr(uint32(a))
++		if err != nil {
++			return err
++		}
++		r.m.Write16(la, uint16(v))
++		r.logf("poke", "ida=%X lin=%05X word=%04X", a, la, v)
++		return nil
++	case "watchtick":
++		return r.watchTick()
++	case "watchwait":
++		return r.watchWait()
++	case "watchpc":
++		if err := need(1); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		la, err := r.gaddr(uint32(a))
++		if err != nil {
++			return err
++		}
++		r.watchLin = append(r.watchLin, la)
++		r.logf("watchpc", "ida=%X lin=%05X", a, la)
++		return nil
++	case "measure":
++		if err := need(2); err != nil {
++			return err
++		}
++		t, err := argFloat(f, 2, 0)
++		if err != nil {
++			return err
++		}
++		return r.measure(f[1], t)
++	case "trace":
++		// trace NAME 開始逐幀記錄到 trace-NAME.tsv；trace off 結束
++		if err := need(1); err != nil {
++			return err
++		}
++		if f[1] == "off" {
++			r.traceStop()
++			return nil
++		}
++		return r.traceStart(f[1])
++	case "trapint":
++		// trapint N [max]：記錄每次進入 INT N 向量所指處理常式時的暫存器
++		if err := need(1); err != nil {
++			return err
++		}
++		n, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		mx, err := argNum(f, 2, 50)
++		if err != nil {
++			return err
++		}
++		return r.addTrapInt(int(n), int(mx))
++	case "portmark":
++		// portmark NAME：記錄埠 42h／43h／61h／388h 的累計寫入數（相鄰兩個 mark 相減即區間內的寫入數）
++		n := "mark"
++		if len(f) > 1 {
++			n = f[1]
++		}
++		r.drainPorts()
++		r.logf("portmark", "%s port42=%d port43=%d port61=%d port388=%d", n, r.portCount[0x42], r.portCount[0x43], r.portCount[0x61], r.portCount[0x388])
++		return nil
++	case "untilwrote":
++		// untilwrote N [budget]：跑到遊戲累計寫檔次數 >= N（PIC.DA1～DA4 各算一次）
++		if err := need(1); err != nil {
++			return err
++		}
++		n, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 2, 300_000_000)
++		if err != nil {
++			return err
++		}
++		return r.runUntil("寫檔次數", func() bool { return uint64(len(r.d.Wrote)) >= n }, b)
++	case "dumpplanes":
++		if err := need(1); err != nil {
++			return err
++		}
++		return r.dumpPlanes(f[1])
++	case "wrote":
++		// wrote [NAME]：記錄遊戲寫檔（暫存層）的累計次數與檔名
++		n := "now"
++		if len(f) > 1 {
++			n = f[1]
++		}
++		var names []string
++		for _, w := range r.d.Wrote {
++			names = append(names, fmt.Sprintf("%s(%d)", w.Name, w.N))
++		}
++		r.logf("wrote", "%s count=%d %s", n, len(r.d.Wrote), strings.Join(names, ","))
++		return nil
++	case "where":
++		n := "here"
++		if len(f) > 1 {
++			n = f[1]
++		}
++		r.where(n)
++		return nil
++	case "palwatch":
++		if err := need(1); err != nil {
++			return err
++		}
++		r.palWatch = f[1] == "on"
++		r.palShots = len(f) > 2 && f[2] == "shots"
++		r.palShotN = 0
++		r.palKey = ""
++		return nil
++	case "set":
++		// set NAME VALUE：之後的行裡 ${NAME} 換成 VALUE
++		if err := need(2); err != nil {
++			return err
++		}
++		if r.vars == nil {
++			r.vars = map[string]string{}
++		}
++		r.vars[f[1]] = f[2]
++		return nil
++	case "include":
++		if err := need(1); err != nil {
++			return err
++		}
++		fh, err := os.Open(f[1])
++		if err != nil {
++			return err
++		}
++		defer fh.Close()
++		return r.runScript(fh)
++	case "log":
++		r.logf("note", "%s", strings.Join(f[1:], " "))
++		return nil
++	case "expect-exit":
++		if !r.d.Exited {
++			return fmt.Errorf("預期程式已結束，但還在跑")
++		}
++		r.logf("exit", "code=%d", r.d.ExitCode)
++		return nil
++	case "expect-running":
++		if r.d.Exited {
++			return fmt.Errorf("預期程式還在跑，但已結束（exit=%d）", r.d.ExitCode)
++		}
++		return nil
++	}
++	return fmt.Errorf("不認得的命令 %q", cmd)
++}
++
++// measure 跑 ticks 個 IRQ0，記下各計數的增量。幀計數與遊戲 tick 計數需要映像基底。
++func (r *rt) measure(name string, secs float64) error {
++	m := r.m
++	s0, t0, fl0, sec0, gt0, w0 := m.Steps, m.Ticks, r.flips, r.simSec, r.gameTicks, r.waitSteps()
++	r.drainPorts()
++	pc0 := map[uint16]uint64{}
++	for k, v := range r.portCount {
++		pc0[k] = v
++	}
++	fr0, errF := r.rd16(idaFrame)
++	h0 := map[uint32]uint64{}
++	for k, v := range r.handlerEntries {
++		h0[k] = v
++	}
++	// 幀計數遞增的步數間隔：逐步觀察
++	var last uint16 = fr0
++	var lastStep = m.Steps
++	var intervals []uint64
++	var framesSeen uint64
++	end := r.simSec + secs
++	for r.simSec < end && !r.d.Exited {
++		if err := r.step(); err != nil {
++			return err
++		}
++		if errF == nil {
++			x := m.Read16(r.base + idaFrame - idaBase)
++			if x != last {
++				if x == last+1 {
++					intervals = append(intervals, m.Steps-lastStep)
++				}
++				framesSeen += uint64(x - last)
++				last, lastStep = x, m.Steps
++			}
++		}
++		if err := r.over(); err != nil {
++			return err
++		}
++	}
++	dSteps, dTicks, dFlips, dSec, dGT := m.Steps-s0, m.Ticks-t0, r.flips-fl0, r.simSec-sec0, r.gameTicks-gt0
++	dWait := r.waitSteps() - w0
++	var sum uint64
++	for _, v := range intervals {
++		sum += v
++	}
++	var meanInt float64
++	if len(intervals) > 0 {
++		meanInt = float64(sum) / float64(len(intervals))
++	}
++	r.logf("measure", "%s steps=%d irq0=%d sim_seconds=%.4f pit_div_end=%d pit_hz_end=%.4f irq0_every_end=%d steps_per_s_now=%.0f",
++		name, dSteps, dTicks, dSec, m.PITDivisor(), m.PITHz(), m.IRQ0Every, m.StepsPerSecondNow())
++	if dSec > 0 {
++		r.logf("measure", "%s irq0_hz=%.4f game_ticks=%d game_tick_hz=%.4f", name, float64(dTicks)/dSec, dGT, float64(dGT)/dSec)
++		if framesSeen > 0 {
++			r.logf("measure", "%s frame_counter_delta=%d fps_frame_counter=%.4f game_ticks_per_frame=%.4f mean_steps_per_frame=%.1f", name,
++				framesSeen, float64(framesSeen)/dSec, float64(dGT)/float64(framesSeen), meanInt)
++			if dWait > 0 || len(r.waitLin) > 0 {
++				r.logf("measure", "%s wait_loop_steps=%d busy_steps=%d busy_steps_per_frame=%.0f wait_fraction=%.4f", name,
++					dWait, dSteps-dWait, float64(dSteps-dWait)/float64(framesSeen), float64(dWait)/float64(dSteps))
++			}
++		}
++		r.drainPorts()
++		r.logf("measure", "%s page_flips=%d fps_page_flips=%.4f port42_writes=%d port388_writes=%d", name, dFlips, float64(dFlips)/dSec, r.portCount[0x42]-pc0[0x42], r.portCount[0x388]-pc0[0x388])
++		for k, v := range r.handlerEntries {
++			dh := v - h0[k]
++			r.logf("measure", "%s pc_hits lin=%05X count=%d", name, k, dh)
++		}
++	}
++	return nil
++}
++
++func argFloat(f []string, i int, def float64) (float64, error) {
++	if i >= len(f) {
++		return def, nil
++	}
++	return strconv.ParseFloat(strings.ReplaceAll(f[i], "_", ""), 64)
++}
++
++func (r *rt) where(name string) {
++	c := r.m.CPU
++	lin := uint32(c.Seg[cpu.CS])<<4 + uint32(c.IP)
++	b := make([]byte, 8)
++	for i := range b {
++		b[i] = r.m.Read8(lin + uint32(i))
++	}
++	ida := ""
++	if r.base != 0 && lin >= r.base && lin-r.base < 0x20000 {
++		ida = fmt.Sprintf(" ida=%05X", lin-r.base+idaBase)
++	}
++	r.logf("where", "%s %04X:%04X lin=%05X%s bytes=%s IF=%v SS:SP=%04X:%04X AX=%04X BX=%04X CX=%04X DX=%04X DS=%04X", name,
++		c.Seg[cpu.CS], c.IP, lin, ida, hex.EncodeToString(b), c.Flag(cpu.IF), c.Seg[cpu.SS], c.R[cpu.SP],
++		c.R[cpu.AX], c.R[cpu.BX], c.R[cpu.CX], c.R[cpu.DX], c.Seg[cpu.DS])
++}

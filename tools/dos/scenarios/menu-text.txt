@@ -1,0 +1,5 @@
+# 文字選單右下角的 AdLib 偵測結果（sub_10A90，INT 60h AX=0 回 1 才是 HAVE ADLIB）。
+step 45_000_000
+bios v
+step 70_000_000
+shot menu_text

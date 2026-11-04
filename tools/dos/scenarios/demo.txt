@@ -1,0 +1,43 @@
+# 展示模式：不送任何鍵，讓標題輪播 DM1、DM2，逐幀記錄遊戲讀到的輸入位元與玩家狀態。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen DM1.LCK 2
+untilvec8
+peekw demo_flag 0x1CFDC
+trace demo1
+until16 0x1CFE2 80 800_000_000
+until16 0x1CFE2 86 800_000_000
+shot d1_f86
+until16 0x1CFE2 90 800_000_000
+shot d1_f90
+until16 0x1CFE2 230 800_000_000
+shot d1_f230
+until16 0x1CFE2 233 800_000_000
+shot d1_f233
+untilframe 640 800_000_000
+shot d1_f640
+peekw frame 0x1CFE2
+peek demo_flag 0x1CFDC 1
+trace off
+secs 3
+shot d1_after
+untilopen DM2.LCK 1 1_200_000_000
+untilvec8
+trace demo2
+until16 0x1CFE2 40 400_000_000
+until16 0x1CFE2 41 400_000_000
+shot d2_f41
+until16 0x1CFE2 44 400_000_000
+shot d2_f44
+until16 0x1CFE2 365 800_000_000
+shot d2_f365
+peekw frame 0x1CFE2
+untilopen A.MIX 3 600_000_000
+peekw frame_after_demo2 0x1CFE2
+trace off

@@ -1,0 +1,15 @@
+# 共用前綴：破解組 intro → 文字選單 V → 密碼畫面（三列各按 Enter）→ BEG1 開場 → 標題 → 按鍵 → J1 過場。
+# 步數是絕對指令數；原版 S.EXE 的破解組 intro 要先累積 250 個垂直回掃才認 int 16h 的鍵。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BD4 1
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1
+secs 3

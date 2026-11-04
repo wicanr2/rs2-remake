@@ -1,0 +1,35 @@
+# Ctrl+W 擷取：平面傾印與 PIC.DA1～DA4 對照；Alt 與 Ctrl 的狀態位元組在實體按住時的值。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+log === Alt 按住期間的狀態位元組（byte_274C3，Ctrl 是 byte_274A8）===
+down alt
+secs 0.4
+peek alt_state 0x274C3 1
+up alt
+secs 0.3
+down ctrl
+secs 0.4
+peek ctrl_state 0x274A8 1
+up ctrl
+secs 0.3
+wrote before
+log === Ctrl+W 短按：W 只按 4 ms，主迴圈每幀（約 110 ms）才輪詢一次，會漏掉 ===
+down ctrl
+secs 0.02
+down w
+secs 0.004
+up w
+up ctrl
+secs 0.5
+wrote after_short_ctrlw
+log === Ctrl+W 按住 0.15 s，擷取完成當下傾印四個平面 ===
+down ctrl
+secs 0.02
+down w
+untilwrote 4
+dumpplanes cap
+secs 0.2
+up w
+up ctrl
+secs 0.5
+wrote after_ctrlw

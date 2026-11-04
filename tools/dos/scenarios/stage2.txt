@@ -1,0 +1,27 @@
+# 第二關：第一關以 Ctrl+C 跳過，自然遊玩第二關到頭目。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+shot s2_start
+include /tools-dos/scenarios/cheat-god.txt
+palwatch on
+watchtick
+watchwait
+measure s2_fps 12.0
+untilframe 150
+shot s2_f150
+untilframe 300
+shot s2_f300
+untilframe 450
+shot s2_f450
+untilframe 600
+shot s2_f600
+untilframe 622
+shot s2_f622
+untilframe 640
+shot s2_boss_a
+secs 8
+shot s2_boss_b
+peekw frame 0x1CFE2
+peekw hp1 0x1CFDE

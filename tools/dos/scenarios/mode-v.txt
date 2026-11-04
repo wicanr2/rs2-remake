@@ -1,0 +1,11 @@
+# VGA 模式（選單按 V）：顯示模式旗標 byte_1CF74／1CF75。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BD4 1
+peek mode_bytes_v 0x1CF74 2

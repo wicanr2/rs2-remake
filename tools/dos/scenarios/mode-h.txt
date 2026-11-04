@@ -1,0 +1,20 @@
+# MGA（Hercules）模式（選單按 H）：冷啟動到第一關開頭，記錄開檔。
+step 45_000_000
+bios v
+step 70_000_000
+tap h
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BDB 1 500_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GOB 1 500_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8
+until16 0x1CFE2 5 400_000_000
+peek mode_bytes 0x1CF74 2
+secs 3

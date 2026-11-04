@@ -1,0 +1,22 @@
+# Ctrl+W 與 Alt+W 擷取畫面、Ctrl+R 回標題（第一關進行中）
+include /tools-dos/scenarios/prefix-to-stage1.txt
+untilframe 10
+peekw frame 0x1CFE2
+log === Ctrl+W ===
+chord ctrl+w 0.4 0.5
+secs 1
+peekw frame 0x1CFE2
+shot hk_after_ctrlw
+log === Alt+W ===
+chord alt+w 0.4 0.5
+secs 1
+peekw frame 0x1CFE2
+shot hk_after_altw
+log === Ctrl+R ===
+chord ctrl+r 0.4 0.2
+secs 0.5
+shot hk_after_ctrlr_a
+secs 6
+shot hk_after_ctrlr_b
+peekw frame 0x1CFE2
+peekw demoflag 0x1CFDC

@@ -1,0 +1,17 @@
+# S 鍵（byte_2684E 切換）與反竄改旗標 byte_273AD 的實測；Ctrl+W 與 Alt+W 各自寫檔。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+peek s_flag_before 0x2684E 1
+peek antitamper_flag 0x273AD 1
+peekw antitamper_ptr 0x273AE
+tap s 0.3 0.3
+peek s_flag_after_1 0x2684E 1
+tap s 0.3 0.3
+peek s_flag_after_2 0x2684E 1
+wrote before
+chord ctrl+w 0.4 0.5
+wrote after_ctrlw
+chord alt+w 0.4 0.5
+wrote after_altw
+peek antitamper_flag 0x273AD 1
+peekw antitamper_ptr 0x273AE

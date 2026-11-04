@@ -1,0 +1,11 @@
+# Ctrl+D 重播音樂：沒有 ASMDRV（byte_10AD4 被改成 retn）時不影響遊戲
+include /tools-dos/scenarios/prefix-to-stage1.txt
+untilframe 10
+watchpc 0x1A7B5
+peekw frame 0x1CFE2
+chord ctrl+d 0.4 0.5
+secs 0.5
+peekw frame 0x1CFE2
+secs 3
+peekw frame 0x1CFE2
+shot hdn_after

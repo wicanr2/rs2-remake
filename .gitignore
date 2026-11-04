@@ -1,0 +1,16 @@
+# 原版素材與所有衍生物不進版控
+*.zip
+original/
+workspace/
+*.i64
+*.id0
+*.id1
+*.id2
+*.nam
+*.til
+
+__pycache__/
+*.pyc
+
+# Rust
+target/

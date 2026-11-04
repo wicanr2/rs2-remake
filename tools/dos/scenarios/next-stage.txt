@@ -1,0 +1,10 @@
+# 在目前這一關按 Ctrl+C，經下一個 J 過場（按空白鍵）進入下一關，等遊戲幀計數從 0 數到 5。
+# 用法：include 前先 `set NEXT=2`（J2.GO／SHT2.GO）。
+chord ctrl+c 0.4 0.1
+untilopen J${NEXT}.GO 1
+secs 3
+shot j${NEXT}_screen
+tap space 0.3 0
+untilopen SHT${NEXT}.GO 1
+untilvec8
+until16 0x1CFE2 5 400_000_000

@@ -1,0 +1,395 @@
+{
+ "archive": {
+  "name": "RS-2_DOS_EN.zip",
+  "size": 614133,
+  "sha256": "4e57219a90f44515f0e907e1f79a820761a0005be44b281d4450ac9ea2ba5004",
+  "entries": 55
+ },
+ "files": [
+  {
+   "name": "A.MIX",
+   "size": 3531,
+   "sha256": "6bff9b44dc94c09b6a92a07da8c59c7e6b05972798bc1ba4ab488b171f5cc545",
+   "zip_mtime": "1990-02-14 00:22:52",
+   "role": "標題音樂"
+  },
+  {
+   "name": "ASMDRV.EXE",
+   "size": 4491,
+   "sha256": "95711483f0e64e65b7c5c7a012459deb3fb0d6ab3c56c07f17d51c5144720168",
+   "zip_mtime": "1990-08-22 09:12:54",
+   "role": "AdLib 音樂驅動 TSR，INT 60h"
+  },
+  {
+   "name": "B.MIX",
+   "size": 6865,
+   "sha256": "89c17de8dcefdae25bfbff1feeab75e6da187bed31d5107e0ea2a2d8da847eba",
+   "zip_mtime": "1980-07-04 07:02:20",
+   "role": "關卡音樂"
+  },
+  {
+   "name": "BEG1.BD1",
+   "size": 20595,
+   "sha256": "d1cdf3fd1f5bb2ed2e5d139e8ed716c1dd6a22a5bafeb7754d3d55bcd00a987d",
+   "zip_mtime": "1980-05-29 06:42:54",
+   "role": "開場彩色圖庫 平面0"
+  },
+  {
+   "name": "BEG1.BD2",
+   "size": 16862,
+   "sha256": "1767a0cd85181f954b7ff3f4cebf7c4bde131d1609b8e6603613836477f09f40",
+   "zip_mtime": "1980-05-29 06:42:56",
+   "role": "開場彩色圖庫 平面1"
+  },
+  {
+   "name": "BEG1.BD3",
+   "size": 20550,
+   "sha256": "4c0cbf9be6d7fc5c5527507fffc0cbee0ac2b986c80dcc690e7259225f85180f",
+   "zip_mtime": "1980-05-29 06:42:56",
+   "role": "開場彩色圖庫 平面2"
+  },
+  {
+   "name": "BEG1.BD4",
+   "size": 21339,
+   "sha256": "25cb15829dc12c4d0a03f5bb6a570a8dd0be868650fcaefd44c0220ab3a9a3fa",
+   "zip_mtime": "1980-05-29 06:42:58",
+   "role": "開場彩色圖庫 平面3"
+  },
+  {
+   "name": "BEG1.BDB",
+   "size": 35243,
+   "sha256": "077be33d74d182aa7bace9137b6ce4e97bd8c963637e699748730679492f6a93",
+   "zip_mtime": "1980-06-27 08:15:34",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "BH1.BDB",
+   "size": 8028,
+   "sha256": "ae0bff90b6508437129f87a426d326fb6167754939755971157ff759ddb503d0",
+   "zip_mtime": "1990-04-24 20:44:38",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "BH1.GO",
+   "size": 14778,
+   "sha256": "e52639c267f54acefdd6c1f1ab8a0b2519accbdd271b750b9939365c0417a3f5",
+   "zip_mtime": "2090-06-05 20:12:04",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "BH2.BDB",
+   "size": 9264,
+   "sha256": "b6fdebe22bad963cb8575c0f082ced72c7ddc09915622159ab99af902748bb3e",
+   "zip_mtime": "1990-04-22 20:53:00",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "BH2.GO",
+   "size": 14900,
+   "sha256": "30a98aea79e0d9780a89b661824f5eeba8b7afb98a079630d2c9d341a762ccee",
+   "zip_mtime": "2090-06-05 20:31:22",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "BH4.BDB",
+   "size": 7897,
+   "sha256": "f3f06b639c6112f943f0ca0b96230dc2b23b96583974dd7cf66f9b317766d79c",
+   "zip_mtime": "1980-06-20 02:12:22",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "BH4.GO",
+   "size": 15217,
+   "sha256": "b8a28e8e3fa6da6a8f238b4e928f172c156d8508c1863414613dc291d6d8dc04",
+   "zip_mtime": "1980-06-14 03:48:06",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "DM1.LCK",
+   "size": 3000,
+   "sha256": "610650d996f2746c4344117142d7d44655b40cc7cb2067e7ae899678ea0ee5d0",
+   "zip_mtime": "1990-03-28 16:23:10",
+   "role": "展示模式輸入錄影，第一關"
+  },
+  {
+   "name": "DM2.LCK",
+   "size": 3000,
+   "sha256": "fa53561144adee07052f12d8ed71d1e55d7258538f1d238d38755885f244ef83",
+   "zip_mtime": "1990-05-02 20:16:16",
+   "role": "展示模式輸入錄影，第二關"
+  },
+  {
+   "name": "FILE_ID.DIZ",
+   "size": 28,
+   "sha256": "3fb455b8e8ec3a13b9f65d600b31892f328f1c7f8260a34249285a5a9227a779",
+   "zip_mtime": "1998-05-16 22:24:46",
+   "role": "BBS 發行標示（非原版）"
+  },
+  {
+   "name": "J1.GO",
+   "size": 25993,
+   "sha256": "79d75fab23b2c678d28bd4083f75111f8aa26626b1b6f3bd8db3698a0093b8b8",
+   "zip_mtime": "2090-06-05 21:06:08",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "J1.GOB",
+   "size": 13882,
+   "sha256": "6f091dfe397cf97b441d4972e584306fca26eb552c986fe61f97476211f3d26f",
+   "zip_mtime": "1980-06-19 07:50:40",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "J2.GO",
+   "size": 18085,
+   "sha256": "96d22c0de4b7049e3813550cfe17ca5d26fd666b7cdb8e98102239aa5d8f320a",
+   "zip_mtime": "2090-06-05 21:01:06",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "J2.GOB",
+   "size": 9965,
+   "sha256": "4c854ce091a03ad31d63bec13a13fc1f9bff3c9f8deb51e5a1c7632ac6eed605",
+   "zip_mtime": "1980-06-19 08:12:34",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "J3.GO",
+   "size": 15186,
+   "sha256": "80199e42faa231c5d5ad96bf4833c389b41823185f6ca3edc055233810ae7df3",
+   "zip_mtime": "2090-06-05 21:02:58",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "J3.GOB",
+   "size": 8922,
+   "sha256": "409cdcae97e5988eebc612f8fa247ec679cc9b61265d7ae903c2d7ab9803aa2f",
+   "zip_mtime": "1980-06-19 08:28:04",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "J4.GO",
+   "size": 22205,
+   "sha256": "7c8dcf195ecf61cc154231066c4d4d76d87e0f32010f46abd66d9f5ab93d22dc",
+   "zip_mtime": "2090-06-05 21:05:36",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "J4.GOB",
+   "size": 11360,
+   "sha256": "4bae7ead698e534fa21a8b13dc2c7b80b1efed545c1977f52c3041afecd489b7",
+   "zip_mtime": "1980-06-19 10:01:20",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "JGAME.EXE",
+   "size": 13856,
+   "sha256": "f79cd5fa928dfc275b4a397c99e8c1001c9d1b95e3704a6ed7d6209de457ce3f",
+   "zip_mtime": "1990-08-12 16:49:16",
+   "role": "大宇 JOYMOUSE 按鍵設定工具 Ver 1.50"
+  },
+  {
+   "name": "JOYMOUSE.CFG",
+   "size": 10,
+   "sha256": "63579bde9a183fdae9ff92530ba265ef23561ef4d76db4235cad61de0c07cace",
+   "zip_mtime": "1990-08-12 12:34:44",
+   "role": "JOYMOUSE 介面卡設定"
+  },
+  {
+   "name": "MAP.BDB",
+   "size": 25110,
+   "sha256": "472be4406153c7e354f00364887a562f5684705c5d9dbcb2655262b7933393d8",
+   "zip_mtime": "1990-05-06 15:26:30",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "MAP.GO",
+   "size": 54189,
+   "sha256": "895ac5550c46363d7271924174e4a74a751ce67a2ab922c256b90509be79ce28",
+   "zip_mtime": "2090-06-05 20:27:26",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "MY.BDB",
+   "size": 21779,
+   "sha256": "c2886e6a8ab577f0292cf004601ed5ae56a906767092af40ed04dc87210c1102",
+   "zip_mtime": "1980-06-27 09:29:50",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "MY.GO",
+   "size": 47430,
+   "sha256": "0ee566a1de718835c891be31558ea0a372ce8b54b9c86a4781a11d3c7407ec44",
+   "zip_mtime": "1980-06-27 02:17:14",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "MYB.BDT",
+   "size": 9536,
+   "sha256": "97694cf45afc304e4109b3494523ef04071aa23ccc49b11c83ae8eb89fcd1afa",
+   "zip_mtime": "1990-04-23 23:00:26",
+   "role": "主角共用圖庫遮罩（CGA/MGA）"
+  },
+  {
+   "name": "RS2.BAT",
+   "size": 33,
+   "sha256": "f0e0584d930f5f16b807ca9836c32cce38eba46fabea65f82c16450f399bf051",
+   "zip_mtime": "1990-10-01 10:23:58",
+   "role": "啟動批次檔"
+  },
+  {
+   "name": "RS2.JOY",
+   "size": 20,
+   "sha256": "90982098362527bc683ae0d92937fe72c667d37f52fe3125c6d30c48c63b6f19",
+   "zip_mtime": "1990-08-22 02:55:00",
+   "role": "JGAME 的 RS-2 按鍵對照資料"
+  },
+  {
+   "name": "S.EXE",
+   "size": 47467,
+   "sha256": "a7445e9cbe1ecb5fb33cbcad84f54e00ed07757d8ce1da57f9aad2d686b2ea3f",
+   "zip_mtime": "1990-10-15 21:02:30",
+   "role": "遊戲主程式（兩層 LZEXE，含破解組 intro，見 docs/re/01-boot-chain.md）"
+  },
+  {
+   "name": "SEN.EXE",
+   "size": 4142,
+   "sha256": "887f294b0c983c60a6e0f1ef5748d2887a8b2764c473e23bfc9d1568559c9141",
+   "zip_mtime": "1990-10-01 10:33:16",
+   "role": "第三方破解 TSR（非原版）"
+  },
+  {
+   "name": "SEN.PAS",
+   "size": 3126,
+   "sha256": "fedc883c07f9a486eac1b989b823d652814198ceefba0d727ef8b635e54662e0",
+   "zip_mtime": "1990-10-01 10:29:10",
+   "role": "SEN.EXE 的 Turbo Pascal 原始碼（非原版）"
+  },
+  {
+   "name": "SHT.SCN",
+   "size": 9349,
+   "sha256": "3c64ca68d5add5f30534f05b105904270cae54435a78252fd2f9c7368ca29f93",
+   "zip_mtime": "1990-02-05 18:31:56",
+   "role": "第三關地圖（VGA/EGA）"
+  },
+  {
+   "name": "SHT.SCR",
+   "size": 9260,
+   "sha256": "1dd20dc60b3c224343f6ed3d866ae0b1e81fee8365290b75cba35a6e04bcdb37",
+   "zip_mtime": "1990-05-06 15:46:56",
+   "role": "第三關地圖（CGA/MGA）"
+  },
+  {
+   "name": "SHT1.BDB",
+   "size": 20864,
+   "sha256": "990bcb4ec96fe5a4bade14122f4b2b198400f1d073d6d754ff19079e5311fc7f",
+   "zip_mtime": "1980-05-18 15:31:44",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT1.BDH",
+   "size": 6321,
+   "sha256": "56d4c67de04e454f0b84d117f2f321278cd278ca1d96a4f445fcb464dda6f03e",
+   "zip_mtime": "1980-05-18 15:32:56",
+   "role": "單色遮罩庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT1.GO",
+   "size": 48673,
+   "sha256": "0c2a1a66a126a7307e1f07c62ac8e560c96def7c52781dd9f57d432641ce043d",
+   "zip_mtime": "2090-06-04 23:28:56",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "SHT2.BDB",
+   "size": 26366,
+   "sha256": "e5d88af552b6804fdc3b274bd137d39b36786cf331a8b319a322ba6020288e67",
+   "zip_mtime": "1980-05-17 21:08:48",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT2.BDH",
+   "size": 5751,
+   "sha256": "a67745236dede25261e07bd4afa2011e6e713fc37d1c6c5049a58c1d3e05c5a5",
+   "zip_mtime": "1980-05-17 21:09:38",
+   "role": "單色遮罩庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT2.GO",
+   "size": 60322,
+   "sha256": "4a5ec94fe40a42edee814b2fdf1f50f7bf45c6b9bc224fc55bd42d92ad058921",
+   "zip_mtime": "2090-06-05 00:00:56",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "SHT3.BDB",
+   "size": 18558,
+   "sha256": "df4a9fc550e63577280258af8e85f89a3b14fda0bb8e828cc486b13e5eeedc84",
+   "zip_mtime": "1980-05-16 20:54:34",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT3.BDH",
+   "size": 7695,
+   "sha256": "44e405468f8d27121ad7aeded2d00af09fbe4d0ec7a6e20f934d1f68657f7c5c",
+   "zip_mtime": "1980-05-16 20:55:46",
+   "role": "單色遮罩庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT3.GO",
+   "size": 44869,
+   "sha256": "b1f512d26cc2ef24c13eea77564c828cae797e99ede47d13067a825fe4baa8f8",
+   "zip_mtime": "2090-06-05 00:03:08",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "SHT4.BDB",
+   "size": 29465,
+   "sha256": "93be3ee4b3a7af1a7714cc5368a483ed1705de5688fba74a757065a6949b84a3",
+   "zip_mtime": "1980-06-20 08:46:26",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT4.BDH",
+   "size": 16242,
+   "sha256": "51d52369678ec46de497c4bd79c3f8eb39137f0c6d93f7649ba72d2e5ec34a40",
+   "zip_mtime": "1980-06-20 09:10:32",
+   "role": "單色遮罩庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT4.GO",
+   "size": 63988,
+   "sha256": "ff2aaefcf4ce74d91bc7b199718d9a6355d5f94b14939e112a357a29a8663973",
+   "zip_mtime": "1980-06-14 03:48:10",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  },
+  {
+   "name": "SHT4.GOT",
+   "size": 12709,
+   "sha256": "f5357c3a08f68178cd8e21a8da8e52f12ba4f8f4dcada14090b8438d19987657",
+   "zip_mtime": "1980-06-01 03:17:24",
+   "role": "第四關遮罩庫（VGA/EGA）"
+  },
+  {
+   "name": "SHT5.BDB",
+   "size": 20671,
+   "sha256": "1bb97797284307c04e606754a89ae0953538af8ac8364ecf4e2c20a26ef72083",
+   "zip_mtime": "1980-06-28 05:06:38",
+   "role": "單色圖庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT5.BDH",
+   "size": 1259,
+   "sha256": "7b1b076665b536a2e45e3332176f26690223e29930dcdb910337dea5bdbc7890",
+   "zip_mtime": "1980-06-28 07:11:38",
+   "role": "單色遮罩庫（CGA/MGA）"
+  },
+  {
+   "name": "SHT5.GO",
+   "size": 41884,
+   "sha256": "007612c38aafa3b64e6a28488da9353fd6f8e64a76405731951f57802e644ac8",
+   "zip_mtime": "1980-06-28 07:12:22",
+   "role": "彩色圖庫（VGA/EGA 四平面）"
+  }
+ ]
+}
