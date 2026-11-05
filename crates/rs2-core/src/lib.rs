@@ -25,5 +25,5 @@ mod video;
 
 pub use draw::{AudioCmd, BegGroup, BlitCmd, DrawCmd, MixFile, ObjId, Op, Pool, ShtGroup};
 pub use dseg::{Dseg, a};
-pub use game::{A0_EXEMPT, Core, DS_EXEMPT, Entry, Exit, Fixes, Frame, Game, GameFiles, Input, PlayerStatus, Start, boot_ds, boot_ds_with_dm1, ds_exempt};
+pub use game::{A0_EXEMPT, Core, DS_EXEMPT, Entry, Exit, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Start, boot_ds, boot_ds_with_dm1, ds_exempt};
 pub use regs::Regs;

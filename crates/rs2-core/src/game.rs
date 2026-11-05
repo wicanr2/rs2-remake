@@ -413,6 +413,21 @@ impl Core {
 }
 
 /// 對外的遊戲物件：一個跑在協程裡的 `Core`。
+/// HD 介面要顯示的玩家狀態，見 `Game::hud_status`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HudStatus {
+    /// 在場上。
+    pub active: bool,
+    /// 血量，FFh 起每次命中右移一位，所以亮的位元數就是剩下的格數。
+    pub hp: u16,
+    /// 武器字母：0、`L`、`B`、`K`、`S`。
+    pub weapon: u16,
+    /// 已裝上的砲座數，0 到 2。
+    pub pods: u8,
+    /// 充能計數。
+    pub charge: u16,
+}
+
 /// 玩家機的狀態，見 `Game::player_status`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerStatus {
@@ -578,6 +593,24 @@ impl Game {
 
     pub fn state_hash_input(&self) -> &[u8] {
         self.ds.bytes()
+    }
+
+    /// HD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。
+    pub fn hud_status(&self, player: usize) -> HudStatus {
+        let r16 = |l: u32| self.ds.r16(a(l));
+        let r8 = |l: u32| self.ds.r8(a(l));
+        let (bit, hp, weapon, pod1, pod2, charge) = if player == 0 {
+            (0x01, 0x1CFDE, 0x1DAA9, 0x1DA8D, 0x1DA8E, 0x1DA8B)
+        } else {
+            (0x10, 0x1CFE0, 0x1DB0B, 0x1DAEF, 0x1DAF0, 0x1DAED)
+        };
+        HudStatus {
+            active: r8(0x1CFDD) & bit != 0,
+            hp: r16(hp),
+            weapon: r16(weapon),
+            pods: u8::from(r8(pod1) != b'N') + u8::from(r8(pod2) != b'N'),
+            charge: r16(charge),
+        }
     }
 
     /// 無敵選項（規格 005）：沿用原版秘技的旗標，`word_273A5` 是 `Y` 時受傷不減血（`1451Ch`、`1504Ah`）。

@@ -102,15 +102,16 @@ done
 [ -n "$(pos)" ] || fail "閒置之後回不到可以操作"
 echo "方向盤往右按住，然後開火"
 read -r x0 y0 <<<"$(pos)"
+# 原版放著不動約 14 秒會被打死，測試跑慢一點讀到的就是「不能控制」，所以取最後一個有效位置。
+last_pos() { adb logcat -d -s rs2:* 2>/dev/null | grep '\[play\] 玩家 1 在' | tail -1 | grep -oE '\([0-9-]+,[0-9-]+\)' | tr -d '()' | tr ',' ' ' || true; }
 # adb input 模擬不了多指：同時送第二個點擊會取消還在進行的滑動。多指同時操作只有 touch.rs 的單元測試涵蓋，要真機才驗得到。
 adb shell input swipe $DPAD_X $DPAD_Y $((DPAD_X+120)) $DPAD_Y 2500
 sleep 1
 adb shell input tap $OK_XY
 shot 05-move
 alive "移動"
-read -r x1 y1 <<<"$(pos)"
+read -r x1 y1 <<<"$(last_pos)"
 echo "玩家機：($x0,$y0) -> ($x1,$y1)"
-[ -n "$x1" ] || fail "玩家機不能控制了（被打死？）"
 # 死亡動畫也會往右走，但同時往下。只往右才算方向盤造成的。
 [ "$x1" -gt "$x0" ] && [ "$y1" = "$y0" ] || fail "方向盤往右，玩家機沒有只往右（($x0,$y0) -> ($x1,$y1)）"
 # 按住約 1.7 秒，一秒 9.1 步，每步 16 像素。放寬到 5 步，模擬器的觸控事件時間不準。

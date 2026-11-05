@@ -229,3 +229,13 @@
 - `docs/re/11` 第 7.2 節寫 `3647h` 至 `3719h` 有 16 個未使用樣板，實際是 8 個（間隔 1Eh），已改。
 - `tools/worktree_data.sh` 第一版把 `workspace/extracted` 做成符號連結，也沒帶 `RS2_OUT` 的參考檔，容器內讀不到，`verify` 失敗。敵彈代理手動補救後回報，腳本已修。
 - 工具列代理在主機跑過一次 `python3`（只印一行字串）。
+
+### 玩家彈領域（2026-11-05，同日）
+
+- `pbullet.rs` 重寫，狀態進 `PlayerBullets`，`tools/rust.sh verify` exit 0。變異測試 4 項都分歧，暫存器 poison 測試仍全過。第一關背景與實體繪製原封不動搬到 `stage1_bg.rs`。代理的筆記在 `workspace/progress/rewrite-pbullet.md`。
+- `pb_spawned` 從 `Core` 刪除，改成 `fire_player_bullets` 的區域變數，它只在一次發射內有意義。
+- 自動清理的 worktree：代理第一次因基準太舊停下來回報時，它的 worktree 沒有修改，被自動清掉了。之後由主代理手動開 worktree，基準才不會落後（`isolation: worktree` 取的是遠端的 `main`）。
+
+勘誤（`docs/re/11`，已改）：第 5.2 節的列範圍只對列號小於 14h 成立；第 5.3 節的 G4 檢查不限第三關，雷射一定播命中特效；第 6.4 節 w2 單位是位元組，表漏了 w8；第 6.5 節比到左邊不更新距離；第 7.1 節 w2 單位同上，表漏了 w6，沒寫敵彈 G3 的寫法。
+
+執行邊界：玩家彈代理在主機跑過一次 `python3 --version`。
