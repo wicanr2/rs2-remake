@@ -21,7 +21,7 @@
 //! - PC 喇叭附帶音。原版只有 E 的特效 blit 驅動喇叭，CGA、MGA 沒有，所以單色模式不產生 `AudioMsg::Speaker`。
 
 use rs2_audio::{SfxKind, SpkEv};
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Start, boot_ds_with_dm1};
+use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Rules, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, MonoAssets, MonoHdSink, MonoKind, MonoSink, RenderOpts, VgaSink};
@@ -187,6 +187,8 @@ pub struct Session {
     ticks: u16,
     /// 上一步沒有繪製命令（輪詢、暫停），畫面停在最新一幀，不補間。
     hold: bool,
+    /// 目前交給核心的強化選項。
+    rules: Rules,
     /// 喇叭閘門函式沒有被改成 `retn`。
     speaker_on: bool,
     assets: Assets,
@@ -281,6 +283,7 @@ impl Session {
             steps: 0,
             ticks: 0,
             hold: false,
+            rules: Rules::ORIGINAL,
             speaker_on: true,
             assets,
             audio: Vec::new(),
@@ -569,6 +572,14 @@ impl Session {
                     Fit::SD
                 }
             }
+        }
+    }
+
+    /// 強化選項（規格 005）：變動時才交給核心，全關時不碰模擬。
+    pub fn set_rules(&mut self, rules: Rules) {
+        if self.rules != rules {
+            self.rules = rules;
+            self.game.set_rules(rules);
         }
     }
 

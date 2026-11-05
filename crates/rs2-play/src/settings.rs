@@ -13,7 +13,8 @@
 
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
 use crate::mode::DisplayMode;
-use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS};
+use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS, index_of};
+use rs2_core::Rules;
 use crate::resources::{Env, Os, non_empty};
 use crate::ui::text;
 use std::io::Write;
@@ -104,6 +105,24 @@ impl Settings {
     /// 打擊回饋開著（只在 HD 畫面生效）。
     pub fn hit_feedback(&self) -> bool {
         self.opts.get(HIT_FEEDBACK_INDEX) != 0
+    }
+
+    /// 交給核心的強化選項。沒實作的選項一律算關，把 `options.rs` 那一列的 `implemented` 打開才生效。
+    pub fn rules(&self) -> Rules {
+        let on = |id: &str| {
+            let i = index_of(id).expect("選項表沒有這個 id");
+            OPTIONS[i].implemented && self.opt_value(i) != 0
+        };
+        Rules {
+            wave_charge: on("wave_charge"),
+            auto_fire: on("auto_fire"),
+            force_pod: on("force_pod"),
+            fine_step: on("fine_step"),
+            ai_aim: on("ai_aim"),
+            ai_fire: on("ai_fire"),
+            ai_react: on("ai_react"),
+            ai_boss: on("ai_boss"),
+        }
     }
 
     /// 有「已實作而且改變規則」的選項開著。沒實作的選項值再怎麼寫都不算，因為它不會生效。
@@ -369,6 +388,21 @@ mod tests {
         assert_eq!(s.keys, KeyMap::default());
         assert_eq!(s.pad, PadMap::default());
         assert_eq!(s.opts, Options::default());
+    }
+
+    #[test]
+    fn rules_follow_implemented_options_only() {
+        let mut st = Settings::default();
+        assert_eq!(st.rules(), Rules::ORIGINAL, "預設全關");
+        for (i, o) in OPTIONS.iter().enumerate() {
+            if o.kind == options::Kind::Toggle && o.changes_rules {
+                st.set_opt_value(i, 1);
+            }
+        }
+        let want = |id: &str| OPTIONS[index_of(id).unwrap()].implemented;
+        let r = st.rules();
+        assert_eq!(r.wave_charge, want("wave_charge"));
+        assert_eq!(r.ai_boss, want("ai_boss"));
     }
 
     #[test]

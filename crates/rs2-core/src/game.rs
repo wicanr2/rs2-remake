@@ -32,6 +32,32 @@ impl Fixes {
     pub const ALL: Fixes = Fixes { bullet_slot_carry: true, armor_cell_index: true, seeker_spawn_leak: true, no_hit_hang: true };
 }
 
+/// 改變規則的強化選項（規格 005）。全關等於原版，對拍永遠全關。不屬於原版狀態，不進資料段。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rules {
+    pub wave_charge: bool,
+    pub auto_fire: bool,
+    pub force_pod: bool,
+    pub fine_step: bool,
+    pub ai_aim: bool,
+    pub ai_fire: bool,
+    pub ai_react: bool,
+    pub ai_boss: bool,
+}
+
+impl Rules {
+    pub const ORIGINAL: Rules = Rules {
+        wave_charge: false,
+        auto_fire: false,
+        force_pod: false,
+        fine_step: false,
+        ai_aim: false,
+        ai_fire: false,
+        ai_react: false,
+        ai_boss: false,
+    };
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
     Demo,
@@ -300,6 +326,10 @@ pub(crate) struct Port {
     audio: Vec<AudioCmd>,
     /// 第三關進場時讀 `SHT.SCR`（單色，C、H）而不是 `SHT.SCN`（E）。不屬於原版狀態，由前端在進第三關之前設定。
     pub(crate) terrain_scr: bool,
+    /// 強化選項，見 [`Rules`]。
+    pub(crate) rules: Rules,
+    /// 砲座分離鍵按著（規格 005「砲座像 Force」）。沒有原版掃描碼，不走按鍵表。
+    pub(crate) split_held: [bool; 2],
 }
 
 struct YieldOnce(bool);
@@ -372,6 +402,8 @@ impl Core {
             display_start: None,
             audio: Vec::new(),
             terrain_scr: false,
+            rules: Rules::ORIGINAL,
+            split_held: [false; 2],
         };
         let mut g = Core {
             ds,
@@ -614,6 +646,18 @@ impl Game {
     /// 第三關進場（`sub_13A51`）時讀取，所以進場之後再設不生效：一局裡每個第三關各用進場當下的選擇。
     pub fn set_terrain_scr(&mut self, on: bool) {
         self.port.borrow_mut().terrain_scr = on;
+    }
+
+    /// 強化選項（規格 005）。開著時立刻生效，每次變動呼叫一次。全關時模擬與原版逐位元組相同。
+    pub fn set_rules(&mut self, rules: Rules) {
+        self.port.borrow_mut().rules = rules;
+    }
+
+    /// 砲座分離鍵按著（規格 005「砲座像 Force」）。`player` 是 0 或 1，其他值忽略。
+    pub fn set_split_held(&mut self, player: usize, held: bool) {
+        if let Some(h) = self.port.borrow_mut().split_held.get_mut(player) {
+            *h = held;
+        }
     }
 
     fn poll_once(&mut self) -> Poll<Exit> {

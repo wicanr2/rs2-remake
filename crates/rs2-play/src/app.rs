@@ -338,6 +338,7 @@ fn sync_session(session: &mut Session, ctl: &Controls) {
     session.set_view(ctl.view());
     session.set_hud_flags(ctl.hud_flags());
     session.set_hit_feedback(ctl.settings.hit_feedback());
+    session.set_rules(ctl.settings.rules());
 }
 
 // ---------------------------------------------------------------------------
