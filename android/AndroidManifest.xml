@@ -35,12 +35,13 @@
             </intent-filter>
         </activity>
 
-        <!-- 工具列的 ABOUT：遊戲用 SDL_OpenURL 開 rs2about://license，不必寫 JNI。 -->
+        <!-- 工具列的 ABOUT：遊戲用 SDL_OpenURL 開 rs2about://license，不必寫 JNI。
+             Android 14 起隱式 Intent 到不了未匯出的 Activity，所以要 exported，它只顯示授權全文。 -->
         <activity
             android:name=".AboutActivity"
             android:label="@string/about_title"
             android:theme="@android:style/Theme.Material"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />

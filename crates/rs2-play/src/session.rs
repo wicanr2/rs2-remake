@@ -149,6 +149,12 @@ impl Session {
         }
     }
 
+    /// 玩家 1 的邏輯位置（邏輯像素）。不在畫面上時是 `None`。
+    pub fn player_pos(&self) -> Option<(i32, i32)> {
+        let st = self.game.player_status(0);
+        self.playable(0).then_some((st.x as i32 * 8, st.y as i32))
+    }
+
     /// 有玩家機在畫面上而且可以控制，觸控層用它決定右手兩顆鈕的作用。
     pub fn in_play(&self) -> bool {
         self.playable(0) || self.playable(1)
@@ -429,6 +435,90 @@ mod tests {
             assert!(st.0 > 0);
             assert!(st.2 * 50 <= st.0, "不符超過 2%：{stats:?}");
         }
+    }
+
+    /// 示範錄影在開車的時候不算可以控制：不按鍵從標題一路跑，玩家機動了就不能是 playable。
+    #[test]
+    #[ignore]
+    fn d5_demo_is_not_playable() {
+        let mut s = open(Begin::Title, VIEW);
+        let (mut playable_steps, mut drawn_steps, mut moved_in_demo) = (0u32, 0u32, 0u32);
+        let mut last = None;
+        for _ in 0..6000 {
+            if let Outcome::Ended(_) = s.step(&[]) {
+                break;
+            }
+            let st = s.game.player_status(0);
+            let flag = s.game.state_hash_input()[rs2_core::a(0x1CFDC) as usize];
+            if s.player_drawn[0] {
+                drawn_steps += 1;
+                if last.is_some_and(|l| l != (st.x, st.y)) {
+                    moved_in_demo += 1;
+                }
+                last = Some((st.x, st.y));
+            }
+            if s.playable(0) {
+                playable_steps += 1;
+                if playable_steps <= 3 {
+                    eprintln!("[d5] 可控制：位置 ({},{})，byte_1CFDC = {flag:#x}，步 {}", st.x, st.y, s.steps());
+                }
+            }
+        }
+        eprintln!("[d5] 畫了玩家機 {drawn_steps} 步，其中移動 {moved_in_demo} 次，判為可控制 {playable_steps} 步");
+        assert!(drawn_steps > 100, "這段要涵蓋示範錄影");
+        assert!(moved_in_demo > 0, "示範錄影要真的有移動");
+        assert_eq!(playable_steps, 0, "沒有按任何鍵，不應該有可控制的步");
+    }
+
+    /// 真的開始遊戲，之後不按任何鍵：可以控制的期間玩家機不動。
+    /// 原版放著不動約在幀 129 被打死，死亡動畫（`sub_14679`）每幀往下往右走，那段不算可以控制，預測不能跟著猜。
+    #[test]
+    #[ignore]
+    fn d6_no_input_means_no_motion() {
+        let mut s = open(Begin::Title, VIEW);
+        let mut last: Option<(i16, i16)> = None;
+        let (mut steps_in_play, mut moves) = (0u32, 0u32);
+        let mut idle = 0u32;
+        let mut hold_release: Vec<u8> = Vec::new();
+        for _ in 0..4000 {
+            let mut sc = std::mem::take(&mut hold_release);
+            if !s.playable(0) && steps_in_play == 0 {
+                idle += 1;
+                if idle % 40 == 0 {
+                    sc.push(0x39);
+                    hold_release.push(0xB9);
+                }
+            }
+            if let Outcome::Ended(_) = s.step(&sc) {
+                break;
+            }
+            if s.playable(0) {
+                steps_in_play += 1;
+                let st = s.game.player_status(0);
+                let pos = (st.x, st.y);
+                if last.is_some_and(|l| l != pos) {
+                    moves += 1;
+                    if moves <= 4 {
+                        let d = s.game.state_hash_input();
+                        let k = |l: u32| d[rs2_core::a(l) as usize];
+                        eprintln!(
+                            "[d6] 可控制第 {steps_in_play} 步移動到 ({},{})：274DA {:#x} 274DB {:#x} 274DC {:#x} 1CFDC {:#x} 1CFDD {:#x} 1CFAD {:#x} 幀 {}",
+                            st.x, st.y, k(0x274DA), k(0x274DB), k(0x274DC), k(0x1CFDC), k(0x1CFDD), k(0x1CFAD),
+                            u16::from_le_bytes([d[0x422], d[0x423]])
+                        );
+                    }
+                }
+                last = Some(pos);
+            } else if steps_in_play > 0 {
+                let st = s.game.player_status(0);
+                eprintln!("[d6] 第 {steps_in_play} 步後不再可控制，位置 ({},{})", st.x, st.y);
+                assert!(s.predictor.offset_hd(0).is_none(), "不能控制時要清掉預測");
+                break;
+            }
+        }
+        eprintln!("[d6] 可控制 {steps_in_play} 步，移動 {moves} 次");
+        assert!(steps_in_play > 100);
+        assert_eq!(moves, 0, "沒有按鍵，玩家機不該動");
     }
 
     /// 按鍵之後下一次繪製玩家機就動，只有玩家機周圍的像素改變。

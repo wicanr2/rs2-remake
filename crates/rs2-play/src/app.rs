@@ -448,6 +448,10 @@ fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
 /// 手把事件交給鍵盤對照。
 fn feed_pad(events: Vec<PadEvent>, mapper: &mut InputMapper, t_us: u64) {
     for e in events {
+        // Android 沒有別的地方看得到輸入，煙霧測試與回報問題都靠這行。
+        if cfg!(target_os = "android") {
+            eprintln!("[輸入] {e:?}");
+        }
         match e {
             PadEvent::Down(k) => {
                 mapper.key_down(k, false, t_us);
@@ -587,6 +591,10 @@ fn window_loop<'a>(
     let frame_budget = Duration::from_micros(16_000);
     let mut replay_note = !cx.replay.is_empty();
     let mut last_draw = timer.performance_counter();
+    let mut logged_pos: Option<(i32, i32)> = None;
+    // 手機上每 5 秒記一次實際速度。邏輯應該是一秒 9.1 步，繪製跟螢幕更新率。
+    let mut perf_t = Instant::now();
+    let mut perf_base = (0u64, 0u64, 0u64, 0u64);
 
     'main: loop {
         let iter_start = Instant::now();
@@ -628,9 +636,24 @@ fn window_loop<'a>(
                     feed_pad(pads.detach(which), &mut mapper, t_us);
                     opened.retain(|c| c.instance_id() != which);
                 }
-                Event::ControllerButtonDown { which, button, .. } => feed_pad(pads.button(which, button, true), &mut mapper, t_us),
-                Event::ControllerButtonUp { which, button, .. } => feed_pad(pads.button(which, button, false), &mut mapper, t_us),
-                Event::ControllerAxisMotion { which, axis, value, .. } => feed_pad(pads.axis(which, axis, value), &mut mapper, t_us),
+                Event::ControllerButtonDown { which, button, .. } => {
+                    if cfg!(target_os = "android") {
+                        eprintln!("[手把事件] {which} 按下 {button:?}");
+                    }
+                    feed_pad(pads.button(which, button, true), &mut mapper, t_us)
+                }
+                Event::ControllerButtonUp { which, button, .. } => {
+                    if cfg!(target_os = "android") {
+                        eprintln!("[手把事件] {which} 放開 {button:?}");
+                    }
+                    feed_pad(pads.button(which, button, false), &mut mapper, t_us)
+                }
+                Event::ControllerAxisMotion { which, axis, value, .. } => {
+                    if cfg!(target_os = "android") {
+                        eprintln!("[手把事件] {which} 軸 {axis:?} = {value}");
+                    }
+                    feed_pad(pads.axis(which, axis, value), &mut mapper, t_us)
+                }
                 Event::MouseButtonDown { mouse_btn: MouseButton::Left, x, y, .. } => {
                     let (ww, _) = canvas.output_size()?;
                     if let Some(b) = ctl.toolbar().hit(ww, x, y) {
@@ -739,6 +762,30 @@ fn window_loop<'a>(
             }
         }
         log_missing(&mut session);
+        if ctl.mobile {
+            let elapsed = perf_t.elapsed().as_secs_f32();
+            if elapsed >= 5.0 {
+                let (steps, renders, render_us, present_us) = (stats.steps - perf_base.0, stats.renders - perf_base.1, stats.render_us - perf_base.2, stats.present_us - perf_base.3);
+                eprintln!(
+                    "[perf] {:.1} 步/秒，{:.1} 幀/秒，render {:.1} ms，貼圖加 present {:.1} ms",
+                    steps as f32 / elapsed,
+                    renders as f32 / elapsed,
+                    render_us as f32 / renders.max(1) as f32 / 1000.0,
+                    present_us as f32 / renders.max(1) as f32 / 1000.0,
+                );
+                perf_t = Instant::now();
+                perf_base = (stats.steps, stats.renders, stats.render_us, stats.present_us);
+            }
+            // Android 的煙霧測試從 logcat 確認觸控真的移動了玩家機。
+            let pos = session.player_pos();
+            if pos != logged_pos {
+                match pos {
+                    Some((x, y)) => eprintln!("[play] 玩家 1 在 ({x},{y})"),
+                    None => eprintln!("[play] 玩家 1 不能控制"),
+                }
+                logged_pos = pos;
+            }
+        }
 
         if pending_shot.is_none() {
             if let Some(i) = shots.iter().position(|(n, _)| *n <= session.steps()) {

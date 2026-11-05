@@ -387,7 +387,7 @@ pub struct PlayerStatus {
     pub x: i16,
     /// 上緣，單位是列。
     pub y: i16,
-    /// 玩家的按鍵會移動它：還活著、不是示範、玩家邏輯有在跑。
+    /// 玩家的按鍵會移動它：在場上、血量不是 0、不是示範、玩家邏輯有在跑。
     pub controllable: bool,
     pub can_up: bool,
     pub can_down: bool,
@@ -559,17 +559,18 @@ impl Game {
     pub fn player_status(&self, player: usize) -> PlayerStatus {
         let r16 = |l: u32| self.ds.r16(a(l));
         let r8 = |l: u32| self.ds.r8(a(l));
-        let (bit, y, x, row, col) = if player == 0 {
-            (0x01, 0x1DAC5, 0x1DAC7, 0x1DAC9, 0x1DACB)
+        let (bit, y, x, row, col, hp) = if player == 0 {
+            (0x01, 0x1DAC5, 0x1DAC7, 0x1DAC9, 0x1DACB, 0x1CFDE)
         } else {
-            (0x10, 0x1DB1F, 0x1DB21, 0x1DB37, 0x1DB39)
+            (0x10, 0x1DB1F, 0x1DB21, 0x1DB37, 0x1DB39, 0x1CFE0)
         };
         let (row, col) = (r16(row), r16(col));
         PlayerStatus {
             x: r16(x) as i16,
             y: r16(y) as i16,
-            // `byte_1CFDD` 的玩家位元：還活著。`byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
-            controllable: r8(0x1CFDD) & bit != 0 && r8(0x1CFDC) != b'Y' && r8(0x1CFAD) != b'F',
+            // `byte_1CFDD` 的玩家位元：還在場上。血量 0：死亡動畫中，`sub_14679` 自己往下往右走，不接受輸入。
+            // `byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
+            controllable: r8(0x1CFDD) & bit != 0 && r16(hp) != 0 && r8(0x1CFDC) != b'Y' && r8(0x1CFAD) != b'F',
             can_up: (row as i16) > 0,
             can_down: row < 0x10,
             can_left: (col as i16) > 1,
