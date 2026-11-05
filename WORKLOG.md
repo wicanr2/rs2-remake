@@ -290,3 +290,12 @@ Android 煙霧測試第二次啟動的失敗：
 勘誤（`docs/re/11`，已改）：第 1.3 節說 G3 寫奇數位元組，實際第 0 列第 0 欄在偶數位址 `964Eh`。第 9.6 節的玩家 2 輸入只寫四鍵，實際八鍵；錄影只有玩家 1；第 5.1、5.5、6.2、9.4 節補上掃描窗、無敵閃白、閃光接光柱、尾焰髒格。
 
 執行邊界：玩家代理在主機跑過一次 `python3 --version`，poison 測試用過一次 `sed -i`，事前備份，事後 `cmp` 還原。
+
+### 標題與片尾領域（2026-11-05，同日）
+
+- `title.rs` 從 1,538 行縮成 446 行，加 `scene.rs`（步驟字彙）、`intro.rs`、`cards.rs`、`menu.rs`。`verify` exit 0。變異測試 10 項 9 項分歧；`ending_frame` 不呼叫掃描線複製時單色 14 份全過，單色收據沒涵蓋片尾迴圈，位置按機器碼 `142ADh`、`142B1h`、`142B4h` 保留。暫存器 poison 測試全過。
+- 合併時 `set_active_players` 改成走玩家結構，直接寫資料段會在下一次 `store` 被 `Core::pl` 蓋掉。兩邊各定義了一份 `KEY_TABLE`，留一份。
+
+勘誤：`docs/re/12` 第 4.6 節寫片尾是 Ctrl+Q 離開、Ctrl+R 重播，機器碼只比對 Q、R，不看 Ctrl，已改。第 8.4 節補上第二關過場的換位座標。舊 `title.rs` 註解把 `byte_274C4` 稱為「Enter 一類」，實際是空白鍵（39h），`274A7` 才是 Enter（1Ch）。
+
+執行邊界：標題代理改了 `mirror.rs`、`video.rs`、`game.rs`、`lib.rs`，都是新增存取函式與 `DS_EXEMPT`。`run_entry` 對 `Entry::Title`、`Entry::Ending` 改成明確回傳 `Exit::Quit`，抽驗過：所有可達路徑結果相同。

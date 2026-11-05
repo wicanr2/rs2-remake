@@ -2,6 +2,8 @@
 //! 規格：`docs/spec/001-rust-first-stage.md`。
 
 mod boss_scroll;
+mod callconv;
+mod cards;
 pub mod draw;
 pub mod dseg;
 mod ebullet;
@@ -12,10 +14,13 @@ mod flow;
 mod fix_tests;
 mod fx;
 pub mod game;
+mod intro;
 mod loader;
+mod menu;
 mod mirror;
 mod pbullet;
 mod player;
+mod scene;
 mod scenery;
 mod stage1_bg;
 mod stage2;

@@ -56,6 +56,19 @@ impl Core {
         self.ds.w16(a(0x26882), y_px);
     }
 
+    /// 寫繪製位置：欄 `word_26880`、像素列 `word_26882`，不動圖庫索引。暫存區整頁複製（`sub_19D08`）用它當目的位置。
+    pub(crate) fn set_blit_position(&mut self, x: u16, y_px: u16) {
+        self.ds.w16(a(0x26880), x);
+        self.ds.w16(a(0x26882), y_px);
+    }
+
+    /// 寫暫存區複製的來源：來源欄 `word_26864`、來源列 `word_26866`、水平位移 `word_26868`。
+    pub(crate) fn set_blit_source(&mut self, src_x: u16, src_y: u16, shift: u16) {
+        self.ds.w16(a(0x26864), src_x);
+        self.ds.w16(a(0x26866), src_y);
+        self.ds.w16(a(0x26868), shift);
+    }
+
     /// 邏輯寫 `word_2687E`（形狀的寬）。下一個繪製命令把它記成 `stride_reg`。
     pub(crate) fn set_stride_reg(&mut self, v: u16) {
         self.ds.w16(a(0x2687E), v);

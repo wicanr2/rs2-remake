@@ -1,132 +1,76 @@
-//! 片尾。
-//! 逐函式移植自機器碼，查法見 `tools/q.sh`。規格：`docs/spec/002-full-game.md`。
+//! 片尾（原版 `sub_141D0`）。
 //!
-//! 不移植：`sub_142BB`、`sub_143A8` 的 DOS 記憶體配置與釋放（寫入檔名工作區與
-//! `1CF5Ch` 至 `1CF6Eh` 的段落，都在 `A0_EXEMPT`）、`sub_1117F`（E 模式為空）、CGA、MGA、純 EGA 分支。
+//! 先顯示兩張 `SHT5` 圖庫項，各等任意鍵：第 3 項（地景）與第 4 項（人物與行星）。
+//! 接著每幀把第 4 項當背景重畫，再由片尾的時間表（`Timetable::Ending`，幀 1、10、1 共三列）
+//! 生成 END 三個字母的敵人樣板，字母依各自的移動腳本從右側飛入。
+//! 按 Q 離開，按 R 把幀計數歸零重播。這兩個鍵不需要 Ctrl：機器碼只比對按鍵表的 Q 與 R 兩項
+//! （`byte_2749B`、`byte_2749E`，掃描碼 10h、13h）。`docs/re/12-stages-presentation.md` 第 4.6 節寫的是
+//! Ctrl+Q 與 Ctrl+R，與機器碼和 `docs/re/03-game-logic.md` 的「單按 Q 結束」不一致，以機器碼為準。
+//!
+//! 片尾和第四關共用敵人池，第四關結束時還有活著的實體會帶進片尾（文件第 4.6 節）。
+//!
+//! 不移植：`sub_142BB`、`sub_143A8` 的 DOS 記憶體配置與釋放（寫入檔名工作區與 `1CF5Ch` 至 `1CF6Eh` 的段落，
+//! 都在 `A0_EXEMPT`）、`sub_1117F`（E 模式為空，單色模式由 `mirror_scan_lines` 的接收端處理）、CGA、MGA、純 EGA 分支。
 
-use crate::dseg::a;
 use crate::entity::Timetable;
 use crate::game::Core;
+use crate::mirror::{Key, SCRATCH_B};
+use crate::scene::{Page, Palette, Placement};
+
+/// `SHT5` 圖庫項：片尾的兩張背景。
+const LANDSCAPE: u16 = 3;
+const PEOPLE_AND_PLANET: u16 = 4;
 
 impl Core {
-    /// `sub_141D0`：片尾。`byte_2749B`（Ctrl+Q）離開，`byte_2749E`（Ctrl+R）把幀計數歸零重播。
-    pub(crate) async fn s141d0(&mut self) {
-        self.s142bb();
-        self.s143a8();
-        self.s141fc().await;
+    /// 片尾。按 Q 回來；按 R 重播時幀計數歸零，敵人池和資料段其他部分不重設。
+    pub(crate) async fn run_ending(&mut self) {
+        self.show_ending_pictures().await;
         loop {
-            // loc_141D9
-            self.ds.w16(a(0x1CFE2), 0);
+            self.reset_stage_frame();
             loop {
-                // loc_141DF
-                self.s19a37();
-                self.s1429e().await;
-                self.s19a88();
-                self.s1429e().await;
-                if self.ds.r8(a(0x2749B)) == 1 {
+                self.show_page(Page::Zero);
+                self.ending_frame().await;
+                self.show_page(Page::One);
+                self.ending_frame().await;
+                if self.key_down(Key::Q) {
                     return;
                 }
-                if self.ds.r8(a(0x2749E)) == 1 {
+                if self.key_down(Key::R) {
                     break;
                 }
             }
         }
     }
 
-    /// `sub_141FC`：載入 `SHT5`，`ending_a` 調色盤下顯示第 3 項（地景）並等任意鍵，
-    /// 再換 `ending_b` 顯示第 4 項（人物與行星）並等任意鍵。
-    pub(crate) async fn s141fc(&mut self) {
-        self.s142bb();
-        self.s143a8();
-        self.s1af10();
-        self.ds.w16(a(0x2685C), 0x8000);
-        self.s1152d();
-        self.s143ea();
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26888), 3);
-        self.s19adc();
-        self.s19a88();
-        self.s18819();
-        self.s14273();
-        self.ds.w8(a(0x27422), 0);
-        while self.ds.r8(a(0x27422)) == 0 {
-            self.poll_tick().await;
-        }
-        self.ds.w8(a(0x27422), 0);
-        self.s14419();
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26888), 4);
-        self.s19adc();
-        self.s19a88();
-        self.s18819();
-        self.s14273();
-        self.ds.w8(a(0x27422), 0);
-        while self.ds.r8(a(0x27422)) == 0 {
-            self.poll_tick().await;
-        }
-        self.ds.w8(a(0x27422), 0);
+    /// 載入 `SHT5`，`ending_a` 調色盤下顯示第 3 項並等任意鍵，再換 `ending_b` 顯示第 4 項並等任意鍵
+    /// （原版 `sub_141FC`）。兩張都先畫進暫存區 B，再整頁複製到頁 1，翻過去。
+    async fn show_ending_pictures(&mut self) {
+        self.load_ending_images();
+        self.select_scratch(SCRATCH_B);
+        self.clear_scratch();
+        self.show_ending_picture(Palette::EndingA, LANDSCAPE).await;
+        self.show_ending_picture(Palette::EndingB, PEOPLE_AND_PLANET).await;
     }
 
-    /// `sub_14273`：把暫存區 B 整頁複製到目前的頁，來源與位移都歸零。
-    pub(crate) fn s14273(&mut self) {
-        self.ds.w16(a(0x2685C), 0x8000);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26868), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.r.cx = 0xC8;
-        self.s19d08();
+    async fn show_ending_picture(&mut self, palette: Palette, image: u16) {
+        self.load_palette(palette);
+        self.draw_sht_to_scratch(Placement::at(0, 0, image));
+        self.show_page(Page::One);
+        self.draw_on(Page::One);
+        self.restore_background();
+        self.wait_key().await;
     }
 
-    /// `sub_1429E`：片尾的一幀。時間表生成 END 字樣，重畫背景，更新實體與子彈，幀計數加 1，等 1 tick。
-    pub(crate) async fn s1429e(&mut self) {
+    /// 片尾的一幀（原版 `sub_1429E`）：時間表生成字母、蓋回背景、更新並畫實體、幀計數加 1、等 1 個 tick。
+    async fn ending_frame(&mut self) {
         self.spawn_scheduled(Timetable::Ending);
-        self.s14273();
+        self.restore_background();
         self.update_enemies();
         self.draw_enemies();
         self.draw_enemy_overlays();
-        let v = self.ds.r16(a(0x1CFE2)).wrapping_add(1);
-        self.ds.w16(a(0x1CFE2), v);
-        self.s1117f();
-        self.r.cx = 1;
-        self.s11097().await;
-    }
-
-    /// `sub_142BB`：DOS 記憶體配置（片尾用的 10 個緩衝區段落），不移植。
-    pub(crate) fn s142bb(&mut self) {}
-
-    /// `sub_143A8`：釋放 `sub_142BB` 配置的記憶體，不移植。
-    pub(crate) fn s143a8(&mut self) {}
-
-    /// `sub_143EA`：`ending_a` 調色盤。
-    pub(crate) fn s143ea(&mut self) {
-        self.r.bx = 0;
-        self.r.dx = 0x0E54;
-        self.s14448();
-        self.r.dx = 0x0E54;
-        self.r.bx = 0x30;
-        self.s14448();
-    }
-
-    /// `sub_14419`：`ending_b` 調色盤。
-    pub(crate) fn s14419(&mut self) {
-        self.r.bx = 0;
-        self.r.dx = 0x0E95;
-        self.s14448();
-        self.r.dx = 0x0E95;
-        self.r.bx = 0x30;
-        self.s14448();
-    }
-
-    /// `sub_14448`：INT 10h AX=1012h，從 DAC 暫存器 `bx` 起寫 16 個，表在 `ds:dx`。
-    pub(crate) fn s14448(&mut self) {
-        self.r.set_ah(0x10);
-        self.r.set_al(0x12);
-        self.r.cx = 0x10;
-        self.set_dac(self.r.bx as u8, self.r.dx);
+        self.advance_stage_frame();
+        self.mirror_scan_lines();
+        self.wait_ticks(1).await;
     }
 }
 
@@ -171,6 +115,6 @@ mod ending_smoke {
         }
         assert_eq!(keys, 2);
         assert!(waits.len() >= 10 && waits.iter().all(|&c| c == 1), "迴圈每幀等 1 tick：{waits:?}");
-        assert!(matches!(exit, Some(Exit::Quit) | Some(Exit::End) | Some(Exit::Clear)), "Q 應離開片尾");
+        assert!(matches!(exit, Some(Exit::Quit)), "單按 Q 離開，離開碼是 Quit：{exit:?}");
     }
 }

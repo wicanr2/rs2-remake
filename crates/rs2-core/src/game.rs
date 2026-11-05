@@ -10,6 +10,7 @@ use crate::pbullet::PlayerBullets;
 use crate::player::Players;
 use crate::regs::Regs;
 use crate::scenery::Scenery;
+use crate::title::Title;
 use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
@@ -215,6 +216,15 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
                       重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
     (0x0F4A, 0x0F4A, "byte_1DB0A 玩家 2 本幀撿到的道具：sub_157B3 先設 N（157BAh）、sub_15802 寫（15827h），只有 sub_157B3 呼叫的 sub_15832 讀（15832h）。\
                       重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
+    // ---- 標題與片尾領域重寫（規格 004）：過場字樣的位置暫存，改成每張卡的區域結構 ----
+    // 查證：tools/q.sh refs word_1D148 至 word_1D156（十個符號）列出全部讀寫，另 grep 反組譯裡所有 580h 至 597h 的位移形式，
+    // 除了 word_1D140 至 word_1D146（走 Mirror）沒有其他存取，也沒有 [bx+位移] 的表格式存取。
+    // 選單的列、難度、角色（580h 至 585h）與示範輪播（586h）是狀態，走 Mirror，不在這裡。
+    (0x0588, 0x0597, "word_1D148 至 word_1D156 過場與開場的字樣位置。每個寫入它們的函式都先寫初值再讀：sub_117BF 寫 1D148、1D14A（117BFh、117C5h）後讀；\
+                      sub_11C6B 寫 1D148、1D152、1D14C（11C71h、11C77h、11C7Dh）與 1D14E（11CD0h）；sub_11E46 寫 1D148 至 1D14E、1D156（11E4Ch 至 11E64h）\
+                      與 1D152、1D154（11EB7h、11EE2h）；sub_121DD 寫 1D150 至 1D156（121E0h 至 121F2h）；sub_12379 寫 1D148 至 1D14E（1237Ch 至 1238Eh）。\
+                      讀者只有各自卡片的步驟函式（sub_11CFC、11D58、11DAC、11F58、11FB3、1200A、12062、120B6、12132、1221E、123BD）。\
+                      重製改成 cards.rs 的 Stage1Letters 至 Stage4Letters 與 intro.rs 的區域變數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -325,6 +335,8 @@ pub struct Core {
     pub(crate) sc: Scenery,
     /// 兩位玩家與存活位元組。
     pub(crate) pl: Players,
+    /// 標題：選單與示範輪播。
+    pub(crate) title: Title,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -371,6 +383,7 @@ impl Core {
             en: Enemies::default(),
             sc: Scenery::default(),
             pl: Players::default(),
+            title: Title::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,
@@ -510,12 +523,19 @@ fn stage1(mut core: Core) -> Pin<Box<dyn Future<Output = Exit>>> {
 /// 跑一個入口，回傳離開碼。
 async fn run_entry(mut core: Core, entry: Entry) -> Exit {
     match entry {
-        Entry::Title => core.s11556().await,
+        // 標題與片尾回來就是程式結束，原版留在 `dx` 的是調色盤函式的殘值，不是離開碼。
+        Entry::Title => {
+            core.run_title().await;
+            return Exit::Quit;
+        }
+        Entry::Ending => {
+            core.run_ending().await;
+            return Exit::Quit;
+        }
         Entry::Stage1 => core.s10cd0().await,
         Entry::Stage2 => core.s13205().await,
         Entry::Stage3 => core.s13a51().await,
         Entry::Stage4 => core.s13daf().await,
-        Entry::Ending => core.s141d0().await,
     }
     match core.r.dx as u8 {
         b'E' => Exit::End,

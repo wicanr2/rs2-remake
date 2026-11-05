@@ -25,7 +25,10 @@ use crate::fx::{Effect, Effects, POOL_SIZE, Script};
 use crate::game::Core;
 use crate::pbullet::{Facing, POOL_SIZE as PB_POOL_SIZE, PlayerBullet, PlayerBullets, Shot, Slot as PbSlot};
 use crate::player::{PLAYER_COUNT, Player, Players, Pods};
+use crate::menu::Menu;
 use crate::scenery::{POOL_SIZE as SC_POOL_SIZE, Prop, Scenery};
+use crate::scene::Palette;
+use crate::title::Title;
 
 /// 一個領域的狀態與資料段之間的對應。
 pub(crate) trait Mirror {
@@ -44,6 +47,7 @@ impl Core {
         self.en.load(&self.ds);
         self.sc.load(&self.ds);
         self.pl.load(&self.ds);
+        self.title.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
@@ -54,6 +58,7 @@ impl Core {
         self.en.store(&mut self.ds);
         self.sc.store(&mut self.ds);
         self.pl.store(&mut self.ds);
+        self.title.store(&mut self.ds);
     }
 }
 
@@ -724,6 +729,58 @@ impl PlayerShape {
     }
 }
 
+// ---- 標題 ----
+
+/// 選單與示範輪播的四個字組，連續排列（`580h` 起）。
+/// 之後 `588h` 至 `597h` 是開場與過場字樣的位置暫存（`DS_EXEMPT`），不在這裡。
+///
+/// | 位移 | 欄位 | 原版 |
+/// |---|---|---|
+/// | `580h` | `Menu::row` | `word_1D140`：選單選中的列 |
+/// | `582h` | `Menu::level` | `word_1D142`：難度 |
+/// | `584h` | `Menu::role` | `word_1D144`：角色 |
+/// | `586h` | `Title::demo_round` | `word_1D146`：示範輪播 |
+const TITLE_MENU_ROW: u16 = a(0x1D140);
+pub(crate) const TITLE_LEVEL: u16 = a(0x1D142);
+const TITLE_ROLE: u16 = a(0x1D144);
+const TITLE_DEMO_ROUND: u16 = a(0x1D146);
+
+impl Mirror for Title {
+    fn load(&mut self, ds: &Dseg) {
+        self.menu = Menu { row: ds.r16(TITLE_MENU_ROW), level: ds.r16(TITLE_LEVEL), role: ds.r16(TITLE_ROLE) };
+        self.demo_round = ds.r16(TITLE_DEMO_ROUND);
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        ds.w16(TITLE_MENU_ROW, self.menu.row);
+        ds.w16(TITLE_LEVEL, self.menu.level);
+        ds.w16(TITLE_ROLE, self.menu.role);
+        ds.w16(TITLE_DEMO_ROUND, self.demo_round);
+    }
+}
+
+impl Palette {
+    /// 16 色調色盤表在資料段的位移（每張 48 位元組，前面 11h 位元組是 EGA 屬性表，見 `Core::set_dac`）。
+    /// 唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。位址來自原版調色盤函式的 `mov dx, 表` 立即值：
+    /// `sub_1295B`、`sub_12989`、`sub_129B7`、`sub_129E5`、`sub_12A13`、`sub_12A41`、`sub_12A6F`、`sub_12A9D`、`sub_12ACB`、
+    /// `sub_143EA`、`sub_14419`。
+    pub(crate) const fn table_offset(self) -> u16 {
+        match self {
+            Palette::TitleD => 0x05A9,
+            Palette::TitleE => 0x05EA,
+            Palette::Menu => 0x062B,
+            Palette::Beg1A => 0x066C,
+            Palette::Beg1B => 0x06AD,
+            Palette::J1 => 0x06EE,
+            Palette::J2 => 0x072F,
+            Palette::J3 => 0x0770,
+            Palette::J4 => 0x07B1,
+            Palette::EndingA => 0x0E54,
+            Palette::EndingB => 0x0E95,
+        }
+    }
+}
+
 /// 形狀表的寬與高。格值接在後面，要逐格讀時用 [`Core::stamp_shape`]。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Footprint {
@@ -1089,6 +1146,143 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn scratch_select(&self) -> u16 {
         self.ds.r16(SCRATCH_SELECT)
+    }
+}
+
+// ---- 按鍵與標題流程的旗標 ----
+//
+// 標題與片尾讀寫的共用變數：INT 9 寫的按鍵表、標題流程與各關之間傳遞的旗標。
+
+/// `byte_27422`：最近一次按下的鍵（ASCII），0 表示沒有。標題的各段動畫每步看一次它是不是 0。
+const LAST_KEY: u16 = a(0x27422);
+
+/// 標題與片尾讀的鍵。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key {
+    Up,
+    Down,
+    Left,
+    Right,
+    Enter,
+    Space,
+    Q,
+    R,
+}
+
+impl Key {
+    /// set 1 掃描碼，也是按鍵表的索引。
+    const fn scancode(self) -> u16 {
+        match self {
+            Key::Up => 0x48,
+            Key::Down => 0x50,
+            Key::Left => 0x4B,
+            Key::Right => 0x4D,
+            Key::Enter => 0x1C,
+            Key::Space => 0x39,
+            Key::Q => 0x10,
+            Key::R => 0x13,
+        }
+    }
+}
+
+/// `byte_1CFAC`：初值 `N`，`sub_10FEA` 見到 `N` 轉入標題迴圈；標題迴圈第一行改 `Y`。
+const TITLE_ENTERED: u16 = a(0x1CFAC);
+/// `byte_1CFAB`：標題迴圈每圈寫 `Y`。`sub_10CD0`（`10D17h`）見到不是 `N` 就換 `B.MIX` 開音樂，
+/// 並讓音效開關鍵生效（[`SOUND_KEY`]）。
+const STARTED_FROM_TITLE: u16 = a(0x1CFAB);
+/// `byte_1CFDC`：`N` 一般模式，其他值都當示範模式（原版 `cmp byte_1CFDC, 4Eh`）。標題寫 `Y` 或 `N`。
+const DEMO_MODE: u16 = a(0x1CFDC);
+/// `byte_2739A`：音效開關鍵（INT 9 的 `sub_1A891`）是否生效，`N` 不生效。標題期間 `N`，進第一關改 `Y`。
+const SOUND_KEY: u16 = a(0x2739A);
+/// `byte_274EC`：讀檔失敗時換磁片提示的磁碟號字元。標題在第二關起設成 `'2'`，重製沒有人讀。
+const DISK_HINT: u16 = a(0x274EC);
+/// `word_1D3B0`：密碼檢查未通過的旗標。破解組補丁讓檢查恆通過，重製裡沒有人寫它，恆為 0。
+const PASSWORD_REJECTED: u16 = a(0x1D3B0);
+
+/// `byte_1CFDD` 的活動玩家位元：玩家 1 在位元 0，玩家 2 在位元 4。
+pub(crate) const PLAYER1_ACTIVE: u8 = 0x01;
+pub(crate) const PLAYER2_ACTIVE: u8 = 0x10;
+
+impl Core {
+    /// 按鍵是不是按著（按鍵表的值為 1）。放開後 INT 9 寫 2，所以放開的鍵不算。
+    pub(crate) fn key_down(&self, key: Key) -> bool {
+        self.ds.r8(KEY_TABLE.wrapping_add(key.scancode())) == 1
+    }
+
+    /// 清掉按鍵表裡這個鍵的狀態（寫 0）。選單用它消耗掉上下鍵，一次按鍵只切換一次。
+    pub(crate) fn release_key(&mut self, key: Key) {
+        self.ds.w8(KEY_TABLE.wrapping_add(key.scancode()), 0);
+    }
+
+    /// 最近一次按下的鍵（ASCII），0 表示沒有。
+    pub(crate) fn last_key(&self) -> u8 {
+        self.ds.r8(LAST_KEY)
+    }
+
+    pub(crate) fn key_pressed(&self) -> bool {
+        self.last_key() != 0
+    }
+
+    pub(crate) fn clear_last_key(&mut self) {
+        self.ds.w8(LAST_KEY, 0);
+    }
+
+    /// 標題迴圈開始（原版 `byte_1CFAC` = `Y`）。
+    pub(crate) fn mark_title_entered(&mut self) {
+        self.ds.w8(TITLE_ENTERED, b'Y');
+    }
+
+    /// 通知第一關：玩家是從標題進來的，要換 `B.MIX` 開音樂（原版 `byte_1CFAB` = `Y`）。
+    pub(crate) fn request_stage_music(&mut self) {
+        self.ds.w8(STARTED_FROM_TITLE, b'Y');
+    }
+
+    /// 示範模式的旗標（原版 `byte_1CFDC`）：`on` 寫 `Y`，否則寫 `N`。
+    pub(crate) fn set_demo_mode(&mut self, on: bool) {
+        self.ds.w8(DEMO_MODE, if on { b'Y' } else { b'N' });
+    }
+
+    /// 是不是示範模式：只有 `N` 是一般模式。
+    pub(crate) fn in_demo_mode(&self) -> bool {
+        self.ds.r8(DEMO_MODE) != b'N'
+    }
+
+    /// 音效開關鍵是否生效（原版 `byte_2739A`）。
+    pub(crate) fn set_sound_key_enabled(&mut self, on: bool) {
+        self.ds.w8(SOUND_KEY, if on { b'Y' } else { b'N' });
+    }
+
+    /// 活動玩家位元（原版 `byte_1CFDD`）：[`PLAYER1_ACTIVE`]、[`PLAYER2_ACTIVE`] 或兩者。
+    /// 玩家領域從這個位元組讀誰在場，選單和示範都在這裡設定。
+    pub(crate) fn set_active_players(&mut self, mask: u8) {
+        self.set_players_present(mask);
+    }
+
+    /// 難度加成（原版 `word_1E6B2` 耐久、`word_1E6B4` 開火），敵人領域從 [`Core::hp_bonus`]、[`Core::fire_bonus`] 讀。
+    pub(crate) fn set_difficulty_bonuses(&mut self, hp: u16, fire: u16) {
+        self.ds.w16(DIFFICULTY_HP, hp);
+        self.ds.w16(DIFFICULTY_FIRE, fire);
+    }
+
+    /// 換磁片提示的磁碟號字元（原版 `byte_274EC`）。
+    pub(crate) fn set_disk_hint(&mut self, disk: u8) {
+        self.ds.w8(DISK_HINT, disk);
+    }
+
+    /// 密碼檢查是不是沒通過（原版 `word_1D3B0` 非 0）。
+    pub(crate) fn password_rejected(&self) -> bool {
+        self.ds.r16(PASSWORD_REJECTED) != 0
+    }
+
+    /// 幀計數歸零（原版 `word_1CFE2`）。片尾重播用。
+    pub(crate) fn reset_stage_frame(&mut self) {
+        self.ds.w16(STAGE_FRAME, 0);
+    }
+
+    /// 幀計數加 1。
+    pub(crate) fn advance_stage_frame(&mut self) {
+        let frame = self.ds.r16(STAGE_FRAME).wrapping_add(1);
+        self.ds.w16(STAGE_FRAME, frame);
     }
 }
 
@@ -1902,6 +2096,89 @@ mod tests {
         }
         assert_eq!(ds.r16(0x19DC), 0, "群組表不動");
         assert_eq!(ds.r16(0x198A), 0, "陣列之前不動");
+    }
+
+    #[test]
+    fn title_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut title = Title::default();
+        title.load(&ds);
+        let mut same = ds.clone();
+        title.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        title.store(&mut blank);
+        let mut back = Title::default();
+        back.load(&blank);
+        assert_eq!(back, title);
+        assert_ne!(title, Title::default(), "測試資料不該全 0");
+    }
+
+    #[test]
+    fn title_fields_land_at_the_documented_offsets() {
+        let title = Title { menu: Menu { row: 0x1111, level: 0x2222, role: 0x3333 }, demo_round: 0x4444 };
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        title.store(&mut ds);
+        assert_eq!([ds.r16(0x0580), ds.r16(0x0582), ds.r16(0x0584), ds.r16(0x0586)], [0x1111, 0x2222, 0x3333, 0x4444]);
+        assert_eq!(TITLE_LEVEL, 0x0582);
+        // 前後的字組不動：之前是 57Eh，之後 588h 起是過場字樣的位置暫存（DS_EXEMPT）。
+        assert_eq!((ds.r16(0x057E), ds.r16(0x0588)), (0, 0));
+    }
+
+    #[test]
+    fn palette_tables_match_the_original_immediates() {
+        // 機器碼 `mov dx, 表`：1295Bh、12989h、129B7h、129E5h、12A13h、12A41h、12A6Fh、12A9Dh、12ACBh、143EAh、14419h。
+        let tables = [
+            Palette::TitleD,
+            Palette::TitleE,
+            Palette::Menu,
+            Palette::Beg1A,
+            Palette::Beg1B,
+            Palette::J1,
+            Palette::J2,
+            Palette::J3,
+            Palette::J4,
+            Palette::EndingA,
+            Palette::EndingB,
+        ]
+        .map(Palette::table_offset);
+        assert_eq!(tables, [0x5A9, 0x5EA, 0x62B, 0x66C, 0x6AD, 0x6EE, 0x72F, 0x770, 0x7B1, 0xE54, 0xE95]);
+        // 開場與過場的前九張相鄰排列，每張 41h 位元組（11h 屬性表加 30h 的 DAC 值）。
+        assert!(tables[..9].windows(2).all(|w| w[1] - w[0] == 0x41));
+    }
+
+    #[test]
+    fn key_accessors_use_the_scancode_table() {
+        let mut c = core();
+        // 1Ch（Enter）的按鍵表項在 A8CBh + 1Ch = A8E7h：INT 9 寫 1 按下、2 放開。
+        c.ds.w8(0xA8E7, 1);
+        assert!(c.key_down(Key::Enter) && !c.key_down(Key::Space));
+        c.ds.w8(0xA8E7, 2);
+        assert!(!c.key_down(Key::Enter), "放開的鍵不算按著");
+        c.ds.w8(0xA8E7, 1);
+        c.release_key(Key::Enter);
+        assert_eq!(c.ds.r8(0xA8E7), 0);
+        // 其餘的鍵對應：上 48h、下 50h、左 4Bh、右 4Dh、空白 39h、Q 10h、R 13h。
+        for (key, sc) in [(Key::Up, 0x48u16), (Key::Down, 0x50), (Key::Left, 0x4B), (Key::Right, 0x4D), (Key::Space, 0x39), (Key::Q, 0x10), (Key::R, 0x13)] {
+            c.ds.w8(0xA8CB + sc, 1);
+            assert!(c.key_down(key), "{key:?}");
+        }
+        c.ds.w8(0xA862, 0x43);
+        assert_eq!((c.last_key(), c.key_pressed()), (0x43, true));
+        c.clear_last_key();
+        assert!(!c.key_pressed());
+    }
+
+    #[test]
+    fn demo_flag_is_normal_only_for_the_letter_n() {
+        let mut c = core();
+        c.set_demo_mode(false);
+        assert!(!c.in_demo_mode());
+        c.set_demo_mode(true);
+        assert!(c.in_demo_mode());
+        c.ds.w8(0x041C, b'x');
+        assert!(c.in_demo_mode(), "N 以外的值都當示範，照原版 cmp byte_1CFDC, 4Eh");
     }
 
     #[test]
