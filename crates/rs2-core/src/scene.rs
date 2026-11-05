@@ -15,6 +15,7 @@
 
 use crate::draw::DrawCmd;
 use crate::game::Core;
+pub(crate) use crate::mirror::Palette;
 use crate::mirror::SCRATCH_B;
 
 /// 整頁複製的列數：畫面 200 列。
@@ -59,30 +60,6 @@ impl Placement {
     pub(crate) const fn at(x: u16, y: u16, image: u16) -> Placement {
         Placement { x, y, image }
     }
-}
-
-/// 開場、選單與片尾用的 16 色調色盤。表在資料段，位移在 `mirror.rs` 的 `Palette::table_offset`。
-/// 名稱來自原版調色盤函式的用途（`docs/re/12-stages-presentation.md` 第 3 節）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Palette {
-    /// 標題動畫的手臂、眼部特寫與製作名單。
-    TitleD,
-    /// 標題動畫的太空船正面與 `RS-S` 字樣。
-    TitleE,
-    /// 選單。
-    Menu,
-    /// 標題動畫的地球與太空船。
-    Beg1A,
-    /// 太空船飛過時的灰階閃光。
-    Beg1B,
-    /// 第一關到第四關的過場圖（J1 到 J4）。
-    J1,
-    J2,
-    J3,
-    J4,
-    /// 片尾的地景與人物行星。
-    EndingA,
-    EndingB,
 }
 
 /// 過場字樣的字形：`MY` 圖庫第 61、62、63 項（32x32 的 A、C、T）與第 64 到 67 項（數字 1 到 4）。
@@ -152,11 +129,6 @@ impl Core {
         self.s18894();
     }
 
-    /// 清目前要畫的那一頁（原版 `sub_19CF9`）。
-    pub(crate) fn clear_draw_page(&mut self) {
-        self.s19cf9();
-    }
-
     /// 清暫存區 B（原版 `sub_1152D`）。
     pub(crate) fn clear_scratch(&mut self) {
         self.s1152d();
@@ -176,14 +148,6 @@ impl Core {
     }
 
     // ---- 調色盤 ----
-
-    /// 載入 `palette`：DAC 起點 0 與 30h 各寫 16 個暫存器（原版 `sub_12B3A`，INT 10h AX=1012h）。
-    /// EGA 屬性表附在第一次寫入（`set_dac`）。純 EGA 分支（`byte_1CF75` 為 `Y`）不移植。
-    pub(crate) fn load_palette(&mut self, palette: Palette) {
-        let table = palette.table_offset();
-        self.set_dac(0x00, table);
-        self.set_dac(0x30, table);
-    }
 
     // ---- 圖庫項 ----
 
@@ -229,7 +193,7 @@ impl Core {
 
     /// 寫入暫存區複製的取景。
     pub(crate) fn set_scratch_view(&mut self, view: ScratchView) {
-        self.set_blit_source(view.src_x, view.src_y, view.shift);
+        self.set_blit_source_shifted(view.src_x, view.src_y, view.shift);
         self.set_blit_position(view.x, view.y);
     }
 
@@ -238,7 +202,7 @@ impl Core {
     pub(crate) fn restore_background(&mut self) {
         self.select_scratch(SCRATCH_B);
         self.set_scratch_view(ScratchView::ORIGIN);
-        self.copy_scratch_rows(SCREEN_ROWS);
+        self.copy_rows_to_page_shifted(SCREEN_ROWS);
     }
 
     // ---- 等待 ----
@@ -269,13 +233,4 @@ impl Core {
         self.s1af10();
     }
 
-    /// 開始播放音樂（原版 `10AD4h`）。
-    pub(crate) fn start_music(&mut self) {
-        self.s10ad4();
-    }
-
-    /// 停止音樂（原版 `10B12h`）。
-    pub(crate) fn stop_music(&mut self) {
-        self.s10b12();
-    }
 }

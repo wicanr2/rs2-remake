@@ -1,141 +1,177 @@
-//! 頭目段背景的捲動與八向腳本（原版 `sub_15906` 一族）。
+//! 頭目合成圖的捲動：第一、二、三關的頭目段，背景是一張寫進暫存區的大圖，依八向腳本逐幀移動後複製到顯示頁。
+//! 原版是 `sub_15906` 一族與腳本直譯器 `sub_15BB0`、`sub_15BCB`。
 //!
-//! 這一組原本和玩家擠在 `player.rs`，但不屬於玩家領域：第一關的頭目段背景（`sub_15906`）、第二關與第三關的合成層
-//! （`stage2.rs`、`stage3.rs`）共用腳本直譯器 `sub_15BB0`、`sub_15BCB` 與它的工作變數
-//! （`word_1DB5B`、`1DB5D`、`1DB6B`、`byte_1DB5A`）。搬到這裡只為了讓玩家領域乾淨，內容沒有重寫，
-//! 仍是逐函式照機器碼移植（暫存器、資料段位址），留給關卡領域跟 `stage2.rs`、`stage3.rs` 的呼叫端一起重寫。
+//! 每一層合成圖有自己的位置與腳本讀取位置（[`BossLayer`]）。第二關有三層，第一、三關只用第 0 層。
+//! 原版把「這一層的位置」複製進共用的工作變數（`word_1DB5B`、`word_1DB5D`、`word_1DB6B`），呼叫直譯器，
+//! 再複製回來；繪製函式讀工作變數。工作變數每次使用前都剛寫過，重製改成 [`BossLayer::step`] 直接更新那一層
+//! （`DS_EXEMPT` 的 `0F9A..0F9E`、`0FAB..0FAC`）。
 
 use crate::draw::Pool;
-use crate::dseg::a;
 use crate::game::Core;
+use crate::mirror::BossScript;
+
+/// 腳本的結束位元組：讀到它不前進、不移動，每幀停在最後一個位置。
+pub(crate) const SCRIPT_END: u8 = 0x0F;
+/// 八向指令一步的距離：垂直方向 10 像素列（每格 10 列），水平方向 1 位元組。
+const STEP_ROWS: u16 = 0x0A;
+const STEP_COLS: u16 = 1;
+
+/// 一層頭目合成圖。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BossLayer {
+    /// 畫到顯示頁的起始像素列（會是負數，位元組補數）。
+    pub y: u16,
+    /// 水平位置，單位是位元組；繪製時以 `-x` 當水平位移。
+    pub x: u16,
+    /// 腳本讀取位置，資料段位移，指向下一個要讀的位元組。
+    pub script: u16,
+}
+
+/// 三層合成圖。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BossLayers {
+    pub layers: [BossLayer; 3],
+}
+
+/// 八向指令：1 上、2 右上、3 右、4 右下、5 下、6 左下、7 左、8 左上，其餘不動。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Heading {
+    Hold,
+    Move { up: bool, down: bool, left: bool, right: bool },
+}
+
+impl Heading {
+    fn from_code(code: u8) -> Heading {
+        let (up, down, left, right) = match code {
+            1 => (true, false, false, false),
+            2 => (true, false, false, true),
+            3 => (false, false, false, true),
+            4 => (false, true, false, true),
+            5 => (false, true, false, false),
+            6 => (false, true, true, false),
+            7 => (false, false, true, false),
+            8 => (true, false, true, false),
+            _ => return Heading::Hold,
+        };
+        Heading::Move { up, down, left, right }
+    }
+}
+
+impl BossLayer {
+    /// 從頭開始：位置與腳本。
+    pub(crate) fn restart(&mut self, y: u16, x: u16, script: BossScript) {
+        *self = BossLayer { y, x, script: script.start() };
+    }
+
+    /// 腳本走一步（原版 `sub_15BB0`、`sub_15BCB`）。`read` 讀資料段的腳本位元組，`cleared` 是過關旗標：
+    /// 過關後指令一律當作不動（`sub_15C1B`），但讀取位置照常前進。回傳讀到的位元組，呼叫端看它是不是結束碼。
+    ///
+    /// 結束位元組 [`SCRIPT_END`] 不前進、當作不動。其他位元組一律前進，不認識的碼（例如第二關的結束碼 1Fh）
+    /// 也前進，之後讀到腳本之外的資料。
+    pub(crate) fn step(&mut self, cleared: bool, read: impl Fn(u16) -> u8) -> u8 {
+        let byte = read(self.script);
+        let code = if byte == SCRIPT_END {
+            0
+        } else {
+            self.script = self.script.wrapping_add(1);
+            byte
+        };
+        let heading = if cleared { Heading::Hold } else { Heading::from_code(code) };
+        if let Heading::Move { up, down, left, right } = heading {
+            if up {
+                self.y = self.y.wrapping_sub(STEP_ROWS);
+            }
+            if down {
+                self.y = self.y.wrapping_add(STEP_ROWS);
+            }
+            if left {
+                self.x = self.x.wrapping_sub(STEP_COLS);
+            }
+            if right {
+                self.x = self.x.wrapping_add(STEP_COLS);
+            }
+        }
+        byte
+    }
+}
 
 impl Core {
-    /// `add word ptr [linear], v`（`sub` 以 `wrapping_neg` 傳入）。
-    fn boss_addw(&mut self, linear: u32, v: u16) {
-        let n = self.ds.r16(a(linear)).wrapping_add(v);
-        self.ds.w16(a(linear), n);
+    /// 第 `layer` 層走一步，回傳腳本位元組（原版放在 `byte_1DB5A`）。
+    pub(crate) fn step_boss_layer(&mut self, layer: usize) -> u8 {
+        let cleared = self.stage_cleared();
+        let mut l = self.scenes.boss.layers[layer];
+        let byte = l.step(cleared, |at| self.table_byte(at));
+        self.scenes.boss.layers[layer] = l;
+        byte
     }
 
-    /// `sub_15906`：第一關頭目段的背景：清頁後畫頭目捲動背景。
-    /// 同位置的 `15912`（第二關）與 `15924`（第三關）是各自的入口，不在本函式內。
-    pub(crate) fn s15906(&mut self) {
-        self.s19cf9();
-        self.s15930();
-    }
-
-    /// `sub_15930`：第一關頭目背景的捲動：幀計數不超過 26Eh 時重設，之後讀腳本位元組（`word_1DB6D`）逐幀移動，
-    /// 腳本結束位元組 0Fh 時設 `byte_1CFAD` = `F`（過關連爆）。
-    pub(crate) fn s15930(&mut self) {
-        if self.ds.r16(a(0x1CFE2)) <= 0x26E {
-            self.ds.w16(a(0x1DB5F), 0xC8);
-            self.ds.w16(a(0x1DB61), 0xFFEC);
-            self.ds.w16(a(0x1DB6D), 0x0FB3);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DB61));
-        self.ds.w16(a(0x1DB5D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5F));
-        self.ds.w16(a(0x1DB5B), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB6D));
-        self.ds.w16(a(0x1DB6B), self.r.ax);
-        self.s15bb0();
-        self.r.ax = self.ds.r16(a(0x1DB6B));
-        self.ds.w16(a(0x1DB6D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5B));
-        self.ds.w16(a(0x1DB5F), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5D));
-        self.ds.w16(a(0x1DB61), self.r.ax);
-        self.s15ac5();
-        if self.ds.r8(a(0x1DB5A)) == 0x0F {
-            self.ds.w8(a(0x1CFAD), 0x46);
-        }
-    }
-
-    /// `sub_15AC5`：把暫存區 B（`word_2685C` = 8000h）的整幅背景以水平位移 `-word_1DB5D` 畫到目前頁，共 C1h 列。
-    pub(crate) fn s15ac5(&mut self) {
-        self.ds.w16(a(0x2685C), 0x8000);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.r.ax = 0;
-        self.r.ax = self.r.ax.wrapping_sub(self.ds.r16(a(0x1DB5D)));
-        self.ds.w16(a(0x26868), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5B));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.r.cx = 0xC1;
-        self.set_obj(Pool::Boss, 0);
-        self.s19d08();
+    /// 把暫存區 `scratch` 從第 `source_row` 列起的 `rows` 列，以水平位移 `-x` 畫到顯示頁的第 `y` 列
+    /// （原版 `sub_15AC5`、`sub_15AF4`、`sub_15B23`、`sub_15B52`、`sub_15B81`）。`slot` 是前端補間用的層編號。
+    pub(crate) fn draw_boss_layer(&mut self, layer: usize, scratch: u16, source_row: u16, rows: u16, slot: u8) {
+        let l = self.scenes.boss.layers[layer];
+        self.select_scratch(scratch);
+        self.set_blit_source(0, source_row);
+        self.set_blit_x(0);
+        self.set_blit_shift(0u16.wrapping_sub(l.x));
+        self.set_blit_y(l.y);
+        self.set_obj(Pool::Boss, slot);
+        self.copy_rows_to_page_shifted(rows);
         self.clear_obj();
     }
+}
 
-    /// `sub_15BB0`：讀腳本位元組（`word_1DB6B` 指向），存 `byte_1DB5A`。不是結束位元組 0Fh 就前進並執行該指令，
-    /// 是 0Fh 則以指令 0 執行（不前進）。
-    pub(crate) fn s15bb0(&mut self) {
-        self.r.si = self.ds.r16(a(0x1DB6B));
-        self.r.set_al(self.ds.r8(self.r.si));
-        self.ds.w8(a(0x1DB5A), self.r.al());
-        if self.r.al() == 0x0F {
-            self.r.set_al(0);
-            self.s15bcb();
-            return;
-        }
-        self.boss_addw(0x1DB6B, 1);
-        self.s15bcb();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(layer: &mut BossLayer, script: &[u8], cleared: bool) -> Vec<u8> {
+        let base = layer.script;
+        (0..script.len()).map(|_| layer.step(cleared, |at| script.get(usize::from(at - base)).copied().unwrap_or(0xEE))).collect()
     }
 
-    /// `sub_15BCB`：八向指令 1 至 8（上、右上、右、右下、下、左下、左、左上）對 `word_1DB5B`（y，每步 0Ah）與
-    /// `word_1DB5D`（x，每步 1）的增減。`byte_1CFAD` 為 `F` 時指令一律視為 0。
-    pub(crate) fn s15bcb(&mut self) {
-        self.s15c1b();
-        match self.r.al() {
-            1 => self.s15c25(),
-            2 => {
-                self.s15c25();
-                self.s15c36();
-            }
-            3 => self.s15c36(),
-            4 => {
-                self.s15c2b();
-                self.s15c36();
-            }
-            5 => self.s15c2b(),
-            6 => {
-                self.s15c2b();
-                self.s15c31();
-            }
-            7 => self.s15c31(),
-            8 => {
-                self.s15c25();
-                self.s15c31();
-            }
-            _ => {}
+    #[test]
+    fn the_eight_headings_move_ten_rows_and_one_column() {
+        // 上、右上、右、右下、下、左下、左、左上。
+        let want = [(-10i16, 0i16), (-10, 1), (0, 1), (10, 1), (10, 0), (10, -1), (0, -1), (-10, -1)];
+        for (code, (dy, dx)) in (1u8..=8).zip(want) {
+            let mut l = BossLayer { y: 100, x: 50, script: 0x1000 };
+            l.step(false, |_| code);
+            assert_eq!((l.y as i16 - 100, l.x as i16 - 50), (dy, dx), "指令 {code}");
+            assert_eq!(l.script, 0x1001, "讀取位置前進");
         }
     }
 
-    /// `sub_15C1B`：`byte_1CFAD` 為 `F` 時 `al` 歸 0。
-    pub(crate) fn s15c1b(&mut self) {
-        if self.ds.r8(a(0x1CFAD)) == 0x46 {
-            self.r.set_al(0);
+    #[test]
+    fn code_zero_and_unknown_codes_hold_but_still_advance() {
+        for code in [0u8, 9, 0x1F, 0xFF] {
+            let mut l = BossLayer { y: 7, x: 9, script: 0x1000 };
+            let byte = l.step(false, |_| code);
+            assert_eq!((l.y, l.x, l.script, byte), (7, 9, 0x1001, code), "碼 {code:#x}");
         }
     }
 
-    /// `sub_15C25`：`word_1DB5B` 減 0Ah。
-    pub(crate) fn s15c25(&mut self) {
-        self.boss_addw(0x1DB5B, 0x0Au16.wrapping_neg());
+    #[test]
+    fn the_end_byte_neither_moves_nor_advances() {
+        let mut l = BossLayer { y: 7, x: 9, script: 0x1000 };
+        let byte = l.step(false, |_| SCRIPT_END);
+        assert_eq!((l.y, l.x, l.script, byte), (7, 9, 0x1000, SCRIPT_END));
     }
 
-    /// `sub_15C2B`：`word_1DB5B` 加 0Ah。
-    pub(crate) fn s15c2b(&mut self) {
-        self.boss_addw(0x1DB5B, 0x0A);
+    #[test]
+    fn after_the_stage_is_cleared_the_layer_stops_moving_but_the_script_keeps_advancing() {
+        let mut l = BossLayer { y: 100, x: 50, script: 0x1000 };
+        let bytes = run(&mut l, &[3, 3, 5], true);
+        assert_eq!(bytes, [3, 3, 5]);
+        assert_eq!((l.y, l.x, l.script), (100, 50, 0x1003));
     }
 
-    /// `sub_15C31`：`word_1DB5D` 減 1。
-    pub(crate) fn s15c31(&mut self) {
-        self.boss_addw(0x1DB5D, 1u16.wrapping_neg());
-    }
-
-    /// `sub_15C36`：`word_1DB5D` 加 1。
-    pub(crate) fn s15c36(&mut self) {
-        self.boss_addw(0x1DB5D, 1);
+    #[test]
+    fn positions_wrap_at_16_bits() {
+        let mut l = BossLayer { y: 5, x: 0, script: 0x1000 };
+        l.step(false, |_| 2);
+        assert_eq!((l.y, l.x), (5u16.wrapping_sub(10), 1));
+        l.x = 0;
+        l.step(false, |_| 7);
+        assert_eq!(l.x, 0xFFFF);
     }
 }

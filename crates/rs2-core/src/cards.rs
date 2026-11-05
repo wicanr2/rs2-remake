@@ -299,7 +299,7 @@ impl Core {
                 for p in step() {
                     self.draw_act(p.glyph, p.x, p.y);
                 }
-                self.wait_ticks(1).await;
+                self.await_timer_ticks(1).await;
                 self.mirror_scan_lines();
             }
         }
@@ -348,7 +348,7 @@ impl Core {
         self.show_page(Page::One);
         self.draw_on(Page::One);
         for _ in 0..SCREEN_ROWS {
-            self.copy_scratch_rows(SCREEN_ROWS);
+            self.copy_rows_to_page_shifted(SCREEN_ROWS);
             view.y = view.y.wrapping_sub(1);
             self.set_scratch_view(view);
         }

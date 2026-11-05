@@ -178,6 +178,13 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     // 標題與片尾領域重寫（規格 004）：過場字樣的位置暫存改成區域結構，與 `rs2_core::DS_EXEMPT` 的同名一項相同。
     // word_1D148 至 1D156：sub_117BF、11C6B、11E46、121DD、12379 各自先寫初值，只有各卡的步驟函式讀寫。
     (0x0588, 0x0597, "過場與開場的字樣位置暫存"),
+    // 流程與關卡領域重寫（規格 004），與 `rs2_core::DS_EXEMPT` 的同名三項相同，理由寫在那裡。
+    // byte_1DB5A、word_1DB5B、word_1DB5D：頭目合成圖腳本直譯器的工作變數，每次由該層的位置複製進來。
+    (0x0F9A, 0x0F9E, "頭目合成圖腳本位元組與位置的工作變數"),
+    // word_1DB6B：腳本讀取位置的工作變數。
+    (0x0FAB, 0x0FAC, "頭目合成圖腳本讀取位置的工作變數"),
+    // word_25BCA：第三關地圖索引游標，draw_initial_map 與 scroll_map_second_page 先寫後讀。
+    (0x900A, 0x900B, "第三關地圖索引游標"),
 ];
 
 fn ds_exempt(i: usize) -> bool {

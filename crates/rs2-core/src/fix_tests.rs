@@ -1,7 +1,6 @@
 //! A2b：每個 `Fixes` 旗標一組合成情境。直接擺出觸發條件，關時重現原版結果，開時得到修正結果。
 //! 不用原版檔：資料段全 0，只擺這個情境需要的值。
 
-use crate::dseg::a;
 use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
 use crate::mirror::{enemy_record_link, pb_record_link};
@@ -179,14 +178,14 @@ fn seeker_spawn_leak_on_counts_actual_spawns() {
 #[test]
 fn no_hit_hang_on_continues() {
     let mut g = game(Fixes::ALL);
-    g.ds.w8(a(0x1CFAA), b'N');
-    g.s1316c();
+    g.flow.integrity_mark = b'N';
+    g.compose_stage2_midboss_art();
 }
 
 #[test]
 #[should_panic(expected = "131CE")]
 fn no_hit_hang_off_reproduces_the_hang() {
     let mut g = game(Fixes::NONE);
-    g.ds.w8(a(0x1CFAA), b'N');
-    g.s1316c();
+    g.flow.integrity_mark = b'N';
+    g.compose_stage2_midboss_art();
 }

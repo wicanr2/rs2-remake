@@ -1,303 +1,245 @@
-//! 第四關。
-//! 逐函式移植自機器碼，查法見 `tools/q.sh`。規格：`docs/spec/002-full-game.md`。
+//! 第四關：進入、每輪流程、普通段與頭目段的一幀、通道背景。原版是 `sub_13DAF`、`sub_13E74`、`sub_13EAB`、`sub_13EF9`、
+//! `sub_13F7A`。
 //!
-//! 只移植 E 模式（`byte_1CF74` = `E`、`byte_1CF75` = `N`）。CGA、MGA、純 EGA 的分支不移植，各處註解標明。
-//! 配置與釋放緩衝區的模型見 `stage2.rs` 的 `s2_alloc_chain`。
+//! 只移植 E 模式（`byte_1CF74` = `E`、`byte_1CF75` = `N`），顯示模式由 `rs2-gfx` 轉換。
+//! 緩衝區配置與釋放的簿記見 `mirror.rs` 的 `StageBuffers`。
 
 use crate::draw::Pool;
-use crate::dseg::a;
 use crate::entity::Timetable;
-use crate::game::{Core, Req};
+use crate::flow::{ChainShift, STAGE_4};
+use crate::game::{Core, Exit, sample};
+use crate::mirror::{Palette, SCRATCH_A, StageBuffers};
+use crate::stage_io::StageMusic;
 
-impl Core {
-    /// `sub_13D70`：載入 BH4，清暫存區 A，把第 0 項（通道壁）寫進暫存區 A 兩份（x = 0、28h），再載入 SHT4。
-    pub(crate) fn s13d70(&mut self) {
-        self.s1af91();
-        self.s11504();
-        self.ds.w16(a(0x2685C), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26888), 0);
-        self.s19adc();
-        self.ds.w16(a(0x26880), 0x28);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26888), 0);
-        self.s19adc();
-        self.s1aebc();
+/// 計數不超過這個值走普通段，之後走頭目段。
+const NORMAL_LAST_FRAME: u16 = 0x3E8;
+/// 頭目段開始後的這一幀清暫存區 A 並畫 `SHT4` 第 29 項（16×1 的佔位，沒有可見內容）。
+const PLACEHOLDER_FRAME: u16 = 0x3EA;
+/// 計數超過這個值，15 個實體槽全空就過關（頭目被打倒）。
+const CLEAR_CHECK_FRAME: u16 = 0x426;
+
+/// 通道壁的水平相位循環：0 到 27h。
+const PHASE_LAST: u16 = 0x27;
+/// 下壁與上壁的基準像素列（加上 `Tunnel::offset`）、複製的列數。
+const FLOOR_ROW: u16 = 0x96;
+const CEILING_ROW: u16 = 0x28;
+const WALL_ROWS: u16 = 0x64;
+/// 每幀以色號 0 清滿的列數（實際只寫到列 189）。
+const CLEAR_ROWS: u16 = 0xC8;
+/// 頭目段的背景：暫存區 A（黑底）複製到畫面的列數。
+const BOSS_BACKDROP_ROWS: u16 = 0xC8;
+/// 腳本指令一步的上下位移（像素列）。
+const WOBBLE_STEP: u16 = 0x0A;
+
+/// 通道背景的狀態。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Tunnel {
+    /// `word_1D91D`：兩壁一起上下偏移的像素列數，由腳本逐幀 ±10。
+    pub offset: u16,
+    /// `word_1D91F`：下壁的水平相位，每幀加 1（8 像素），到 40 歸零。
+    pub floor_phase: u16,
+    /// `word_1D921`：上壁的水平相位，初值 12h，與下壁差 18 位元組。
+    pub ceiling_phase: u16,
+    /// `word_1D9A2`：腳本讀取位置，從 0 起。
+    pub script_pos: u16,
+}
+
+impl Tunnel {
+    /// 進關卡的初值。
+    pub(crate) fn restart(&mut self) {
+        *self = Tunnel { offset: 0, floor_phase: 0, ceiling_phase: 0x12, script_pos: 0 };
     }
 
-    /// `sub_13DAF`：第四關完整入口，含載入。回傳時 `dx` 是離開碼。
-    /// `nullsub_4` 不移植。
-    pub(crate) async fn s13daf(&mut self) {
-        self.s140a1();
-        self.s1418e();
-        self.s19a88();
-        self.ds.w16(a(0x26872), 0x8000);
-        self.r.cx = 7;
-        self.s1152d();
-        self.s18894();
-        self.s13d70();
-        self.s14063();
-        self.ds.w16(a(0x1D91F), 0);
-        self.ds.w16(a(0x1D921), 0x12);
-        self.ds.w16(a(0x1D91D), 0);
-        self.ds.w16(a(0x1D9A2), 0);
-        self.s19a88();
-        self.s10e33();
-        self.ds.w16(a(0x1CFE2), 1);
-        self.ds.w8(a(0x1CFDB), b'D');
-        self.s1aaa0();
-        self.s10ad4();
-        self.ds.w8(a(0x2739A), b'Y');
-        loop {
-            self.s19a37();
-            self.s13e74().await;
-            self.s19a88();
-            self.s13e74().await;
-            self.s10d99();
-            self.s10d8d();
-            self.s13f47();
-            if matches!(self.r.dx, 0x45 | 0x51 | 0x43) {
-                break;
-            }
-            if self.ds.r8(a(0x1CFAD)) != 0x46 {
-                continue;
-            }
-            // 13E49：過關連爆。先減 word_20B7A 再比較 14h，和第三關相同。
-            let n = self.ds.r8(a(0x1CFAE)).wrapping_add(1);
-            self.ds.w8(a(0x1CFAE), n);
-            self.r.dx = 0x43;
-            self.fx.shift_chain_left(3);
-            if n > 0x14 {
-                break;
-            }
-            let page = self.ds.r16(a(0x26872));
-            self.spawn_stage_clear_burst(page);
-        }
-        // 13E40：離開。
-        self.ds.w8(a(0x2739A), b'N');
-        self.s10b12();
+    /// 相位加 1，大於等於 27h 歸零。
+    fn advance_phase(phase: u16) -> u16 {
+        if phase >= PHASE_LAST { 0 } else { phase + 1 }
     }
 
-    /// `sub_13E74`：依幀計數分派。幀 <= 3E8h 走普通段，之後走頭目段；幀 3EAh 清暫存區 A 並畫 `SHT4` 第 29 項（佔位，無可見內容）。
-    pub(crate) async fn s13e74(&mut self) {
-        if self.ds.r16(a(0x1CFE2)) <= 0x3E8 {
-            self.s13eab().await;
-            return;
-        }
-        self.s13ef9().await;
-        if self.ds.r16(a(0x1CFE2)) != 0x3EA {
-            return;
-        }
-        self.s11504();
-        self.ds.w16(a(0x2685C), 0);
-        self.ds.w16(a(0x26880), 0x14);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26888), 0x1D);
-        self.s19adc();
-    }
-
-    /// `sub_13EAB`：普通段的一幀。`13ED5h` 的 `cmp word_26872, 0` 與 `jz short $+2` 沒有效果。
-    pub(crate) async fn s13eab(&mut self) {
-        self.ds.w16(a(0x2685C), 0);
-        self.spawn_scheduled(Timetable::Stage4);
-        self.update_enemies();
-        self.update_player(0);
-        self.update_player(1);
-        self.s13f7a();
-        self.draw_enemies();
-        self.update_enemy_bullets();
-        self.update_player_bullets();
-        self.draw_player(0);
-        self.draw_player(1);
-        self.draw_enemy_overlays();
-        self.update_effects();
-        self.s1100a();
-        self.s13f6e();
-        self.clear_grid1();
-        self.clear_grid2();
-        self.s10ecb().await;
-        self.s1117f();
-        self.r.cx = 2;
-        self.s11097().await;
-        self.s2_add(0x1CFE2, 1);
-        self.suspend(Req::Sample(0x13EF4)).await;
-    }
-
-    /// `sub_13EF9`：頭目段的一幀，背景換成 `sub_1403E`（全黑）。
-    pub(crate) async fn s13ef9(&mut self) {
-        self.ds.w16(a(0x2685C), 0);
-        self.spawn_scheduled(Timetable::Stage4);
-        self.update_enemies();
-        self.update_player(0);
-        self.update_player(1);
-        self.s1403e();
-        self.draw_enemies();
-        self.update_enemy_bullets();
-        self.update_player_bullets();
-        self.draw_player(0);
-        self.draw_player(1);
-        self.draw_enemy_overlays();
-        self.update_effects();
-        self.s1100a();
-        self.s13f6e();
-        self.clear_grid1();
-        self.clear_grid2();
-        self.s10ecb().await;
-        self.s1117f();
-        self.r.cx = 2;
-        self.s11097().await;
-        self.s2_add(0x1CFE2, 1);
-        self.suspend(Req::Sample(0x13F42)).await;
-    }
-
-    /// `sub_13F47`：幀 > 426h 且 15 個敵人槽全空時設 `byte_1CFAD` = `F`（過關）。
-    /// 敵人池指標表經 `entity_link` 讀（`bx` 是原版的位元組偏移，槽號 × 2）。
-    pub(crate) fn s13f47(&mut self) {
-        if self.ds.r16(a(0x1CFE2)) <= 0x426 {
-            return;
-        }
-        self.r.bx = 0;
-        self.r.cx = 0x0F;
-        loop {
-            self.r.ax = self.entity_link((self.r.bx >> 1) as u8);
-            if self.r.ax != 0 {
-                return;
-            }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            if !self.s2_loop() {
-                break;
-            }
-        }
-        self.ds.w8(a(0x1CFAD), 0x46);
-    }
-
-    /// `sub_13F6E`：暫存區選 A。
-    pub(crate) fn s13f6e(&mut self) {
-        self.ds.w16(a(0x2685C), 0);
-    }
-
-    /// `sub_13F7A`：通道背景。先讀腳本移動 `word_1D91D`，以色號 0 清滿 200 列，再畫下壁與垂直鏡射的上壁。
-    /// 兩壁的水平相位 `word_1D91F`、`word_1D921` 各自在 0 到 27h 循環。
-    pub(crate) fn s13f7a(&mut self) {
-        self.s14014();
-        self.set_obj(Pool::Background, 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.r.cx = 0xC8;
-        self.r.dx = 0;
-        self.s1a287();
-        // 下壁。
-        self.set_obj(Pool::Background, 1);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0x96);
-        self.r.ax = self.ds.r16(a(0x1D91D));
-        let y = self.ds.r16(a(0x26882)).wrapping_add(self.r.ax);
-        self.ds.w16(a(0x26882), y);
-        self.r.ax = self.ds.r16(a(0x1D91F));
-        self.ds.w16(a(0x26868), self.r.ax);
-        self.r.cx = 0x64;
-        self.s19ba4();
-        // 上壁。
-        self.set_obj(Pool::Background, 2);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0x28);
-        self.r.ax = self.ds.r16(a(0x1D91D));
-        let y = self.ds.r16(a(0x26882)).wrapping_add(self.r.ax);
-        self.ds.w16(a(0x26882), y);
-        self.r.ax = self.ds.r16(a(0x1D921));
-        self.ds.w16(a(0x26868), self.r.ax);
-        self.r.cx = 0x64;
-        self.s19c4f();
-        self.clear_obj();
-        if self.ds.r16(a(0x1D91F)) >= 0x27 {
-            self.ds.w16(a(0x1D91F), 0);
-        } else {
-            self.s2_add(0x1D91F, 1);
-        }
-        if self.ds.r16(a(0x1D921)) >= 0x27 {
-            self.ds.w16(a(0x1D921), 0);
-        } else {
-            self.s2_add(0x1D921, 1);
-        }
-    }
-
-    /// `sub_14014`：讀 `ds:0DE4h` 起的腳本一個位元組（讀取位置 `word_1D9A2` 先加 1）：1 讓 `word_1D91D` 減 0Ah，
-    /// 2 加 0Ah，0Fh 把讀取位置退回（停在結尾），其餘不動。
-    pub(crate) fn s14014(&mut self) {
-        self.r.bx = self.ds.r16(a(0x1D9A2));
-        self.s2_add(0x1D9A2, 1);
-        self.r.set_al(self.ds.r8(self.r.bx.wrapping_add(0x0DE4)));
-        match self.r.al() {
-            1 => self.s2_add(0x1D91D, 0x0Au16.wrapping_neg()),
-            2 => self.s2_add(0x1D91D, 0x0A),
-            0x0F => self.s2_add(0x1D9A2, 1u16.wrapping_neg()),
+    /// 腳本的一個位元組（原版 `sub_14014`，讀取位置先加 1）：1 讓偏移減 10、2 加 10、0Fh 把讀取位置退回
+    /// （停在結尾），其餘不動。
+    fn apply_script_byte(&mut self, byte: u8) {
+        match byte {
+            1 => self.offset = self.offset.wrapping_sub(WOBBLE_STEP),
+            2 => self.offset = self.offset.wrapping_add(WOBBLE_STEP),
+            0x0F => self.script_pos = self.script_pos.wrapping_sub(1),
             _ => {}
         }
     }
+}
 
-    /// `sub_1403E`：頭目段的背景。暫存區 A 第 0 列起 200 列複製到畫面，暫存區 A 在幀 3EAh 之後已清成黑底。
-    pub(crate) fn s1403e(&mut self) {
+impl Core {
+    /// 第四關完整入口，含載入（原版 `sub_13DAF`）。
+    pub(crate) async fn play_stage4(&mut self) -> Exit {
+        self.dos_allocate_buffers(StageBuffers::Stage4);
+        self.dos_free_buffers(StageBuffers::Stage4);
+        self.show_second_page();
+        self.draw_to_second_page();
+        self.clear_scratch_b();
+        self.clear_both_pages();
+        self.compose_stage4_backdrop();
+        self.load_palette(Palette::Stage4);
+        self.scenes.tunnel.restart();
+        self.show_second_page();
+        self.reset_stage();
+        self.set_stage_frame(1);
+        self.flow.stage = STAGE_4;
+        self.load_stage_music(StageMusic::Stage4);
+        self.start_stage_music();
+        let exit = loop {
+            self.show_first_page();
+            self.stage4_frame().await;
+            self.show_second_page();
+            self.stage4_frame().await;
+            let exit = self.poll_hotkeys();
+            self.clear_when_arena_is_empty();
+            if let Some(exit) = exit {
+                break exit;
+            }
+            if !self.flow.is_cleared() {
+                continue;
+            }
+            if let Some(exit) = self.clear_burst_round(ChainShift::BeforeLimit) {
+                break exit;
+            }
+        };
+        self.end_stage(exit)
+    }
+
+    /// 通道壁寫進暫存區 A 兩份，再載入 `SHT4`（原版 `sub_13D70`）：`BH4` 第 0 項，x = 0 與 28h。
+    fn compose_stage4_backdrop(&mut self) {
+        self.load_backdrop_sheet_4();
+        self.clear_scratch_a();
+        self.select_scratch(SCRATCH_A);
+        self.draw_tile_to_scratch(0, 0, 0);
+        self.draw_tile_to_scratch(0x28, 0, 0);
+        self.load_sprite_sheet_4();
+    }
+
+    /// 依幀計數選普通段或頭目段（原版 `sub_13E74`）。
+    async fn stage4_frame(&mut self) {
+        if self.stage_frame() <= NORMAL_LAST_FRAME {
+            self.stage4_normal_frame().await;
+            return;
+        }
+        self.stage4_boss_frame().await;
+        if self.stage_frame() != PLACEHOLDER_FRAME {
+            return;
+        }
+        self.clear_scratch_a();
+        self.select_scratch(SCRATCH_A);
+        self.draw_tile_to_scratch(0x14, 0, 0x1D);
+    }
+
+    /// 普通段的一幀（原版 `sub_13EAB`），背景是通道。`13ED5h` 的 `cmp word_26872, 0` 與 `jz short $+2` 沒有效果。
+    async fn stage4_normal_frame(&mut self) {
+        self.select_scratch(SCRATCH_A);
+        self.spawn_scheduled(Timetable::Stage4);
+        self.update_enemies();
+        self.update_player(0);
+        self.update_player(1);
+        self.draw_stage4_tunnel();
+        self.step_shots_and_draw_players();
+        self.select_scratch(SCRATCH_A);
+        self.close_frame(sample::STAGE4_NORMAL).await;
+    }
+
+    /// 頭目段的一幀（原版 `sub_13EF9`），背景是全黑。
+    async fn stage4_boss_frame(&mut self) {
+        self.select_scratch(SCRATCH_A);
+        self.spawn_scheduled(Timetable::Stage4);
+        self.update_enemies();
+        self.update_player(0);
+        self.update_player(1);
+        self.draw_stage4_boss_backdrop();
+        self.step_shots_and_draw_players();
+        self.select_scratch(SCRATCH_A);
+        self.close_frame(sample::STAGE4_BOSS).await;
+    }
+
+    /// 計數超過 426h 且 15 個實體槽全空，就過關（原版 `sub_13F47`）。
+    fn clear_when_arena_is_empty(&mut self) {
+        if self.stage_frame() > CLEAR_CHECK_FRAME && self.en.slots.iter().all(|slot| slot.link == 0) {
+            self.mark_stage_cleared();
+        }
+    }
+
+    /// 通道背景（原版 `sub_13F7A`）：先讀腳本移動偏移，以色號 0 清滿，再畫下壁與垂直鏡射的上壁。
+    fn draw_stage4_tunnel(&mut self) {
+        self.step_tunnel_script();
+        self.set_obj(Pool::Background, 0);
+        self.set_blit_x(0);
+        self.set_blit_y(0);
+        self.fill_rows(CLEAR_ROWS, 0);
+        let t = self.scenes.tunnel;
+        self.set_obj(Pool::Background, 1);
+        self.set_blit_source(0, 0);
+        self.set_blit_x(0);
+        self.set_blit_y(FLOOR_ROW.wrapping_add(t.offset));
+        self.set_blit_shift(t.floor_phase);
+        self.copy_rows_to_page(WALL_ROWS);
+        self.set_obj(Pool::Background, 2);
+        self.set_blit_source(0, 0);
+        self.set_blit_x(0);
+        self.set_blit_y(CEILING_ROW.wrapping_add(t.offset));
+        self.set_blit_shift(t.ceiling_phase);
+        self.copy_rows_to_page_mirrored(WALL_ROWS);
+        self.clear_obj();
+        let t = &mut self.scenes.tunnel;
+        t.floor_phase = Tunnel::advance_phase(t.floor_phase);
+        t.ceiling_phase = Tunnel::advance_phase(t.ceiling_phase);
+    }
+
+    /// 腳本讀一個位元組（讀取位置先加 1）並套用。
+    fn step_tunnel_script(&mut self) {
+        let pos = self.scenes.tunnel.script_pos;
+        self.scenes.tunnel.script_pos = pos.wrapping_add(1);
+        let byte = self.tunnel_script_byte(pos);
+        self.scenes.tunnel.apply_script_byte(byte);
+    }
+
+    /// 頭目段的背景（原版 `sub_1403E`）：暫存區 A 第 0 列起 200 列複製到畫面。暫存區 A 在幀 3EAh 之後已清成黑底。
+    fn draw_stage4_boss_backdrop(&mut self) {
         self.set_obj(Pool::Background, 3);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.ds.w16(a(0x26868), 0);
-        self.r.cx = 0xC8;
-        self.s19ba4();
+        self.set_blit_source(0, 0);
+        self.set_blit_x(0);
+        self.set_blit_y(0);
+        self.set_blit_shift(0);
+        self.copy_rows_to_page(BOSS_BACKDROP_ROWS);
         self.clear_obj();
     }
+}
 
-    /// `sub_14063`：`stage4` 調色盤（表 `0D82h`）。純 EGA 的 `1002h` 分支（`byte_1CF75` = Y，表 `0D71h`）不移植。
-    pub(crate) fn s14063(&mut self) {
-        self.r.bx = 0;
-        self.r.dx = 0x0D82;
-        self.s14092();
-        self.r.bx = 0x30;
-        self.r.dx = 0x0D82;
-        self.s14092();
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tunnel_script_moves_both_walls_and_the_end_byte_holds_the_position() {
+        let mut t = Tunnel::default();
+        t.apply_script_byte(1);
+        assert_eq!(t.offset, 0xFFF6, "1 減 10");
+        t.apply_script_byte(2);
+        t.apply_script_byte(2);
+        assert_eq!(t.offset, 10, "2 加 10");
+        t.apply_script_byte(0);
+        t.apply_script_byte(9);
+        assert_eq!(t.offset, 10, "其餘不動");
+        t.script_pos = 76;
+        t.apply_script_byte(0x0F);
+        assert_eq!(t.script_pos, 75, "結尾碼把讀取位置退回，下一次讀還是它");
     }
 
-    /// `sub_14092`：INT 10h AX=1012h，從 `bl` 起設 `cx` = 16 個 DAC 暫存器，值在 `ds:dx`。
-    pub(crate) fn s14092(&mut self) {
-        self.r.set_ah(0x10);
-        self.r.set_al(0x12);
-        self.r.cx = 0x10;
-        self.set_dac(self.r.bl(), self.r.dx);
+    #[test]
+    fn the_wall_phases_wrap_after_27h() {
+        assert_eq!(Tunnel::advance_phase(0x26), 0x27);
+        assert_eq!(Tunnel::advance_phase(0x27), 0);
+        assert_eq!(Tunnel::advance_phase(0x1234), 0, "超出循環的值也歸零");
     }
 
-    /// `sub_140A1`：配置第四關的圖庫緩衝區（`word_1CF5C` 起 10 個段值）。E 模式 5 塊 600h、5 塊 1。
-    pub(crate) fn s140a1(&mut self) {
-        self.ds.w8(a(0x1CEF6), 0x41);
-        self.ds.w8(a(0x1CF08), 0x41);
-        self.ds.w8(a(0x1CEF7), 0x34);
-        self.ds.w8(a(0x1CF09), 0x34);
-        self.ds.w8(a(0x1CEF8), 0x30);
-        self.ds.w8(a(0x1CF0A), 0x30);
-        self.s2_alloc_chain(&[
-            (0x1CF5C, 0x600),
-            (0x1CF5E, 0x600),
-            (0x1CF60, 0x600),
-            (0x1CF62, 0x600),
-            (0x1CF64, 0x600),
-            (0x1CF66, 1),
-            (0x1CF68, 1),
-            (0x1CF6A, 1),
-            (0x1CF6C, 1),
-            (0x1CF6E, 1),
-        ]);
-    }
-
-    /// `sub_1418E`：依相反順序釋放 `sub_140A1` 配置的 10 塊。`13DAFh` 配置後立刻釋放，段值仍留在 `word_1CF5C` 起的字組。
-    pub(crate) fn s1418e(&mut self) {
-        for dst in [0x1CF6E, 0x1CF6C, 0x1CF6A, 0x1CF68, 0x1CF66, 0x1CF64, 0x1CF62, 0x1CF60, 0x1CF5E, 0x1CF5C] {
-            self.r.ax = self.ds.r16(a(dst));
-            self.s2_free();
-        }
+    #[test]
+    fn restart_puts_the_ceiling_18_bytes_ahead_of_the_floor() {
+        let mut t = Tunnel { offset: 5, floor_phase: 6, ceiling_phase: 7, script_pos: 8 };
+        t.restart();
+        assert_eq!(t, Tunnel { offset: 0, floor_phase: 0, ceiling_phase: 0x12, script_pos: 0 });
     }
 }

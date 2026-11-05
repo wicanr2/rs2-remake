@@ -151,8 +151,8 @@ impl Core {
         self.draw_my(Placement::at(0x1C, 0x28, ROLE_NAMES.wrapping_add(menu.role)));
         self.draw_my(Placement::at(3, 0x1E, FACES.wrapping_add(menu.level)));
         self.apply_difficulty();
-        self.wait_ticks(1).await;
-        self.wait_ticks(7).await;
+        self.await_timer_ticks(1).await;
+        self.await_timer_ticks(7).await;
     }
 
     /// 難度加成寫進資料段（原版 `sub_12754`），敵人領域從那裡讀。

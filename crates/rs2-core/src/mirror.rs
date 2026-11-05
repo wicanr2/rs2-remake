@@ -18,17 +18,22 @@
 //! 本檔後半是「尚未搬走的共用資料段」：搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、格網），
 //! 一律經這裡的具名存取函式。那個領域搬完時，把存取函式換成真正的結構。
 
+use crate::boss_scroll::{BossLayer, BossLayers};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::{Bullet, Capsule, EnemyBullets, POOL_SIZE as EB_POOL_SIZE, Slot, Template};
 use crate::entity::{Enemies, Enemy, POOL_SIZE as EN_POOL_SIZE, Slot as EnSlot, Sprite, Timetable};
+use crate::flow::{Clock, Cheat, Controls, FLAG_OFF, FLAG_ON, FireFlags, Flow, STAGE_1, STAGE_3, STAGE_CLEARED, Scenes};
 use crate::fx::{Effect, Effects, POOL_SIZE, Script};
 use crate::game::Core;
 use crate::pbullet::{Facing, POOL_SIZE as PB_POOL_SIZE, PlayerBullet, PlayerBullets, Shot, Slot as PbSlot};
 use crate::player::{PLAYER_COUNT, Player, Players, Pods};
 use crate::menu::Menu;
 use crate::scenery::{POOL_SIZE as SC_POOL_SIZE, Prop, Scenery};
-use crate::scene::Palette;
 use crate::title::Title;
+use crate::stage1::Backdrop as Stage1Backdrop;
+use crate::stage2::{Backdrop as Stage2Backdrop, Strip};
+use crate::stage3::MapScroll;
+use crate::stage4::Tunnel;
 
 /// 一個領域的狀態與資料段之間的對應。
 pub(crate) trait Mirror {
@@ -48,6 +53,8 @@ impl Core {
         self.sc.load(&self.ds);
         self.pl.load(&self.ds);
         self.title.load(&self.ds);
+        self.flow.load(&self.ds);
+        self.scenes.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
@@ -59,6 +66,8 @@ impl Core {
         self.sc.store(&mut self.ds);
         self.pl.store(&mut self.ds);
         self.title.store(&mut self.ds);
+        self.flow.store(&mut self.ds);
+        self.scenes.store(&mut self.ds);
     }
 }
 
@@ -704,6 +713,391 @@ impl Players {
     }
 }
 
+// ---- 關卡流程 ----
+
+/// 關卡字母 `byte_1CFDB`、過關旗標 `byte_1CFAD`、連爆輪數 `byte_1CFAE`、完整性記號 `byte_1CFAA`（皆 1 位元組）。
+const FLOW_STAGE: u16 = a(0x1CFDB);
+const FLOW_CLEAR: u16 = a(0x1CFAD);
+const FLOW_BURSTS: u16 = a(0x1CFAE);
+const FLOW_INTEGRITY_MARK: u16 = a(0x1CFAA);
+/// `word_1B02`。
+const FLOW_TAMPER_COUNTDOWN: u16 = 0x1B02;
+/// 計時中斷的五個字組：`273B7`、`273B9`、`2739B`、`1D3A8`、`1D3AE`。
+const CLOCK_TOTAL: u16 = a(0x273B7);
+const CLOCK_SINCE_WAIT: u16 = a(0x273B9);
+const CLOCK_SINCE_SOUND_TOGGLE: u16 = a(0x2739B);
+const CLOCK_CYCLE_A: u16 = a(0x1D3A8);
+const CLOCK_CYCLE_B: u16 = a(0x1D3AE);
+/// 輸入：最後的掃描碼 `byte_2742C`、搖桿旗標 `byte_1DAAC`。
+const CONTROLS_LAST_SCAN: u16 = a(0x2742C);
+const CONTROLS_JOYMOUSE: u16 = a(0x1DAAC);
+/// 開火旗標，玩家 1 與玩家 2：新按 `273A7`、`273A8`，事件 `273A9`、`273AB`，轉向 `273AA`、`273AC`（皆 1 位元組）。
+const FIRE_NEW_PRESS: [u16; 2] = [a(0x273A7), a(0x273A8)];
+const FIRE_EVENT: [u16; 2] = [a(0x273A9), a(0x273AB)];
+const FIRE_TURN: [u16; 2] = [a(0x273AA), a(0x273AC)];
+/// 秘技（皆字組）：解鎖 `2739D`，三個按鍵計數 `2739F`、`273A1`、`273A3`，無敵 `273A5`。
+const CHEAT_UNLOCKED: u16 = a(0x2739D);
+const CHEAT_PRESSES: [u16; 3] = [a(0x2739F), a(0x273A1), a(0x273A3)];
+const CHEAT_INVINCIBLE: u16 = a(0x273A5);
+
+impl Mirror for Flow {
+    fn load(&mut self, ds: &Dseg) {
+        self.stage = ds.r8(FLOW_STAGE);
+        self.clear = ds.r8(FLOW_CLEAR);
+        self.bursts = ds.r8(FLOW_BURSTS);
+        self.integrity_mark = ds.r8(FLOW_INTEGRITY_MARK);
+        self.tamper_countdown = ds.r16(FLOW_TAMPER_COUNTDOWN);
+        self.clock = Clock {
+            total: ds.r16(CLOCK_TOTAL),
+            since_wait: ds.r16(CLOCK_SINCE_WAIT),
+            since_sound_toggle: ds.r16(CLOCK_SINCE_SOUND_TOGGLE),
+            cycle_a: ds.r16(CLOCK_CYCLE_A),
+            cycle_b: ds.r16(CLOCK_CYCLE_B),
+        };
+        self.controls = Controls {
+            last_scan: ds.r8(CONTROLS_LAST_SCAN),
+            fire: FireFlags {
+                new_press: FIRE_NEW_PRESS.map(|at| ds.r8(at)),
+                event: FIRE_EVENT.map(|at| ds.r8(at)),
+                turn: FIRE_TURN.map(|at| ds.r8(at)),
+            },
+            cheat: Cheat {
+                unlocked: ds.r16(CHEAT_UNLOCKED),
+                presses: CHEAT_PRESSES.map(|at| ds.r16(at)),
+                invincible: ds.r16(CHEAT_INVINCIBLE),
+            },
+            joymouse: ds.r8(CONTROLS_JOYMOUSE),
+        };
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        ds.w8(FLOW_STAGE, self.stage);
+        ds.w8(FLOW_CLEAR, self.clear);
+        ds.w8(FLOW_BURSTS, self.bursts);
+        ds.w8(FLOW_INTEGRITY_MARK, self.integrity_mark);
+        ds.w16(FLOW_TAMPER_COUNTDOWN, self.tamper_countdown);
+        ds.w16(CLOCK_TOTAL, self.clock.total);
+        ds.w16(CLOCK_SINCE_WAIT, self.clock.since_wait);
+        ds.w16(CLOCK_SINCE_SOUND_TOGGLE, self.clock.since_sound_toggle);
+        ds.w16(CLOCK_CYCLE_A, self.clock.cycle_a);
+        ds.w16(CLOCK_CYCLE_B, self.clock.cycle_b);
+        let c = &self.controls;
+        ds.w8(CONTROLS_LAST_SCAN, c.last_scan);
+        for who in 0..2 {
+            ds.w8(FIRE_NEW_PRESS[who], c.fire.new_press[who]);
+            ds.w8(FIRE_EVENT[who], c.fire.event[who]);
+            ds.w8(FIRE_TURN[who], c.fire.turn[who]);
+        }
+        ds.w16(CHEAT_UNLOCKED, c.cheat.unlocked);
+        for (at, v) in CHEAT_PRESSES.into_iter().zip(c.cheat.presses) {
+            ds.w16(at, v);
+        }
+        ds.w16(CHEAT_INVINCIBLE, c.cheat.invincible);
+        ds.w8(CONTROLS_JOYMOUSE, c.joymouse);
+    }
+}
+
+// ---- 各關背景 ----
+
+/// 第一關背景（皆字組）：下移 `1E6B8`、天空下移 `1E6BA`、波浪相位 `1E6BC`、岩相位 `1E6BE`。
+const S1_DROP: u16 = a(0x1E6B8);
+const S1_SKY_DROP: u16 = a(0x1E6BA);
+const S1_WAVE_PHASE: u16 = a(0x1E6BC);
+const S1_ROCK_PHASE: u16 = a(0x1E6BE);
+/// 第二關背景（皆字組）：火焰面底端 `1D7BE`、頂端 `1D7C0`、相位 `1D7C2`；近景條 A（相位 `1D7C4`、起點 `1D7C6`）、
+/// B（`1D7C8`、`1D7CA`）、C（`1D7CC`、`1D7CE`）；柱 `1D7D0`。
+const S2_FLAME_BOTTOM: u16 = a(0x1D7BE);
+const S2_FLAME_TOP: u16 = a(0x1D7C0);
+const S2_FLAME_PHASE: u16 = a(0x1D7C2);
+const S2_STRIP_A: u16 = a(0x1D7C4);
+const S2_STRIP_B: u16 = a(0x1D7C8);
+const S2_STRIP_C: u16 = a(0x1D7CC);
+const S2_PILLAR: u16 = a(0x1D7D0);
+/// 第二關淡出工作表：`stage2` 調色盤的複本，45 位元組。
+const S2_FADE: u16 = 0x0CA7;
+/// 第三關地圖位置（皆字組）：視窗 `25BC4`、地圖左緣 `25BC6`、地圖第一列 `25BC8`。
+/// 之後的 `25BCA` 是 `draw_initial_map` 與 `scroll_map_second_page` 的工作變數（`DS_EXEMPT`）。
+const S3_WINDOW: u16 = a(0x25BC4);
+const S3_LEFT_COL: u16 = a(0x25BC6);
+const S3_TOP_ROW: u16 = a(0x25BC8);
+/// 第四關通道（皆字組）：偏移 `1D91D`、下壁相位 `1D91F`、上壁相位 `1D921`、腳本位置 `1D9A2`。
+const S4_OFFSET: u16 = a(0x1D91D);
+const S4_FLOOR_PHASE: u16 = a(0x1D91F);
+const S4_CEILING_PHASE: u16 = a(0x1D921);
+const S4_SCRIPT_POS: u16 = a(0x1D9A2);
+/// 頭目合成圖三層，每層三個字組：(y, x, 腳本位置)。第 0 層 `1DB5F`、`1DB61`、`1DB6D`；第 1 層 `1DB63`、`1DB65`、`1DB6F`；
+/// 第 2 層 `1DB67`、`1DB69`、`1DB71`。
+const BOSS_LAYER_WORDS: [[u16; 3]; 3] = [
+    [a(0x1DB5F), a(0x1DB61), a(0x1DB6D)],
+    [a(0x1DB63), a(0x1DB65), a(0x1DB6F)],
+    [a(0x1DB67), a(0x1DB69), a(0x1DB71)],
+];
+
+impl Mirror for Scenes {
+    fn load(&mut self, ds: &Dseg) {
+        self.stage1 = Stage1Backdrop {
+            drop: ds.r16(S1_DROP),
+            sky_drop: ds.r16(S1_SKY_DROP),
+            wave_phase: ds.r16(S1_WAVE_PHASE),
+            rock_phase: ds.r16(S1_ROCK_PHASE),
+        };
+        let strip = |at: u16| Strip { phase: ds.r16(at), start: ds.r16(at + 2) };
+        self.stage2 = Stage2Backdrop {
+            flame_bottom: ds.r16(S2_FLAME_BOTTOM),
+            flame_top: ds.r16(S2_FLAME_TOP),
+            flame_phase: ds.r16(S2_FLAME_PHASE),
+            strip_a: strip(S2_STRIP_A),
+            strip_b: strip(S2_STRIP_B),
+            strip_c: strip(S2_STRIP_C),
+            pillar: ds.r16(S2_PILLAR),
+            fade: std::array::from_fn(|k| ds.r8(S2_FADE + k as u16)),
+        };
+        self.map = MapScroll { window: ds.r16(S3_WINDOW), left_col: ds.r16(S3_LEFT_COL), top_row: ds.r16(S3_TOP_ROW) };
+        self.tunnel = Tunnel {
+            offset: ds.r16(S4_OFFSET),
+            floor_phase: ds.r16(S4_FLOOR_PHASE),
+            ceiling_phase: ds.r16(S4_CEILING_PHASE),
+            script_pos: ds.r16(S4_SCRIPT_POS),
+        };
+        self.boss = BossLayers {
+            layers: BOSS_LAYER_WORDS.map(|[y, x, script]| BossLayer { y: ds.r16(y), x: ds.r16(x), script: ds.r16(script) }),
+        };
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        let s1 = &self.stage1;
+        ds.w16(S1_DROP, s1.drop);
+        ds.w16(S1_SKY_DROP, s1.sky_drop);
+        ds.w16(S1_WAVE_PHASE, s1.wave_phase);
+        ds.w16(S1_ROCK_PHASE, s1.rock_phase);
+        let s2 = &self.stage2;
+        ds.w16(S2_FLAME_BOTTOM, s2.flame_bottom);
+        ds.w16(S2_FLAME_TOP, s2.flame_top);
+        ds.w16(S2_FLAME_PHASE, s2.flame_phase);
+        for (at, strip) in [(S2_STRIP_A, s2.strip_a), (S2_STRIP_B, s2.strip_b), (S2_STRIP_C, s2.strip_c)] {
+            ds.w16(at, strip.phase);
+            ds.w16(at + 2, strip.start);
+        }
+        ds.w16(S2_PILLAR, s2.pillar);
+        for (k, &level) in s2.fade.iter().enumerate() {
+            ds.w8(S2_FADE + k as u16, level);
+        }
+        ds.w16(S3_WINDOW, self.map.window);
+        ds.w16(S3_LEFT_COL, self.map.left_col);
+        ds.w16(S3_TOP_ROW, self.map.top_row);
+        ds.w16(S4_OFFSET, self.tunnel.offset);
+        ds.w16(S4_FLOOR_PHASE, self.tunnel.floor_phase);
+        ds.w16(S4_CEILING_PHASE, self.tunnel.ceiling_phase);
+        ds.w16(S4_SCRIPT_POS, self.tunnel.script_pos);
+        for (words, layer) in BOSS_LAYER_WORDS.iter().zip(&self.boss.layers) {
+            ds.w16(words[0], layer.y);
+            ds.w16(words[1], layer.x);
+            ds.w16(words[2], layer.script);
+        }
+    }
+}
+
+/// 場景的調色盤（唯讀表格）。每張是 17 位元組的 EGA 屬性表接 48 位元組的 DAC 表，位址指向 DAC 表。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Palette {
+    /// 載入畫面與第一關進場（`sub_11112`），DAC 表與標題的 `title_d` 共用，屬性表在 `56Eh`。
+    Loader,
+    Stage1,
+    Stage1Boss,
+    Stage2,
+    /// 第二關中頭目（`stage2_b`）。
+    Stage2Mid,
+    /// 第二關頭目（`stage2_c`）。
+    Stage2Boss,
+    /// 第二關淡出工作表所在的位置（`0CA7h`）。工作表的內容在 [`Stage2Backdrop::fade`]，只有最後 3 位元組和屬性表讀這裡。
+    Stage2Fade,
+    Stage3,
+    Stage4,
+    /// 標題動畫的手臂、眼部特寫與製作名單。DAC 表與 `Loader` 共用。
+    TitleD,
+    /// 標題動畫的太空船正面與 `RS-S` 字樣。
+    TitleE,
+    /// 選單。
+    Menu,
+    /// 標題動畫的地球與太空船。
+    Beg1A,
+    /// 太空船飛過時的灰階閃光。
+    Beg1B,
+    /// 第一關到第四關的過場圖（J1 到 J4）。
+    J1,
+    J2,
+    J3,
+    J4,
+    /// 片尾的地景與人物行星。
+    EndingA,
+    EndingB,
+}
+
+impl Palette {
+    pub(crate) const fn table_offset(self) -> u16 {
+        match self {
+            Palette::Loader => 0x05A9,
+            Palette::Stage1 => 0x04FD,
+            Palette::Stage1Boss => 0x053E,
+            Palette::Stage2 => 0x0C25,
+            Palette::Stage2Mid => 0x0C66,
+            Palette::Stage2Boss => 0x0CE8,
+            Palette::Stage2Fade => 0x0CA7,
+            Palette::Stage3 => 0x0D29,
+            Palette::Stage4 => 0x0D82,
+            Palette::TitleD => 0x05A9,
+            Palette::TitleE => 0x05EA,
+            Palette::Menu => 0x062B,
+            Palette::Beg1A => 0x066C,
+            Palette::Beg1B => 0x06AD,
+            Palette::J1 => 0x06EE,
+            Palette::J2 => 0x072F,
+            Palette::J3 => 0x0770,
+            Palette::J4 => 0x07B1,
+            Palette::EndingA => 0x0E54,
+            Palette::EndingB => 0x0E95,
+        }
+    }
+
+    /// EGA 屬性表：在 DAC 表之前 11h 位元組，只有 `Loader` 例外。
+    pub(crate) const fn attr_offset(self) -> u16 {
+        match self {
+            Palette::Loader => 0x056E,
+            other => other.table_offset() - 0x11,
+        }
+    }
+}
+
+/// 頭目合成圖的捲動腳本（唯讀表格）。腳本是八向指令的位元組串，結束碼見 `boss_scroll.rs`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BossScript {
+    /// 第一關頭目，714 步，起點 x = −20、y = 200。
+    Stage1,
+    /// 第二關中頭目第一層，148 步。
+    Stage2MidA,
+    /// 第二關中頭目第二層，189 步。
+    Stage2MidB,
+    /// 第二關頭目，704 步，以 1Fh 結束。
+    Stage2Boss,
+    /// 第三關頭目，758 步。
+    Stage3,
+}
+
+impl BossScript {
+    /// 腳本在資料段的位移。
+    pub(crate) const fn start(self) -> u16 {
+        match self {
+            BossScript::Stage1 => 0x0FB3,
+            BossScript::Stage2MidA => 0x127E,
+            BossScript::Stage2MidB => 0x1313,
+            BossScript::Stage2Boss => 0x13D1,
+            BossScript::Stage3 => 0x1692,
+        }
+    }
+}
+
+/// 第四關通道背景的腳本（唯讀表格）：76 位元組，1 讓偏移減 10、2 加 10、0Fh 結尾。
+const TUNNEL_SCRIPT: u16 = 0x0DE4;
+
+/// 各關入口向 DOS 配置十塊圖庫緩衝區再立刻釋放（INT 21h AH=48h、49h）的對象。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageBuffers {
+    Stage2,
+    Stage3,
+    Stage4,
+}
+
+/// 錯誤訊息的兩個三字元前綴（`byte_1CEF6` 起與 `byte_1CF08` 起）。`sub_10210`、`sub_1026C` 每塊把第三個字元加 1。
+const DOS_MESSAGE_A: u16 = a(0x1CEF6);
+const DOS_MESSAGE_B: u16 = a(0x1CF08);
+/// 配置結果：十個段值（`word_1CF5C` 起）。
+const DOS_SEGMENTS: u16 = a(0x1CF5C);
+const DOS_BLOCKS: u16 = 10;
+/// 訊息第三個字元的初值。
+const DOS_COUNTER_START: u8 = 0x30;
+
+impl StageBuffers {
+    /// 配置前寫進訊息前綴的前兩個字元。
+    const fn alloc_prefix(self) -> (u8, u8) {
+        match self {
+            StageBuffers::Stage2 | StageBuffers::Stage3 => (0x41, 0x2B),
+            StageBuffers::Stage4 => (0x41, 0x34),
+        }
+    }
+
+    /// 釋放前寫進訊息前綴的前兩個字元；第四關不寫。
+    const fn free_prefix(self) -> Option<(u8, u8)> {
+        match self {
+            StageBuffers::Stage2 | StageBuffers::Stage3 => Some((0x42, 0x2D)),
+            StageBuffers::Stage4 => None,
+        }
+    }
+
+    /// 十塊的段落數（16 位元組為一段落）。第三關的配置函式不記錄段值，只加計數。
+    const fn paragraphs(self) -> Option<[u16; DOS_BLOCKS as usize]> {
+        match self {
+            StageBuffers::Stage2 => Some([0x600, 0x600, 0x600, 0x600, 0x600, 0x10, 0x10, 0x10, 0x10, 1]),
+            StageBuffers::Stage3 => None,
+            StageBuffers::Stage4 => Some([0x600, 0x600, 0x600, 0x600, 0x600, 1, 1, 1, 1, 1]),
+        }
+    }
+}
+
+impl Core {
+    /// DOS 配置十塊的副作用（原版 `sub_138D6`、`sub_13BE0`、`sub_140A1`）：DOS 不在模擬範圍，只留下資料段的簿記，
+    /// 它們全在 `A0_EXEMPT`，沒有邏輯讀。
+    ///
+    /// 模型：配置結果用第一個段值現有的值當基底（上一關釋放後最低的空洞起點，每關相同），之後每塊接在前一塊後面，
+    /// 中間隔一個 MCB 段落：`seg[k] = seg[k-1] + 段落數[k-1] + 1`。第一關配置的傾印 `4989h, 4E8Ah, …` 符合這個公式。
+    /// 假設不成立時對拍會在這 10 個字組先出現差異。
+    pub(crate) fn dos_allocate_buffers(&mut self, which: StageBuffers) {
+        let (first, second) = which.alloc_prefix();
+        self.write_dos_message(first, second);
+        if let Some(blocks) = which.paragraphs() {
+            let mut seg = self.ds.r16(DOS_SEGMENTS);
+            for (k, paragraphs) in blocks.into_iter().enumerate() {
+                self.ds.w16(DOS_SEGMENTS + 2 * k as u16, seg);
+                seg = seg.wrapping_add(paragraphs).wrapping_add(1);
+            }
+        }
+        self.count_dos_calls();
+    }
+
+    /// 依相反順序釋放十塊（原版 `sub_139CD`、`sub_13CCD`、`sub_1418E`）。段值仍留在配置結果的十個字組。
+    pub(crate) fn dos_free_buffers(&mut self, which: StageBuffers) {
+        if let Some((first, second)) = which.free_prefix() {
+            self.write_dos_message(first, second);
+        }
+        self.count_dos_calls();
+    }
+
+    fn write_dos_message(&mut self, first: u8, second: u8) {
+        for at in [DOS_MESSAGE_A, DOS_MESSAGE_B] {
+            self.ds.w8(at, first);
+            self.ds.w8(at + 1, second);
+            self.ds.w8(at + 2, DOS_COUNTER_START);
+        }
+    }
+
+    /// 十次 DOS 呼叫，每次把兩個訊息前綴的第三個字元加 1。
+    fn count_dos_calls(&mut self) {
+        for at in [DOS_MESSAGE_A + 2, DOS_MESSAGE_B + 2] {
+            let v = self.ds.r8(at).wrapping_add(DOS_BLOCKS as u8);
+            self.ds.w8(at, v);
+        }
+    }
+
+    /// 唯讀表格連續 `N` 個位元組。
+    pub(crate) fn table_bytes<const N: usize>(&self, ptr: u16) -> [u8; N] {
+        std::array::from_fn(|k| self.ds.r8(ptr.wrapping_add(k as u16)))
+    }
+
+    /// 第四關通道腳本第 `pos` 個位元組。
+    pub(crate) fn tunnel_script_byte(&self, pos: u16) -> u8 {
+        self.ds.r8(TUNNEL_SCRIPT.wrapping_add(pos))
+    }
+}
+
 /// 玩家的三張形狀表（唯讀表格）。每張是 `寬, 高, 寬 × 高 位元組`，表格階段改成解析 `S.EXE` 得到的結構。
 /// 兩位玩家各有一份，內容相同，位址不同。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -756,28 +1150,6 @@ impl Mirror for Title {
         ds.w16(TITLE_LEVEL, self.menu.level);
         ds.w16(TITLE_ROLE, self.menu.role);
         ds.w16(TITLE_DEMO_ROUND, self.demo_round);
-    }
-}
-
-impl Palette {
-    /// 16 色調色盤表在資料段的位移（每張 48 位元組，前面 11h 位元組是 EGA 屬性表，見 `Core::set_dac`）。
-    /// 唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。位址來自原版調色盤函式的 `mov dx, 表` 立即值：
-    /// `sub_1295B`、`sub_12989`、`sub_129B7`、`sub_129E5`、`sub_12A13`、`sub_12A41`、`sub_12A6F`、`sub_12A9D`、`sub_12ACB`、
-    /// `sub_143EA`、`sub_14419`。
-    pub(crate) const fn table_offset(self) -> u16 {
-        match self {
-            Palette::TitleD => 0x05A9,
-            Palette::TitleE => 0x05EA,
-            Palette::Menu => 0x062B,
-            Palette::Beg1A => 0x066C,
-            Palette::Beg1B => 0x06AD,
-            Palette::J1 => 0x06EE,
-            Palette::J2 => 0x072F,
-            Palette::J3 => 0x0770,
-            Palette::J4 => 0x07B1,
-            Palette::EndingA => 0x0E54,
-            Palette::EndingB => 0x0E95,
-        }
     }
 }
 
@@ -954,32 +1326,124 @@ impl Core {
     }
 }
 
-/// `byte_1CFDB`：目前的關卡字母，`A` 是第一關，`C` 是第三關。
-const STAGE_LETTER: u16 = a(0x1CFDB);
-const STAGE_ONE: u8 = b'A';
-const STAGE_THREE: u8 = b'C';
-/// `word_1CFE2`：關卡的幀計數。
+/// `word_1CFE2`：關卡的幀計數。標題與片尾（片尾自己數幀）仍直接讀寫資料段，所以留在資料段。
 const STAGE_FRAME: u16 = a(0x1CFE2);
-/// `byte_1CFAD`：過關旗標，`N` 進行中，`F` 已過關（主迴圈改播連爆）。
+/// `byte_1CFAD`：過關旗標（`Flow::clear`）的位移，只給 [`stage_cleared`] 讀資料段複本用。
 const STAGE_CLEAR_FLAG: u16 = a(0x1CFAD);
-const STAGE_CLEARED: u8 = b'F';
-/// `byte_1CFDC`：展示旗標，`Y` 是正在播放展示錄影（標題流程設，`N` 是正式遊戲）。
+/// `byte_1CFDC`：展示旗標，標題寫（`Y` 是示範，`N` 是正式遊戲），關卡與玩家讀。
 const DEMO_FLAG: u16 = a(0x1CFDC);
-/// 展示錄影在資料段的起點，`DM1.LCK` 的 3000 位元組。
+/// 展示錄影在資料段的起點，`DM1.LCK` 的 3000 位元組（載入領域寫入）。
 const DEMO_RECORD: u16 = 0xAAE2;
-/// `word_273A5`：無敵秘技旗標（低位元組 `Y` 是開）。
-const CHEAT_FLAG: u16 = a(0x273A5);
-const CHEAT_ON: u8 = b'Y';
+/// `byte_1CFAB`：標題迴圈每圈寫 `Y`。`sub_10CD0`（`10D17h`）見到不是 `N` 就換 `B.MIX` 開音樂。
+const STARTED_FROM_TITLE: u16 = a(0x1CFAB);
+/// `byte_2739A`：音效開關鍵（INT 9 的 `sub_1A891`）是否生效，`N` 不生效。標題期間 `N`，進關卡改 `Y`，離開改 `N`。
+const SOUND_KEY: u16 = a(0x2739A);
+/// `byte_2684E`：音效開關，位元 0 為 1 是靜音。INT 9 的 S 鍵切換，`sub_187C3` 讀。
+const SOUND_MUTE: u16 = a(0x2684E);
+/// `byte_2684F`：喇叭音效旗標，`sub_18672` 依位元選參數。
+const SPEAKER_FLAGS: u16 = a(0x2684F);
+/// `byte_1D3A2`：密碼檢查通過旗標，映像是 `N`，通過時寫 `Y`。第二關 `130AFh` 不是 `Y` 就停在無限迴圈。
+const PASSWORD_ACCEPTED: u16 = a(0x1D3A2);
+/// `word_1D3B0`：密碼檢查未通過的旗標。破解組補丁讓檢查恆通過，重製裡沒有人寫它，恆為 0。
+const PASSWORD_REJECTED: u16 = a(0x1D3B0);
+/// `byte_1CBCE`：音樂可用（`Y`）。
+#[cfg(test)]
+const MUSIC_ENABLED: u16 = a(0x1CBCE);
+/// 完整性檢查累加的資料段範圍：`7F4h` 起 400 個字組（`sub_12F95`），初值 64h。
+const INTEGRITY_TABLE: u16 = 0x07F4;
+const INTEGRITY_WORDS: u16 = 0x190;
+const INTEGRITY_SEED: u16 = 0x64;
 
-/// 按鍵狀態表，`2748Bh + 掃描碼`，每鍵一個位元組：1 按住，2 剛放開。INT 9（`flow.rs`）維護。
+/// 測試用：關卡的整合測試從資料段複本（`Game::ds`）讀狀態時用的位移。
+#[cfg(test)]
+pub(crate) mod probe {
+    use crate::dseg::a;
+
+    pub(crate) const STAGE_FRAME: u16 = a(0x1CFE2);
+    pub(crate) const MAP_LEFT_COL: u16 = a(0x25BC6);
+    pub(crate) const PLAYER_1_HP: u16 = a(0x1CFDE);
+    pub(crate) const PLAYER_2_HP: u16 = a(0x1CFE0);
+    pub(crate) const PLAYERS_ALIVE: u16 = a(0x1CFDD);
+}
+
+/// 按鍵狀態表，`2748Bh + 掃描碼`，每鍵一個位元組：1 按住，2 剛放開。INT 9 維護，標題與片尾直接讀寫。
 const KEY_TABLE: u16 = a(0x2748B);
 const KEY_HELD: u8 = 1;
+const KEY_RELEASED: u8 = 2;
+/// 掃描碼轉 ASCII 的對照表，`0A86Dh` 起（唯讀）。表只到掃描碼 5Dh，之後讀到的是按鍵狀態表的前面幾項。
+const ASCII_TABLE: u16 = 0xA86D;
+/// `byte_27422`：最近一次按下的鍵（ASCII），0 表示沒有。標題的各段動畫每步看一次它是不是 0。
+const LAST_KEY: u16 = a(0x27422);
 
-/// 開火旗標的值：`Y` 成立，`N` 不成立。
-const FLAG_ON: u8 = b'Y';
-const FLAG_OFF: u8 = b'N';
+/// 標題、片尾與關卡讀的鍵。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// 標題與片尾的選單用，關卡不讀。
+    #[allow(dead_code)]
+    Enter,
+    Space,
+    Q,
+    R,
+    Esc,
+    Digit1,
+    Digit2,
+    Digit3,
+    W,
+    Ctrl,
+    S,
+    D,
+    J,
+    K,
+    LeftShift,
+    Z,
+    C,
+    Slash,
+    RightShift,
+    KeypadStar,
+    Alt,
+    Keypad5,
+}
+
+impl Key {
+    /// set 1 掃描碼，也是按鍵表的索引。
+    pub(crate) const fn scancode(self) -> u16 {
+        match self {
+            Key::Up => 0x48,
+            Key::Down => 0x50,
+            Key::Left => 0x4B,
+            Key::Right => 0x4D,
+            Key::Enter => 0x1C,
+            Key::Space => 0x39,
+            Key::Q => 0x10,
+            Key::R => 0x13,
+            Key::Esc => 0x01,
+            Key::Digit1 => 0x02,
+            Key::Digit2 => 0x03,
+            Key::Digit3 => 0x04,
+            Key::W => 0x11,
+            Key::Ctrl => 0x1D,
+            Key::S => 0x1F,
+            Key::D => 0x20,
+            Key::J => 0x24,
+            Key::K => 0x25,
+            Key::LeftShift => 0x2A,
+            Key::Z => 0x2C,
+            Key::C => 0x2E,
+            Key::Slash => 0x35,
+            Key::RightShift => 0x36,
+            Key::KeypadStar => 0x37,
+            Key::Alt => 0x38,
+            Key::Keypad5 => 0x4C,
+        }
+    }
+}
 
 /// 玩家的開火旗標，INT 9 的 `sub_1A9B5` 依按鍵事件設成 `Y`，玩家邏輯處理後清成 `N`。
+/// 旗標本身在 [`crate::flow::FireFlags`]。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FireFlag {
     /// 開火鍵放開過，下一次按下算新按（玩家 1 `273A7h`，玩家 2 `273A8h`）。
@@ -988,19 +1452,6 @@ pub(crate) enum FireFlag {
     Event,
     /// 轉向鍵被按下（`273AAh`、`273ACh`）。
     Turn,
-}
-
-impl FireFlag {
-    fn offset(self, player: usize) -> u16 {
-        match (self, player) {
-            (FireFlag::NewPress, 0) => a(0x273A7),
-            (FireFlag::Event, 0) => a(0x273A9),
-            (FireFlag::Turn, 0) => a(0x273AA),
-            (FireFlag::NewPress, _) => a(0x273A8),
-            (FireFlag::Event, _) => a(0x273AB),
-            (FireFlag::Turn, _) => a(0x273AC),
-        }
-    }
 }
 
 /// 過關旗標是不是已設。`Game::player_status` 只有資料段複本，所以是自由函式。
@@ -1017,13 +1468,15 @@ const DIFFICULTY_HP: u16 = a(0x1E6B2);
 const DIFFICULTY_FIRE: u16 = a(0x1E6B4);
 /// `word_2685C`：繪製的暫存區選擇，0 是 A，8000h 是 B。
 const SCRATCH_SELECT: u16 = a(0x2685C);
+/// 暫存區 A 的選擇值。
+pub(crate) const SCRATCH_A: u16 = 0;
 /// 暫存區 B 的選擇值。
 pub(crate) const SCRATCH_B: u16 = 0x8000;
 
 impl Core {
-    /// 目前是不是第三關（有 G4 地形格）。
+    /// 目前是不是第三關（有 G4 地形格）。頭目段關卡字母改成小寫 `c`，不算。
     pub(crate) fn on_terrain_stage(&self) -> bool {
-        self.ds.r8(STAGE_LETTER) == STAGE_THREE
+        self.flow.stage == STAGE_3
     }
 
     /// 關卡的幀計數（原版 `word_1CFE2`）。
@@ -1031,19 +1484,35 @@ impl Core {
         self.ds.r16(STAGE_FRAME)
     }
 
-    /// 設過關旗標（原版 `byte_1CFAD` = `F`）。
-    pub(crate) fn mark_stage_cleared(&mut self) {
-        self.ds.w8(STAGE_CLEAR_FLAG, STAGE_CLEARED);
+    /// 幀計數歸零（原版 `word_1CFE2`）。進關卡與片尾重播用。
+    pub(crate) fn reset_stage_frame(&mut self) {
+        self.ds.w16(STAGE_FRAME, 0);
     }
 
-    /// 過關旗標是不是已設（原版 `byte_1CFAD` = `F`）：主迴圈改播連爆，玩家邏輯停止。
+    /// 幀計數加 1。
+    pub(crate) fn advance_stage_frame(&mut self) {
+        let frame = self.ds.r16(STAGE_FRAME).wrapping_add(1);
+        self.ds.w16(STAGE_FRAME, frame);
+    }
+
+    /// 幀計數設成 `frame`：第一關釘在 288h、第三關釘在 474h、第四關進場設 1。
+    pub(crate) fn set_stage_frame(&mut self, frame: u16) {
+        self.ds.w16(STAGE_FRAME, frame);
+    }
+
+    /// 設過關旗標（原版 `byte_1CFAD` = `F`）。
+    pub(crate) fn mark_stage_cleared(&mut self) {
+        self.flow.clear = STAGE_CLEARED;
+    }
+
+    /// 過關旗標是不是已設（原版 `byte_1CFAD` = `F`）：主迴圈改播連爆，玩家邏輯與頭目背景停止。
     pub(crate) fn stage_cleared(&self) -> bool {
-        stage_cleared(&self.ds)
+        self.flow.is_cleared()
     }
 
     /// 是不是第一關（原版 `byte_1CFDB` = `A`）。
     pub(crate) fn on_first_stage(&self) -> bool {
-        self.ds.r8(STAGE_LETTER) == STAGE_ONE
+        self.flow.stage == STAGE_1
     }
 
     /// 是不是在播放展示錄影（原版 `byte_1CFDC` = `Y`）。
@@ -1051,9 +1520,120 @@ impl Core {
         demo_playing(&self.ds)
     }
 
-    /// 無敵秘技（原版 `word_273A5` 的低位元組是 `Y`）：玩家受傷不減血。INT 9 的秘技序列與 `Game::set_invincible` 寫。
-    pub(crate) fn invincible_cheat(&self) -> bool {
-        self.ds.r8(CHEAT_FLAG) == CHEAT_ON
+    /// 示範模式的旗標（原版 `byte_1CFDC`）：`on` 寫 `Y`，否則寫 `N`。
+    pub(crate) fn set_demo_mode(&mut self, on: bool) {
+        self.ds.w8(DEMO_FLAG, if on { b'Y' } else { b'N' });
+    }
+
+    /// 標題迴圈來的（原版 `byte_1CFAB` 不是 `N`）：第一關要換 `B.MIX` 開音樂。
+    pub(crate) fn started_from_title(&self) -> bool {
+        self.ds.r8(STARTED_FROM_TITLE) != b'N'
+    }
+
+    /// 音效開關鍵是否生效（原版 `byte_2739A` 不是 `N`）。
+    pub(crate) fn sound_key_enabled(&self) -> bool {
+        self.ds.r8(SOUND_KEY) != b'N'
+    }
+
+    /// 音效開關鍵是否生效（原版 `byte_2739A`）：標題期間 `N`，進關卡 `Y`。
+    pub(crate) fn set_sound_key_enabled(&mut self, on: bool) {
+        self.ds.w8(SOUND_KEY, if on { b'Y' } else { b'N' });
+    }
+
+    /// 切換靜音（原版 `byte_2684E` 的位元 0，INT 9 的 `sub_1A891`）。
+    pub(crate) fn toggle_sound_mute(&mut self) {
+        let v = self.ds.r8(SOUND_MUTE) ^ 1;
+        self.ds.w8(SOUND_MUTE, v);
+    }
+
+    /// 喇叭音效旗標（原版 `byte_2684F`），接著呼叫 `sub_18672` 依位元選參數。
+    pub(crate) fn set_speaker_flags(&mut self, flags: u8) {
+        self.ds.w8(SPEAKER_FLAGS, flags);
+    }
+
+    /// 密碼檢查通過了（原版 `byte_1D3A2` 是 `Y`）。
+    pub(crate) fn password_accepted(&self) -> bool {
+        self.ds.r8(PASSWORD_ACCEPTED) == b'Y'
+    }
+
+    /// 密碼檢查是不是沒通過（原版 `word_1D3B0` 非 0）。
+    pub(crate) fn password_rejected(&self) -> bool {
+        self.ds.r16(PASSWORD_REJECTED) != 0
+    }
+
+    /// 完整性檢查累加的和（原版 `sub_12F95`）：`7F4h` 起 400 個字組，初值 64h，16 位元環繞。
+    pub(crate) fn integrity_table_sum(&self) -> u16 {
+        (0..INTEGRITY_WORDS).fold(INTEGRITY_SEED, |sum, k| sum.wrapping_add(self.ds.r16(INTEGRITY_TABLE.wrapping_add(2 * k))))
+    }
+
+    /// 掃描碼對應的 ASCII（原版 INT 9 的 `xlat`，表在 `0A86Dh`）。表只有 5Eh 項，掃描碼 5Eh 以上
+    /// 讀到的是緊接在表後的按鍵狀態表。
+    pub(crate) fn ascii_of(&self, scan: u8) -> u8 {
+        self.ds.r8(ASCII_TABLE.wrapping_add(u16::from(scan)))
+    }
+
+    /// 最近一次按下的鍵（ASCII），0 表示沒有。
+    pub(crate) fn last_key(&self) -> u8 {
+        self.ds.r8(LAST_KEY)
+    }
+
+    pub(crate) fn set_last_key(&mut self, ascii: u8) {
+        self.ds.w8(LAST_KEY, ascii);
+    }
+
+    pub(crate) fn clear_last_key(&mut self) {
+        self.ds.w8(LAST_KEY, 0);
+    }
+
+    /// 按鍵是不是按著（按鍵表的值為 1）。放開後 INT 9 寫 2，所以放開的鍵不算。
+    pub(crate) fn key_down(&self, key: Key) -> bool {
+        self.ds.r8(KEY_TABLE.wrapping_add(key.scancode())) == KEY_HELD
+    }
+
+    /// 按鍵剛放開（按鍵表的值為 2）。關卡的暫停與開火旗標用：暫停中 Esc 的狀態維持 2 直到下一次按下。
+    pub(crate) fn key_released(&self, key: Key) -> bool {
+        self.ds.r8(KEY_TABLE.wrapping_add(key.scancode())) == KEY_RELEASED
+    }
+
+    /// 清掉按鍵表裡這個鍵的狀態（寫 0）。
+    pub(crate) fn release_key(&mut self, key: Key) {
+        self.ds.w8(KEY_TABLE.wrapping_add(key.scancode()), 0);
+    }
+
+    /// 把這個鍵的狀態寫成 2（剛放開）。轉向鍵處理後用，暫停用。
+    pub(crate) fn mark_key_released(&mut self, key: Key) {
+        self.ds.w8(KEY_TABLE.wrapping_add(key.scancode()), KEY_RELEASED);
+    }
+
+    /// 按住就消耗掉（寫 0）並回傳 true：一次按鍵只處理一次。
+    pub(crate) fn take_key_press(&mut self, key: Key) -> bool {
+        let pressed = self.key_down(key);
+        if pressed {
+            self.release_key(key);
+        }
+        pressed
+    }
+
+    /// INT 9 收到按下碼：按鍵表寫 1。
+    pub(crate) fn note_key_down(&mut self, scan: u8) {
+        self.ds.w8(KEY_TABLE.wrapping_add(u16::from(scan)), KEY_HELD);
+    }
+
+    /// INT 9 收到放開碼：按鍵表寫 2。
+    pub(crate) fn note_key_up(&mut self, scan: u8) {
+        self.ds.w8(KEY_TABLE.wrapping_add(u16::from(scan)), KEY_RELEASED);
+    }
+
+    /// 無敵秘技等測試要看按鍵表原始值。
+    #[cfg(test)]
+    pub(crate) fn key_raw(&self, scan: u8) -> u8 {
+        self.ds.r8(KEY_TABLE.wrapping_add(u16::from(scan)))
+    }
+
+    /// 是不是靜音。
+    #[cfg(test)]
+    pub(crate) fn sound_muted(&self) -> bool {
+        self.ds.r8(SOUND_MUTE) & 1 != 0
     }
 
     /// 展示錄影（`DM1.LCK`，`AAE2h` 起 3000 位元組）第 `index` 個位元組，位址 16 位元環繞。
@@ -1079,11 +1659,23 @@ impl Core {
 
     /// 玩家的開火旗標（`273A7h` 一族，INT 9 的 `sub_1A9B5` 設，玩家邏輯清）。
     pub(crate) fn fire_flag(&self, player: usize, flag: FireFlag) -> bool {
-        self.ds.r8(flag.offset(player)) == FLAG_ON
+        let fire = &self.flow.controls.fire;
+        let slot = match flag {
+            FireFlag::NewPress => fire.new_press[player],
+            FireFlag::Event => fire.event[player],
+            FireFlag::Turn => fire.turn[player],
+        };
+        slot == FLAG_ON
     }
 
     pub(crate) fn set_fire_flag(&mut self, player: usize, flag: FireFlag, on: bool) {
-        self.ds.w8(flag.offset(player), if on { FLAG_ON } else { FLAG_OFF });
+        let fire = &mut self.flow.controls.fire;
+        let slot = match flag {
+            FireFlag::NewPress => &mut fire.new_press[player],
+            FireFlag::Event => &mut fire.event[player],
+            FireFlag::Turn => &mut fire.turn[player],
+        };
+        *slot = if on { FLAG_ON } else { FLAG_OFF };
     }
 
     /// 難度對敵人耐久的加成（原版 `word_1E6B2`，0 或 1）。
@@ -1114,25 +1706,37 @@ impl Core {
     /// 測試用：設關卡字母。
     #[cfg(test)]
     pub(crate) fn set_stage_letter(&mut self, letter: u8) {
-        self.ds.w8(STAGE_LETTER, letter);
+        self.flow.stage = letter;
     }
 
     /// 測試用：設展示旗標。
     #[cfg(test)]
     pub(crate) fn set_demo_playing(&mut self, on: bool) {
-        self.ds.w8(DEMO_FLAG, if on { b'Y' } else { b'N' });
+        self.set_demo_mode(on);
     }
 
     /// 測試用：設無敵秘技旗標。
     #[cfg(test)]
     pub(crate) fn set_invincible_cheat(&mut self, on: bool) {
-        self.ds.w16(CHEAT_FLAG, u16::from(if on { CHEAT_ON } else { b'N' }));
+        self.flow.controls.cheat.invincible = u16::from(if on { FLAG_ON } else { FLAG_OFF });
     }
 
-    /// 測試用：設關卡幀計數。
+    /// 測試用：密碼檢查通過旗標。
     #[cfg(test)]
-    pub(crate) fn set_stage_frame(&mut self, frame: u16) {
-        self.ds.w16(STAGE_FRAME, frame);
+    pub(crate) fn set_password_accepted(&mut self, on: bool) {
+        self.ds.w8(PASSWORD_ACCEPTED, if on { b'Y' } else { b'N' });
+    }
+
+    /// 測試用：完整性檢查表的第 `k` 個字組。
+    #[cfg(test)]
+    pub(crate) fn set_integrity_table_word(&mut self, k: u16, v: u16) {
+        self.ds.w16(INTEGRITY_TABLE.wrapping_add(2 * k), v);
+    }
+
+    /// 測試用：音樂可用，`start_music` 才會送命令。
+    #[cfg(test)]
+    pub(crate) fn enable_music(&mut self) {
+        self.ds.w8(MUSIC_ENABLED, b'Y');
     }
 
     /// 測試用：設難度加成。
@@ -1153,78 +1757,21 @@ impl Core {
 //
 // 標題與片尾讀寫的共用變數：INT 9 寫的按鍵表、標題流程與各關之間傳遞的旗標。
 
-/// `byte_27422`：最近一次按下的鍵（ASCII），0 表示沒有。標題的各段動畫每步看一次它是不是 0。
-const LAST_KEY: u16 = a(0x27422);
-
-/// 標題與片尾讀的鍵。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Key {
-    Up,
-    Down,
-    Left,
-    Right,
-    Enter,
-    Space,
-    Q,
-    R,
-}
-
-impl Key {
-    /// set 1 掃描碼，也是按鍵表的索引。
-    const fn scancode(self) -> u16 {
-        match self {
-            Key::Up => 0x48,
-            Key::Down => 0x50,
-            Key::Left => 0x4B,
-            Key::Right => 0x4D,
-            Key::Enter => 0x1C,
-            Key::Space => 0x39,
-            Key::Q => 0x10,
-            Key::R => 0x13,
-        }
-    }
-}
 
 /// `byte_1CFAC`：初值 `N`，`sub_10FEA` 見到 `N` 轉入標題迴圈；標題迴圈第一行改 `Y`。
 const TITLE_ENTERED: u16 = a(0x1CFAC);
-/// `byte_1CFAB`：標題迴圈每圈寫 `Y`。`sub_10CD0`（`10D17h`）見到不是 `N` 就換 `B.MIX` 開音樂，
-/// 並讓音效開關鍵生效（[`SOUND_KEY`]）。
-const STARTED_FROM_TITLE: u16 = a(0x1CFAB);
 /// `byte_1CFDC`：`N` 一般模式，其他值都當示範模式（原版 `cmp byte_1CFDC, 4Eh`）。標題寫 `Y` 或 `N`。
 const DEMO_MODE: u16 = a(0x1CFDC);
-/// `byte_2739A`：音效開關鍵（INT 9 的 `sub_1A891`）是否生效，`N` 不生效。標題期間 `N`，進第一關改 `Y`。
-const SOUND_KEY: u16 = a(0x2739A);
 /// `byte_274EC`：讀檔失敗時換磁片提示的磁碟號字元。標題在第二關起設成 `'2'`，重製沒有人讀。
 const DISK_HINT: u16 = a(0x274EC);
-/// `word_1D3B0`：密碼檢查未通過的旗標。破解組補丁讓檢查恆通過，重製裡沒有人寫它，恆為 0。
-const PASSWORD_REJECTED: u16 = a(0x1D3B0);
 
 /// `byte_1CFDD` 的活動玩家位元：玩家 1 在位元 0，玩家 2 在位元 4。
 pub(crate) const PLAYER1_ACTIVE: u8 = 0x01;
 pub(crate) const PLAYER2_ACTIVE: u8 = 0x10;
 
 impl Core {
-    /// 按鍵是不是按著（按鍵表的值為 1）。放開後 INT 9 寫 2，所以放開的鍵不算。
-    pub(crate) fn key_down(&self, key: Key) -> bool {
-        self.ds.r8(KEY_TABLE.wrapping_add(key.scancode())) == 1
-    }
-
-    /// 清掉按鍵表裡這個鍵的狀態（寫 0）。選單用它消耗掉上下鍵，一次按鍵只切換一次。
-    pub(crate) fn release_key(&mut self, key: Key) {
-        self.ds.w8(KEY_TABLE.wrapping_add(key.scancode()), 0);
-    }
-
-    /// 最近一次按下的鍵（ASCII），0 表示沒有。
-    pub(crate) fn last_key(&self) -> u8 {
-        self.ds.r8(LAST_KEY)
-    }
-
     pub(crate) fn key_pressed(&self) -> bool {
         self.last_key() != 0
-    }
-
-    pub(crate) fn clear_last_key(&mut self) {
-        self.ds.w8(LAST_KEY, 0);
     }
 
     /// 標題迴圈開始（原版 `byte_1CFAC` = `Y`）。
@@ -1237,19 +1784,9 @@ impl Core {
         self.ds.w8(STARTED_FROM_TITLE, b'Y');
     }
 
-    /// 示範模式的旗標（原版 `byte_1CFDC`）：`on` 寫 `Y`，否則寫 `N`。
-    pub(crate) fn set_demo_mode(&mut self, on: bool) {
-        self.ds.w8(DEMO_MODE, if on { b'Y' } else { b'N' });
-    }
-
     /// 是不是示範模式：只有 `N` 是一般模式。
     pub(crate) fn in_demo_mode(&self) -> bool {
         self.ds.r8(DEMO_MODE) != b'N'
-    }
-
-    /// 音效開關鍵是否生效（原版 `byte_2739A`）。
-    pub(crate) fn set_sound_key_enabled(&mut self, on: bool) {
-        self.ds.w8(SOUND_KEY, if on { b'Y' } else { b'N' });
     }
 
     /// 活動玩家位元（原版 `byte_1CFDD`）：[`PLAYER1_ACTIVE`]、[`PLAYER2_ACTIVE`] 或兩者。
@@ -1269,21 +1806,6 @@ impl Core {
         self.ds.w8(DISK_HINT, disk);
     }
 
-    /// 密碼檢查是不是沒通過（原版 `word_1D3B0` 非 0）。
-    pub(crate) fn password_rejected(&self) -> bool {
-        self.ds.r16(PASSWORD_REJECTED) != 0
-    }
-
-    /// 幀計數歸零（原版 `word_1CFE2`）。片尾重播用。
-    pub(crate) fn reset_stage_frame(&mut self) {
-        self.ds.w16(STAGE_FRAME, 0);
-    }
-
-    /// 幀計數加 1。
-    pub(crate) fn advance_stage_frame(&mut self) {
-        let frame = self.ds.r16(STAGE_FRAME).wrapping_add(1);
-        self.ds.w16(STAGE_FRAME, frame);
-    }
 }
 
 // ---- 格網 ----
@@ -1333,8 +1855,17 @@ const GRID1_NEAR_ROWS: u16 = 0x17C;
 /// 越界列的索引：列基底表之後第 1F4h 項，位址 `1EF2h`，G1 之後的資料，實測為 0。
 const GRID1_FAR_ROW: u16 = 0x1F4;
 /// G4 地形格（第三關，每列 50h 位元組，奇數位址的字組）的範圍，閉區間。
-const GRID4_START: u16 = 0x900C;
+pub(crate) const GRID4_START: u16 = 0x900C;
 const GRID4_LAST: u16 = 0x95FC;
+/// G4 的列距：40 欄 × 2 位元組。第三關捲動的新欄與碰撞讀取都用這個列距。
+pub(crate) const TERRAIN_ROW_BYTES: u16 = 0x50;
+/// G4 與 G3 各 20 列 × 40 欄 = 320h 個字組。
+const TERRAIN_WORDS: u16 = 0x320;
+/// `word_2684C`（`9C8Ch`）：第三關新欄的 G4 寫入游標，位元組位移，捲動步開始設成一列（50h），每寫一格加一列。
+/// 它的位址緊接在 G3 之後（G3 起點加 640h），是 G3 越界的第一個字組：玩家本體的髒格標記（`grid3_mark_block`）
+/// 沒有範圍檢查，列號超出畫面時（例如死亡動畫往下走）寫得到 G3 之後的位址，包含這個字組。所以它和 G3 一樣留在資料段，
+/// 與原版共用同一塊記憶體，不進 `MapScroll`。這條路徑沒有收據分辨，是靜態推論。
+const TERRAIN_CURSOR: u16 = a(0x2684C);
 
 /// 一列 G1 的列尾位址（不含）：列起點加 27h。
 pub(crate) const fn grid1_row_end(row_start: u16) -> u16 {
@@ -1425,7 +1956,51 @@ impl Core {
     pub(crate) fn grid4_contains(&self, addr: u16) -> bool {
         (GRID4_START..=GRID4_LAST).contains(&addr)
     }
+
+    /// 第三關捲動一格：G4 與 G3 各整體左移一個字組（原版 `sub_1840E` 的兩次 `rep movsw`，各 320h 個字組）。
+    /// 兩次搬移的讀取都超出自己的範圍，照原版：
+    ///
+    /// - G4 的最後一個字組取自 G3 的第一個字組（G3 起點，在 G3 左移之前讀）。
+    /// - G3 的最後一個字組取自 G3 之後的 `word_2684C`（G3 起點加 640h），所以 G3 最後一格的髒標記是新欄寫入游標
+    ///   的值，那個位置沒有找到其他引用。
+    /// - 結尾的 `stosb` 把 `word_2684C` 的低位元組清 0；`scroll_map_second_page` 隨後才把游標設成 50h，所以沒有後續效果。
+    pub(crate) fn scroll_terrain_grids(&mut self) {
+        self.ds.copy16(GRID4_START, GRID4_START + 2, TERRAIN_WORDS);
+        self.ds.copy16(GRID3_START, GRID3_START + 2, TERRAIN_WORDS);
+        self.ds.w8(GRID3_START.wrapping_add(2 * TERRAIN_WORDS), 0);
+    }
+
+    /// 新欄的第一格從游標 50h 起，也就是 G4 讀取格狀的（列 0，欄 39）（原版 `18306h`）。
+    pub(crate) fn start_terrain_column(&mut self) {
+        self.ds.w16(TERRAIN_CURSOR, TERRAIN_ROW_BYTES);
+    }
+
+    /// 新欄的一格圖塊索引存進 G4（原版 `sub_1839F`）：寫在 G4 起點加游標，游標加一列。
+    pub(crate) fn store_terrain_tile(&mut self, tile: u16) {
+        let cursor = self.ds.r16(TERRAIN_CURSOR);
+        self.ds.w16(cursor.wrapping_add(GRID4_START), tile);
+        self.ds.w16(TERRAIN_CURSOR, cursor.wrapping_add(TERRAIN_ROW_BYTES));
+    }
+
+    /// 初始視窗的第 `cell` 格圖塊索引存進 G4（原版 `sub_17DF9`）：從 G4 起點加 2 起連續寫，不分列，
+    /// 視窗每列 42 格，所以列距是 54h 位元組，與碰撞讀取的列距（50h）不同。
+    pub(crate) fn fill_terrain_cell(&mut self, cell: u16, tile: u16) {
+        self.ds.w16(GRID4_START.wrapping_add(2).wrapping_add(2u16.wrapping_mul(cell)), tile);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_terrain_cursor(&mut self, v: u16) {
+        self.ds.w16(TERRAIN_CURSOR, v);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terrain_cursor(&self) -> u16 {
+        self.ds.r16(TERRAIN_CURSOR)
+    }
 }
+
+const _: () = assert!(GRID3_START + 2 * TERRAIN_WORDS == TERRAIN_CURSOR, "word_2684C 緊接在 G3 之後");
+const _: () = assert!(GRID4_START + 2 * TERRAIN_WORDS == GRID3_START, "G3 緊接在 G4 之後");
 /// G2 敵彈格網（`2C1Ch`，40 欄 × 20 列，每格一位元組，列距 28h）。
 pub(crate) const GRID2_START: u16 = 0x2C1C;
 const GRID2_BYTES: u16 = 0x320;
@@ -1912,9 +2487,12 @@ mod tests {
             (1, FireFlag::Turn, 0xA7EC),
         ] {
             c.set_fire_flag(player, flag, true);
-            assert_eq!(c.ds.r8(off), b'Y');
+            let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+            c.flow.store(&mut ds);
+            assert_eq!(ds.r8(off), b'Y', "{flag:?} 玩家 {}", player + 1);
             c.set_fire_flag(player, flag, false);
-            assert_eq!(c.ds.r8(off), b'N');
+            c.flow.store(&mut ds);
+            assert_eq!(ds.r8(off), b'N');
         }
         // 按鍵狀態表在 A8CBh + 掃描碼，值 1 才算按住（2 是剛放開）。
         c.ds.w8(0xA8CB + 0x48, 1);
@@ -2237,9 +2815,9 @@ mod tests {
     fn terrain_stage_is_the_stage_letter_c() {
         let mut c = core();
         assert!(!c.on_terrain_stage());
-        c.ds.w8(crate::dseg::a(0x1CFDB), b'C');
+        c.set_stage_letter(b'C');
         assert!(c.on_terrain_stage());
-        c.ds.w8(crate::dseg::a(0x1CFDB), b'c');
+        c.set_stage_letter(b'c');
         assert!(!c.on_terrain_stage(), "只有大寫 C（43h）算，小寫 c（63h）不算");
     }
 
@@ -2322,6 +2900,247 @@ mod tests {
         assert!(!c.grid2_writable(GRID2_START - 5, GRID2_START - 1), "低於 G2 起點不可寫");
         assert!(c.grid2_writable(GRID2_START + GRID2_BYTES - 0x10, GRID2_START + GRID2_BYTES), "2F3Ch 可寫（G2 之後一格）");
         assert!(!c.grid2_writable(GRID2_START + GRID2_BYTES - 0x10, GRID2_START + GRID2_BYTES + 1));
+    }
+
+    fn blank_ds() -> Dseg {
+        Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET])
+    }
+
+    #[test]
+    fn flow_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut flow = Flow::default();
+        flow.load(&ds);
+        let mut same = ds.clone();
+        flow.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        let mut blank = blank_ds();
+        flow.store(&mut blank);
+        let mut back = Flow::default();
+        back.load(&blank);
+        assert_eq!(back, flow);
+        assert_ne!(flow, Flow::default(), "測試資料不該全 0");
+    }
+
+    #[test]
+    fn flow_fields_land_at_the_documented_offsets() {
+        // 每個欄位一個位元組都非 0 的獨一無二的值。位移是機器碼的線性位址減 1CBC0h，獨立列在這裡。
+        let mut flow = Flow { stage: 0x11, clear: 0x12, bursts: 0x13, integrity_mark: 0x14, tamper_countdown: 0x1501, ..Flow::default() };
+        flow.clock = Clock { total: 0x2101, since_wait: 0x2202, since_sound_toggle: 0x2303, cycle_a: 0x2404, cycle_b: 0x2505 };
+        flow.controls = Controls {
+            last_scan: 0x31,
+            fire: FireFlags { new_press: [0x41, 0x42], event: [0x43, 0x44], turn: [0x45, 0x46] },
+            cheat: Cheat { unlocked: 0x5101, presses: [0x5202, 0x5303, 0x5404], invincible: 0x5505 },
+            joymouse: 0x32,
+        };
+        let mut ds = blank_ds();
+        flow.store(&mut ds);
+        let bytes: [(u16, u8); 4] = [(0x041B, 0x11), (0x03ED, 0x12), (0x03EE, 0x13), (0x03EA, 0x14)];
+        for (at, want) in bytes {
+            assert_eq!(ds.r8(at), want, "{at:04X}h");
+        }
+        let words: [(u16, u16); 11] = [
+            (0x1B02, 0x1501),
+            (0xA7F7, 0x2101),
+            (0xA7F9, 0x2202),
+            (0xA7DB, 0x2303),
+            (0x07E8, 0x2404),
+            (0x07EE, 0x2505),
+            (0xA7DD, 0x5101),
+            (0xA7DF, 0x5202),
+            (0xA7E1, 0x5303),
+            (0xA7E3, 0x5404),
+            (0xA7E5, 0x5505),
+        ];
+        for (at, want) in words {
+            assert_eq!(ds.r16(at), want, "{at:04X}h");
+        }
+        // 輸入：最後的掃描碼 A86Ch、搖桿 0EECh；開火旗標玩家 1 在 A7E7h（新按）、A7E9h（事件）、A7EAh（轉向），
+        // 玩家 2 在 A7E8h、A7EBh、A7ECh。
+        let inputs: [(u16, u8); 8] =
+            [(0xA86C, 0x31), (0x0EEC, 0x32), (0xA7E7, 0x41), (0xA7E8, 0x42), (0xA7E9, 0x43), (0xA7EB, 0x44), (0xA7EA, 0x45), (0xA7EC, 0x46)];
+        for (at, want) in inputs {
+            assert_eq!(ds.r8(at), want, "{at:04X}h");
+        }
+        // 寫了的位元組數剛好等於各欄位寬度的總和（值的每個位元組都不是 0）：沒有欄位重疊，也沒有碰其他位元組。
+        let touched = ds.bytes().iter().filter(|&&b| b != 0).count();
+        assert_eq!(touched, 4 + 2 + 5 * 2 + 2 + 6 + 5 * 2);
+    }
+
+    #[test]
+    fn scenes_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut scenes = Scenes::default();
+        scenes.load(&ds);
+        let mut same = ds.clone();
+        scenes.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        let mut blank = blank_ds();
+        scenes.store(&mut blank);
+        let mut back = Scenes::default();
+        back.load(&blank);
+        assert_eq!(back, scenes);
+        assert_ne!(scenes, Scenes::default(), "測試資料不該全 0");
+    }
+
+    #[test]
+    fn scene_fields_land_at_the_documented_offsets() {
+        let mut scenes = Scenes::default();
+        scenes.stage1 = Stage1Backdrop { drop: 0x0101, sky_drop: 0x0202, wave_phase: 0x0303, rock_phase: 0x0404 };
+        scenes.stage2 = Stage2Backdrop {
+            flame_bottom: 0x1101,
+            flame_top: 0x1202,
+            flame_phase: 0x1303,
+            strip_a: Strip { phase: 0x1404, start: 0x1505 },
+            strip_b: Strip { phase: 0x1606, start: 0x1707 },
+            strip_c: Strip { phase: 0x1808, start: 0x1909 },
+            pillar: 0x1A0A,
+            fade: std::array::from_fn(|k| 0x40 + k as u8),
+        };
+        scenes.map = MapScroll { window: 0x2101, left_col: 0x2202, top_row: 0x2303 };
+        scenes.tunnel = Tunnel { offset: 0x3101, floor_phase: 0x3202, ceiling_phase: 0x3303, script_pos: 0x3404 };
+        for (k, layer) in scenes.boss.layers.iter_mut().enumerate() {
+            let k = k as u16;
+            *layer = BossLayer { y: 0x4101 + 0x300 * k, x: 0x4202 + 0x300 * k, script: 0x4303 + 0x300 * k };
+        }
+        let mut ds = blank_ds();
+        scenes.store(&mut ds);
+        let words: [(u16, u16); 4 + 10 + 3 + 4 + 9] = [
+            (0x1AF8, 0x0101),
+            (0x1AFA, 0x0202),
+            (0x1AFC, 0x0303),
+            (0x1AFE, 0x0404),
+            (0x0BFE, 0x1101),
+            (0x0C00, 0x1202),
+            (0x0C02, 0x1303),
+            (0x0C04, 0x1404),
+            (0x0C06, 0x1505),
+            (0x0C08, 0x1606),
+            (0x0C0A, 0x1707),
+            (0x0C0C, 0x1808),
+            (0x0C0E, 0x1909),
+            (0x0C10, 0x1A0A),
+            (0x9004, 0x2101),
+            (0x9006, 0x2202),
+            (0x9008, 0x2303),
+            (0x0D5D, 0x3101),
+            (0x0D5F, 0x3202),
+            (0x0D61, 0x3303),
+            (0x0DE2, 0x3404),
+            (0x0F9F, 0x4101),
+            (0x0FA1, 0x4202),
+            (0x0FAD, 0x4303),
+            (0x0FA3, 0x4401),
+            (0x0FA5, 0x4502),
+            (0x0FAF, 0x4603),
+            (0x0FA7, 0x4701),
+            (0x0FA9, 0x4802),
+            (0x0FB1, 0x4903),
+        ];
+        for (at, want) in words {
+            assert_eq!(ds.r16(at), want, "{at:04X}h");
+        }
+        // 淡出工作表在 0CA7h 起 45 位元組。
+        for k in 0..45u16 {
+            assert_eq!(ds.r8(0x0CA7 + k), 0x40 + k as u8, "工作表第 {k} 個位元組");
+        }
+        assert_eq!(ds.r8(0x0CA7 + 45), 0, "工作表之後不動");
+        // 位元組數：4 + 10 個字組 + 45 + 3 + 4 + 9 個字組（0x40 起的 45 個值都不是 0）。
+        let touched = ds.bytes().iter().filter(|&&b| b != 0).count();
+        assert_eq!(touched, 2 * (4 + 10 + 3 + 4 + 9) + 45);
+    }
+
+    #[test]
+    fn the_stage_work_variables_that_left_the_structs_are_not_written_by_store() {
+        // 這些位移在原版是函式內先寫後讀的工作變數（DS_EXEMPT），或是 G3 越界的字組，Mirror 不碰。
+        let mut ds = Dseg::from_image(&vec![0xAAu8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000]);
+        let mut scenes = Scenes::default();
+        scenes.boss.layers[0].y = 0xFFFF;
+        scenes.store(&mut ds);
+        for off in [0x0F9A, 0x0F9B, 0x0F9C, 0x0F9D, 0x0F9E, 0x0FAB, 0x0FAC, 0x900A, 0x900B, 0x9C8C, 0x9C8D] {
+            assert_eq!(ds.r8(off), 0xAA, "{off:04X}h 不屬於結構");
+        }
+    }
+
+    #[test]
+    fn palette_attribute_tables_sit_11h_before_the_dac_tables_except_the_loader() {
+        for p in [Palette::Stage1, Palette::Stage1Boss, Palette::Stage2, Palette::Stage2Mid, Palette::Stage2Boss, Palette::Stage2Fade, Palette::Stage3, Palette::Stage4] {
+            assert_eq!(p.attr_offset(), p.table_offset() - 0x11);
+        }
+        assert_eq!((Palette::Loader.table_offset(), Palette::Loader.attr_offset()), (0x05A9, 0x056E));
+        assert_eq!(
+            [Palette::Stage1, Palette::Stage1Boss, Palette::Stage2, Palette::Stage2Mid, Palette::Stage2Boss, Palette::Stage3, Palette::Stage4].map(Palette::table_offset),
+            [0x04FD, 0x053E, 0x0C25, 0x0C66, 0x0CE8, 0x0D29, 0x0D82]
+        );
+    }
+
+    #[test]
+    fn dos_bookkeeping_follows_the_original_message_and_segment_chain() {
+        let mut c = core();
+        c.ds.w16(0x039C, 0x4989);
+        c.dos_allocate_buffers(StageBuffers::Stage2);
+        // 段值：第一塊維持現值，之後每塊接在前一塊後面，中間隔一個段落。
+        let want: Vec<u16> = [0x600u16, 0x600, 0x600, 0x600, 0x600, 0x10, 0x10, 0x10, 0x10, 1]
+            .iter()
+            .scan(0x4989u16, |seg, &para| {
+                let this = *seg;
+                *seg += para + 1;
+                Some(this)
+            })
+            .collect();
+        for (k, &seg) in want.iter().enumerate() {
+            assert_eq!(c.ds.r16(0x039C + 2 * k as u16), seg, "第 {k} 塊");
+        }
+        // 訊息前綴：A+、B 與計數 30h 加 10 次呼叫。
+        assert_eq!([c.ds.r8(0x0336), c.ds.r8(0x0337), c.ds.r8(0x0338)], [0x41, 0x2B, 0x3A]);
+        assert_eq!([c.ds.r8(0x0348), c.ds.r8(0x0349), c.ds.r8(0x034A)], [0x41, 0x2B, 0x3A]);
+        c.dos_free_buffers(StageBuffers::Stage2);
+        assert_eq!([c.ds.r8(0x0336), c.ds.r8(0x0337), c.ds.r8(0x0338)], [0x42, 0x2D, 0x3A]);
+        // 第四關釋放不重寫前綴，計數接著加。
+        c.dos_allocate_buffers(StageBuffers::Stage4);
+        assert_eq!([c.ds.r8(0x0336), c.ds.r8(0x0337), c.ds.r8(0x0338)], [0x41, 0x34, 0x3A]);
+        c.dos_free_buffers(StageBuffers::Stage4);
+        assert_eq!(c.ds.r8(0x0338), 0x44);
+        // 第三關只動前綴與計數，不動段值。
+        c.ds.w16(0x039C, 0x1111);
+        c.dos_allocate_buffers(StageBuffers::Stage3);
+        assert_eq!(c.ds.r16(0x039C), 0x1111);
+        assert_eq!(c.ds.r8(0x0338), 0x3A);
+    }
+
+    #[test]
+    fn the_integrity_sum_adds_400_words_from_7f4h_to_the_seed() {
+        let mut c = core();
+        assert_eq!(c.integrity_table_sum(), 0x64, "全 0 的表只剩初值");
+        c.ds.w16(0x07F4, 1);
+        c.ds.w16(0x07F4 + 2 * 399, 2);
+        c.ds.w16(0x07F4 + 2 * 400, 0x5555);
+        assert_eq!(c.integrity_table_sum(), 0x64 + 3, "第 400 個字組之後不算");
+    }
+
+    #[test]
+    fn the_ascii_table_runs_into_the_key_table_past_scan_code_5dh() {
+        let mut c = core();
+        c.ds.w8(0xA86D + 0x1E, b'a');
+        assert_eq!(c.ascii_of(0x1E), b'a');
+        // 掃描碼 5Eh 起讀到的是按鍵狀態表（0A8CBh）的前幾項。
+        c.note_key_down(0);
+        c.note_key_up(1);
+        assert_eq!([c.ascii_of(0x5E), c.ascii_of(0x5F)], [1, 2]);
+    }
+
+    #[test]
+    fn terrain_tiles_go_into_the_documented_cells() {
+        let mut c = core();
+        c.fill_terrain_cell(0, 0x0A0B);
+        c.fill_terrain_cell(41, 0x0C0D);
+        assert_eq!((c.ds.r16(GRID4_START + 2), c.ds.r16(GRID4_START + 2 + 82)), (0x0A0B, 0x0C0D));
+        c.start_terrain_column();
+        assert_eq!(c.terrain_cursor(), TERRAIN_ROW_BYTES);
+        c.store_terrain_tile(0x1234);
+        c.store_terrain_tile(0x5678);
+        assert_eq!((c.ds.r16(GRID4_START + 0x50), c.ds.r16(GRID4_START + 0xA0)), (0x1234, 0x5678));
+        assert_eq!(c.terrain_cursor(), 0xF0);
     }
 
     #[test]

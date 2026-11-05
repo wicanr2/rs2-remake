@@ -63,7 +63,7 @@ impl Core {
     }
 
     /// 寫暫存區複製的來源：來源欄 `word_26864`、來源列 `word_26866`、水平位移 `word_26868`。
-    pub(crate) fn set_blit_source(&mut self, src_x: u16, src_y: u16, shift: u16) {
+    pub(crate) fn set_blit_source_shifted(&mut self, src_x: u16, src_y: u16, shift: u16) {
         self.ds.w16(a(0x26864), src_x);
         self.ds.w16(a(0x26866), src_y);
         self.ds.w16(a(0x26868), shift);

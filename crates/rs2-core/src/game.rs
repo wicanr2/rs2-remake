@@ -4,6 +4,7 @@ use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
 use crate::entity::Enemies;
+use crate::flow::{Flow, Scenes};
 use crate::fx::Effects;
 use crate::mirror::{demo_playing, stage_cleared};
 use crate::pbullet::PlayerBullets;
@@ -251,6 +252,18 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
                       與 1D152、1D154（11EB7h、11EE2h）；sub_121DD 寫 1D150 至 1D156（121E0h 至 121F2h）；sub_12379 寫 1D148 至 1D14E（1237Ch 至 1238Eh）。\
                       讀者只有各自卡片的步驟函式（sub_11CFC、11D58、11DAC、11F58、11FB3、1200A、12062、120B6、12132、1221E、123BD）。\
                       重製改成 cards.rs 的 Stage1Letters 至 Stage4Letters 與 intro.rs 的區域變數"),
+    // ---- 流程與關卡領域重寫（規格 004）：函式內先寫後讀的工作變數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh refs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-flow.md）。
+    // 各關的背景位置、頭目合成圖的三層位置、流程旗標、輸入與計時是狀態，走 Mirror，不在這裡。
+    (0x0F9A, 0x0F9E, "byte_1DB5A 腳本位元組、word_1DB5B 與 word_1DB5D 頭目合成圖的位置：第一、二、三關的 sub_15930、15983、159D6、15A24、15A72 \
+                      先從該層的位置（1DB5F 一族）複製進來才呼叫 sub_15BB0（直譯器）與 sub_15AC5、15AF4、15B23、15B52、15B81（繪製），\
+                      byte_1DB5A 只在 sub_15930、15983、15A72 呼叫 sub_15BB0 之後立刻讀。重製改成 BossLayer::step 直接更新那一層"),
+    (0x0FAB, 0x0FAC, "word_1DB6B 腳本讀取位置：同上，每次由 sub_15930、15983、159D6、15A24、15A72 複製進來，sub_15BB0 就地前進後複製回去。\
+                      重製改成 BossLayer::script"),
+    (0x900A, 0x900B, "word_25BCA 第三關地圖的索引游標：sub_17DF9 開頭先寫（17E13h）、迴圈內讀寫（17E3Ah、17E4Eh、17E5Eh），sub_182CD 同樣先寫（182F4h）\
+                      再讀寫（18310h、18325h）。其他寫入者都不在 E 模式的可達路徑：sub_17DB2 的 17DBEh 起（`17DBDh` retn 之後）、\
+                      sub_1840E 的 18430h 起（retn 之後）、單色分支 sub_185AA、sub_18613、sub_1812E、sub_181E1。\
+                      重製改成 draw_initial_map 與 scroll_map_second_page 的區域變數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -259,7 +272,7 @@ pub fn ds_exempt(off: u16) -> bool {
 }
 
 /// 正式遊戲的開機資料段：原版在 `sub_11556` 入口（標題迴圈）的狀態，減去啟動選單、密碼與 DOS 記憶體配置的影響。
-/// 原版從 `sub_10CD0` 進來：`10CD0h` 至 `10D11h` 的關卡初始化（`enter_stage`），第一輪 `10D29h` 的 `sub_19A37`，
+/// 原版從 `sub_10CD0` 進來：`10CD0h` 至 `10D11h` 的關卡初始化（`Core::init_stage1`），第一輪 `10D29h` 的 `sub_19A37`，
 /// 然後 `sub_10FEA`：`word_1B02` 減 1（10FEAh 至 10FF2h），`byte_1CFAC` 仍是 `N` 才呼叫 `sub_11556`。
 /// 所以標題入口的資料段是映像加上這些初始化的寫入。標題之前沒有寫過 `byte_1CFDC`、`byte_1CFDD`、`byte_1CFAC`、
 /// `byte_1CFAB`（`Core::new` 為了直接進第一關而設），這四個維持映像值。
@@ -281,11 +294,8 @@ pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
     }
     // 存活位元組（041Dh，原版 byte_1CFDD）在玩家領域的結構裡。
     core.set_players_present(base.r8(0x041D));
-    core.s19a37();
-    let v = core.ds.r16(0x1B02);
-    if v >= 0xD2 {
-        core.ds.w16(0x1B02, v - 1);
-    }
+    core.show_first_page();
+    core.count_down_tamper_timer();
     core.ds.w8(0xA862, 0x0D);
     core.ds.w8(0xA8E7, 2);
     core.ds.w8(0xA8FA, 2);
@@ -296,6 +306,21 @@ pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
 }
 
 const POOLS: usize = 9;
+
+/// 對拍的取樣點：各關一幀的取樣位置，值是原版的程式位址（收據的 `pt` 欄用它對照，不能改）。
+pub(crate) mod sample {
+    /// 第一關普通段與頭目段的 `sub_11097` 之前（`10F98h`、`10FE3h`）。
+    pub(crate) const STAGE1_NORMAL: u32 = 0x10F98;
+    pub(crate) const STAGE1_BOSS: u32 = 0x10FE3;
+    /// 第二關第一段與第二段的幀計數加 1 之後（`1333Ch`、`13390h`）。
+    pub(crate) const STAGE2_OPENING: u32 = 0x1333C;
+    pub(crate) const STAGE2_BOSS: u32 = 0x13390;
+    /// 第三關（`13B5Fh`、`13BBBh`）與第四關（`13EF4h`、`13F42h`）。
+    pub(crate) const STAGE3_NORMAL: u32 = 0x13B5F;
+    pub(crate) const STAGE3_BOSS: u32 = 0x13BBB;
+    pub(crate) const STAGE4_NORMAL: u32 = 0x13EF4;
+    pub(crate) const STAGE4_BOSS: u32 = 0x13F42;
+}
 
 /// 協程交回控制權的原因。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,7 +346,7 @@ pub(crate) struct Port {
     draws: Vec<DrawCmd>,
     /// 下一次恢復會走到一輪結尾的檢查（第二頁的等待之後）。
     pub(crate) at_round_end: bool,
-    s11375_patched: bool,
+    integrity_checked: bool,
     display_start: Option<u16>,
     audio: Vec<AudioCmd>,
     /// 第三關進場時讀 `SHT.SCR`（單色，C、H）而不是 `SHT.SCN`（E）。不屬於原版狀態，由前端在進第三關之前設定。
@@ -367,8 +392,12 @@ pub struct Core {
     pub(crate) pl: Players,
     /// 標題：選單與示範輪播。
     pub(crate) title: Title,
-    /// `sub_11375` 通過後把自己改成 `retn`。
-    pub(crate) s11375_patched: bool,
+    /// 關卡流程：關卡字母、過關旗標、計時、輸入。
+    pub(crate) flow: Flow,
+    /// 各關背景的狀態。
+    pub(crate) scenes: Scenes,
+    /// 完整性檢查（原版 `sub_11375`）通過後把自己改成 `retn`，之後不再檢查。
+    pub(crate) integrity_checked: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
     pub(crate) display_start: Option<u16>,
     /// 音樂緩衝區裡的曲目。
@@ -398,7 +427,7 @@ impl Core {
             ds: ds.clone(),
             draws: Vec::new(),
             at_round_end: false,
-            s11375_patched: false,
+            integrity_checked: false,
             display_start: None,
             audio: Vec::new(),
             terrain_scr: false,
@@ -416,7 +445,9 @@ impl Core {
             sc: Scenery::default(),
             pl: Players::default(),
             title: Title::default(),
-            s11375_patched: false,
+            flow: Flow::default(),
+            scenes: Scenes::default(),
+            integrity_checked: false,
             display_start: None,
             mix: MixFile::A,
             audio: Vec::new(),
@@ -452,7 +483,7 @@ impl Core {
             g.ds.w16(a(0x1E6B2), hp);
             g.ds.w16(a(0x1E6B4), fire);
         }
-        g.enter_stage();
+        g.init_stage1();
         g
     }
 
@@ -465,7 +496,7 @@ impl Core {
             p.req = Some(req);
             p.ds.copy_from(&self.ds);
             p.draws.append(&mut self.draws);
-            p.s11375_patched = self.s11375_patched;
+            p.integrity_checked = self.integrity_checked;
             p.display_start = self.display_start;
             p.audio.append(&mut self.audio);
         }
@@ -487,7 +518,7 @@ impl Core {
             self.load_mirrors();
         }
         for sc in input {
-            self.int9(sc);
+            self.handle_scancode(sc);
         }
     }
 
@@ -549,30 +580,25 @@ pub struct Game {
 }
 
 fn stage1(mut core: Core) -> Pin<Box<dyn Future<Output = Exit>>> {
-    Box::pin(async move { core.s10d29().await })
+    Box::pin(async move { core.run_stage1_rounds().await })
 }
 
-/// 跑一個入口，回傳離開碼。
+/// 跑一個入口，回傳離開碼。關卡入口直接回傳離開碼；標題與片尾還在用暫存器，離開碼留在 `dx`。
 async fn run_entry(mut core: Core, entry: Entry) -> Exit {
     match entry {
-        // 標題與片尾回來就是程式結束，原版留在 `dx` 的是調色盤函式的殘值，不是離開碼。
+        // 標題與片尾回來就是程式結束。
         Entry::Title => {
             core.run_title().await;
-            return Exit::Quit;
+            Exit::Quit
         }
         Entry::Ending => {
             core.run_ending().await;
-            return Exit::Quit;
+            Exit::Quit
         }
-        Entry::Stage1 => core.s10cd0().await,
-        Entry::Stage2 => core.s13205().await,
-        Entry::Stage3 => core.s13a51().await,
-        Entry::Stage4 => core.s13daf().await,
-    }
-    match core.r.dx as u8 {
-        b'E' => Exit::End,
-        b'C' => Exit::Clear,
-        _ => Exit::Quit,
+        Entry::Stage1 => core.play_stage1().await,
+        Entry::Stage2 => core.play_stage2().await,
+        Entry::Stage3 => core.play_stage3().await,
+        Entry::Stage4 => core.play_stage4().await,
     }
 }
 
@@ -586,7 +612,7 @@ impl Game {
         core.load_mirrors();
         core.files = files;
         // sub_11375 通過時把 dl（`Y`）寫進 byte_1CFAA，並把自己改成 retn。快照要帶上這個狀態。
-        core.s11375_patched = core.ds.r8(a(0x1CFAA)) != b'N';
+        core.integrity_checked = core.flow.integrity_mark != b'N';
         let ds = core.ds.clone();
         let port = core.port.clone();
         port.borrow_mut().ds.copy_from(&ds);
@@ -604,16 +630,16 @@ impl Game {
 
     /// 重新開始：沿用同一份 `Dseg`，只重跑進入關卡的初始化，殘值行為與原版相同。
     pub fn restart(&mut self, start: Start) {
-        let patched = self.port.borrow().s11375_patched;
+        let checked = self.port.borrow().integrity_checked;
         let image_free = self.ds.clone();
         let mut core = Core::new(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET], &[], start, self.fixes);
         core.ds = image_free;
         core.load_mirrors();
-        core.s11375_patched = patched;
+        core.integrity_checked = checked;
         core.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
         core.set_players_present(0x01);
         core.draws.clear();
-        core.enter_stage();
+        core.init_stage1();
         core.store_mirrors();
         self.ds.copy_from(&core.ds);
         let port = core.port.clone();

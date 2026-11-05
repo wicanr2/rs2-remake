@@ -115,11 +115,10 @@ impl Core {
                     return;
                 }
                 for stage in CampaignStage::ALL {
-                    self.play_stage(stage).await;
-                    match self.stage_exit() {
-                        Some(Exit::Quit) => return,
-                        Some(Exit::End) => continue 'title,
-                        _ => {}
+                    match self.play_stage(stage).await {
+                        Exit::Quit => return,
+                        Exit::End => continue 'title,
+                        Exit::Clear => {}
                     }
                 }
                 self.run_ending().await;
@@ -140,9 +139,8 @@ impl Core {
             }
             match self.title.next_demo() {
                 DemoTurn::Play(stage) => {
-                    self.s10e33();
-                    self.play_stage(stage).await;
-                    last_exit = self.stage_exit();
+                    self.reset_stage();
+                    last_exit = Some(self.play_stage(stage).await);
                     self.title.finish_demo();
                 }
                 DemoTurn::BackToTitle => return last_exit,
@@ -153,16 +151,16 @@ impl Core {
 
     /// 一關：過場卡，再跑關卡主函式。第二關起，過場卡之後先把檔案提示的磁碟號設成 `'2'`
     /// （`byte_274EC`，換磁片提示用，重製沒有人讀）。
-    async fn play_stage(&mut self, stage: CampaignStage) {
+    async fn play_stage(&mut self, stage: CampaignStage) -> Exit {
         self.play_stage_card(stage).await;
         if stage != CampaignStage::One {
             self.set_disk_hint(b'2');
         }
         match stage {
-            CampaignStage::One => self.s10cd0().await,
-            CampaignStage::Two => self.s13205().await,
-            CampaignStage::Three => self.s13a51().await,
-            CampaignStage::Four => self.s13daf().await,
+            CampaignStage::One => self.play_stage1().await,
+            CampaignStage::Two => self.play_stage2().await,
+            CampaignStage::Three => self.play_stage3().await,
+            CampaignStage::Four => self.play_stage4().await,
         }
     }
 }

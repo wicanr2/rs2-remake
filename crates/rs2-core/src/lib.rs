@@ -1,8 +1,8 @@
 //! RS-2 第一關的決定性模擬。照機器碼逐函式移植，不碰時間、檔案、亂數源或繪圖。
 //! 規格：`docs/spec/001-rust-first-stage.md`。
 
+mod blit;
 mod boss_scroll;
-mod callconv;
 mod cards;
 pub mod draw;
 pub mod dseg;
@@ -22,10 +22,11 @@ mod pbullet;
 mod player;
 mod scene;
 mod scenery;
-mod stage1_bg;
+mod stage1;
 mod stage2;
 mod stage3;
 mod stage4;
+mod stage_io;
 mod title;
 pub mod regs;
 mod video;

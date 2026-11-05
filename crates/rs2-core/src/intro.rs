@@ -101,7 +101,7 @@ impl Core {
         self.credits_meet();
         // 製作名單停留 10 x 4 個 tick，每 4 個 tick 看一次按鍵。
         for _ in 0..10 {
-            self.wait_ticks(4).await;
+            self.await_timer_ticks(4).await;
             if self.key_pressed() {
                 return IntroEnd::Interrupted;
             }
@@ -124,7 +124,7 @@ impl Core {
             for page in [Page::Zero, Page::One] {
                 self.show_page(page);
                 self.clear_draw_page();
-                self.copy_scratch_rows(SCREEN_ROWS);
+                self.copy_rows_to_page_shifted(SCREEN_ROWS);
                 view.src_x = view.src_x.wrapping_sub(1);
                 self.set_scratch_view(view);
                 self.mirror_scan_lines();
@@ -136,10 +136,10 @@ impl Core {
         // 滑完再補畫一次最後的取景，翻到頁 0。
         self.mirror_scan_lines();
         self.clear_draw_page();
-        self.copy_scratch_rows(SCREEN_ROWS);
+        self.copy_rows_to_page_shifted(SCREEN_ROWS);
         self.mirror_scan_lines();
         self.show_page(Page::Zero);
-        self.wait_ticks(1).await;
+        self.await_timer_ticks(1).await;
         self.ship_approaches().await;
     }
 
@@ -152,29 +152,29 @@ impl Core {
                 self.draw_beg(*sprite);
             }
             self.mirror_scan_lines();
-            self.wait_ticks(step.wait).await;
+            self.await_timer_ticks(step.wait).await;
             self.show_page(if i % 2 == 0 { Page::One } else { Page::Zero });
         }
         // 只剩背景，閃光。
         self.redraw_earth();
         self.mirror_scan_lines();
-        self.wait_ticks(4).await;
+        self.await_timer_ticks(4).await;
         self.load_palette(Palette::Beg1B);
-        self.wait_ticks(0x14).await;
+        self.await_timer_ticks(0x14).await;
         self.show_page(Page::One);
         self.load_palette(Palette::Beg1A);
-        self.wait_ticks(3).await;
+        self.await_timer_ticks(3).await;
         if self.key_pressed() {
             return;
         }
-        self.wait_ticks(0x0F).await;
+        self.await_timer_ticks(0x0F).await;
     }
 
     /// 清目前的頁，再把暫存區 B 的地球整頁複製上去（原版 `sub_11C26`）。取景沿用地球滑完的位置。
     fn redraw_earth(&mut self) {
         self.clear_draw_page();
         self.set_blit_position(0, 0);
-        self.copy_scratch_rows(SCREEN_ROWS);
+        self.copy_rows_to_page_shifted(SCREEN_ROWS);
     }
 
     /// 段 2（`sub_1175B`）：`BEG1` 第 1 項（手臂，224x153）寫在暫存區 B 的 (1,0)，顯示在 y=40，
@@ -185,11 +185,11 @@ impl Core {
         self.set_scratch_view(view);
         self.show_page(Page::One);
         self.draw_on(Page::One);
-        self.copy_scratch_rows(SCREEN_ROWS);
-        self.wait_ticks(1).await;
-        self.wait_ticks(0x0F).await;
+        self.copy_rows_to_page_shifted(SCREEN_ROWS);
+        self.await_timer_ticks(1).await;
+        self.await_timer_ticks(0x0F).await;
         for _ in 0..33 {
-            self.copy_scratch_rows(SCREEN_ROWS);
+            self.copy_rows_to_page_shifted(SCREEN_ROWS);
             view.shift = view.shift.wrapping_sub(1);
             self.set_scratch_view(view);
             if self.key_pressed() {
@@ -203,18 +203,18 @@ impl Core {
     async fn ship_front_zooms_in(&mut self) {
         for (x, image, wait) in SHIP_FRONT_ZOOM {
             self.draw_beg(Placement::at(x, SHIP_FRONT_Y, image));
-            self.wait_ticks(wait).await;
+            self.await_timer_ticks(wait).await;
             if self.key_pressed() {
                 return;
             }
         }
         self.draw_beg(SHIP_FRONT_LAST);
         self.banner_flies_in().await;
-        self.wait_ticks(1).await;
+        self.await_timer_ticks(1).await;
         if self.key_pressed() {
             return;
         }
-        self.wait_ticks(0x0E).await;
+        self.await_timer_ticks(0x0E).await;
     }
 
     /// 段 3 尾（`sub_118A2`）：`BEG1` 第 14 項（`RS-S` 字樣，272x57）在 y=30 從 x=40 往左 38 步，
@@ -228,15 +228,15 @@ impl Core {
                 return;
             }
         }
-        self.wait_ticks(1).await;
-        self.wait_ticks(8).await;
+        self.await_timer_ticks(1).await;
+        self.await_timer_ticks(8).await;
         self.draw_beg(Placement::at(0x1D, 0x1E, 0x0F));
-        self.wait_ticks(2).await;
+        self.await_timer_ticks(2).await;
         if self.key_pressed() {
             return;
         }
         self.draw_beg(Placement::at(0x1D, 0x1E, 0x10));
-        self.wait_ticks(2).await;
+        self.await_timer_ticks(2).await;
         self.draw_beg(Placement::at(0x1D, 0x1E, 0x11));
     }
 
@@ -249,7 +249,7 @@ impl Core {
         self.show_page(Page::One);
         self.draw_on(Page::One);
         for _ in 0..40 {
-            self.copy_scratch_rows(SCREEN_ROWS);
+            self.copy_rows_to_page_shifted(SCREEN_ROWS);
             view.y = view.y.wrapping_sub(5);
             self.set_scratch_view(view);
             if self.key_pressed() {

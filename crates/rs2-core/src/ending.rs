@@ -70,7 +70,7 @@ impl Core {
         self.draw_enemy_overlays();
         self.advance_stage_frame();
         self.mirror_scan_lines();
-        self.wait_ticks(1).await;
+        self.await_timer_ticks(1).await;
     }
 }
 

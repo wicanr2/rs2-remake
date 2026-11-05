@@ -299,3 +299,13 @@ Android 煙霧測試第二次啟動的失敗：
 勘誤：`docs/re/12` 第 4.6 節寫片尾是 Ctrl+Q 離開、Ctrl+R 重播，機器碼只比對 Q、R，不看 Ctrl，已改。第 8.4 節補上第二關過場的換位座標。舊 `title.rs` 註解把 `byte_274C4` 稱為「Enter 一類」，實際是空白鍵（39h），`274A7` 才是 Enter（1Ch）。
 
 執行邊界：標題代理改了 `mirror.rs`、`video.rs`、`game.rs`、`lib.rs`，都是新增存取函式與 `DS_EXEMPT`。`run_entry` 對 `Entry::Title`、`Entry::Ending` 改成明確回傳 `Exit::Quit`，抽驗過：所有可達路徑結果相同。
+
+### 流程與關卡領域（2026-11-05，同日）
+
+- `flow.rs`、四關、`boss_scroll.rs` 重寫，四關各一個幀函式，順序差異留在各關。`verify` exit 0。變異測試 11 項 10 項分歧；第二關連爆改成先退特效鏈收據分不出，由單元測試涵蓋。暫存器 poison 測試全過。
+- 和標題領域合併：兩邊各定義 `Palette`、`Key` 與一批存取函式，併成一份。`stage_compat.rs`、`callconv.rs` 刪除，標題直接呼叫 `play_stage1`～`play_stage4`，用回傳的 `Exit`。關卡入口回傳 `Exit`：四個迴圈只在 E、Q、C 時離開，沒有其他值。
+- 按鍵狀態表、最近按鍵、展示旗標、幀計數、G3、G4 仍在 `Dseg`，經 `mirror.rs` 的具名存取函式。G3 被五個領域讀寫，INT 9 的 ASCII 表會讀進按鍵表。這批留給移除 `Dseg` 那一步。
+
+勘誤（`docs/re/03`、`12`，已改）：秘技不看順序，只比較三個計數。S 鍵靜音有兩個條件。`9C8Ah` 的值補上。
+
+執行邊界：流程代理在 `lib.rs` 用過一次 `sed -i`，在 `flow/hud.rs` 用過一次 `cat >>`。主機沒跑 python 或 cargo。
