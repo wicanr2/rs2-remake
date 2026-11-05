@@ -123,6 +123,13 @@ CFG = {
     "macos": "~/Library/Application Support/rs2-remake/settings.txt",
 }
 LABEL = {"linux": "Linux x86_64（AppImage）", "windows": "Windows x86_64（zip）", "macos": "macOS universal（zip 內的 .app）"}
+# APK 由 tools/package/android_apk.sh 另外放進同一個發行目錄，說明只出現在總覽。
+ANDROID_START = (
+    "\n【Android（APK）】\n"
+    "  在手機允許安裝未知來源的應用程式後安裝 APK。需要 Android 6.0 以上，arm64-v8a 或 x86_64。\n"
+    "  畫面左下是方向鍵，右下是開火與砲座轉向，右上暫停，左上開工具列。「砲座像 Force」開著時多一顆分離鈕。也可以接手把。\n"
+    "  這一版只在模擬器跑過，沒有在實機上試過。\n"
+)
 
 
 def readme(version, platform):
@@ -132,7 +139,7 @@ def readme(version, platform):
         start = START[platform]
         cfg = CFG[platform]
     else:
-        start = "啟動\n" + "".join(f"\n【{LABEL[p]}】\n" + START[p].split("啟動\n", 1)[1] for p in plats)
+        start = "啟動\n" + "".join(f"\n【{LABEL[p]}】\n" + START[p].split("啟動\n", 1)[1] for p in plats) + ANDROID_START
         cfg = "".join(f"\n    {LABEL[p]}：{CFG[p]}" for p in plats)
     return f"""RS-2 remake {version}（完整版）
 
@@ -145,11 +152,19 @@ def readme(version, platform):
 {start}
 操作鍵
   標題畫面按 C 開選單（難度與玩家數），其他鍵開始遊戲。
-  方向鍵移動；Home、PgUp、End、PgDn 是斜向。右 Shift 開火；/ 砲座轉向；Esc 暫停；S 切換音效；Ctrl+Q 離開。
-  雙人時玩家 2 用 T、B、F、H 移動，左 Shift 開火，Z 砲座轉向。
+  方向鍵移動；Home、PgUp、End、PgDn 是斜向。右 Shift 開火；/ 砲座轉向；. 砲座分離；Esc 暫停；S 切換音效；Ctrl+Q 離開。
+  雙人時玩家 2 用 T、B、F、H 移動（R、Y、V、N 斜向），左 Shift 開火，Z 砲座轉向，X 砲座分離。
+  砲座分離只在「砲座像 Force」開著時有作用。按鍵可以在設定畫面的「控制設定」改。
   F1 畫面補間；F2 幀計數；F3 原版圖與 HD；F4 視窗倍率；F5 玩家機預測與短按保留（關掉就是原版時序）；
-  F10 隱藏工具列；F11 全螢幕。視窗上方的工具列可以用滑鼠點。
-  手把（SDL GameController）：第一支是玩家 1，第二支是玩家 2。十字鍵與左搖桿移動，A 開火，B 砲座轉向，Start 暫停，Y 開選單。
+  F6 顯示模式（VGA、EGA、CGA、MGA）；F10 開關設定畫面（裡面 F8 換頁）；F11 全螢幕。視窗上方的工具列可以用滑鼠點。
+  手把（SDL GameController）：第一支是玩家 1，第二支是玩家 2。十字鍵與左搖桿移動，A 或 RT 開火，B 或 LT 砲座轉向，
+  RB 或 LB 砲座分離，Start 暫停，X 或 Back 確定，Y 開選單。按鈕可以在「控制設定」的手把頁改。
+
+強化選項
+  工具列的「遊戲設定」裡有十二個選項：戰場大小、波動砲充能、按住連射、砲座像 Force、打擊回饋、無敵、
+  手感、細步移動，以及四個 AI 強化（瞄準更準、火力加強、敵人會反應、頭目新招式）。
+  改變規則的選項預設關，只影響畫面與聲音的打擊回饋和手感預設開。示範錄影一律照原版規則播放。
+  戰場大小有 100%、120%、150%，只加寬水平方向，下一次進關時生效，加寬時不能選 CGA、MGA。
 
 設定
   設定檔：{cfg}
