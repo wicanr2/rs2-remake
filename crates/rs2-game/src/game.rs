@@ -321,6 +321,10 @@ pub(crate) struct Port {
     /// 玩家的強化狀態（`Core::enh`）在上一次交回控制權時的複本，給 `Game::player_status`、`Game::hud_status` 讀。
     /// 不屬於原版狀態，不進 `State`。
     pub(crate) shoot: [ShootView; 2],
+    /// 時間表的生成列因為池滿而放棄的次數（累計）。量測用，不屬於原版狀態。
+    pub(crate) spawn_drops: u32,
+    /// 其中景物綁定的列（模式 `Y`、第三關和地圖同速的列）的次數。量測用。
+    pub(crate) bound_drops: u32,
 }
 
 struct YieldOnce(bool);
@@ -387,6 +391,9 @@ pub struct Core {
     pub(crate) g2_slots: Vec<u8>,
     /// 戰場加大時，腳本結束的敵人繼續飛出畫面的狀態（規格 005「戰場大小」）。不屬於原版狀態，欄數 40 時不使用。
     pub(crate) linger: crate::entity::Linger,
+    /// 戰場加大時，跟著景物捲動的敵人提前生成、在原版生成幀之前隨景物移動的狀態（規格 005「戰場大小」）。
+    /// 不屬於原版狀態，欄數 40 時不使用。
+    pub(crate) approach: crate::entity::Approach,
     /// 敵人 AI 強化的狀態（規格 005）。不屬於原版狀態，不進 `State`，全關時不影響模擬。
     pub(crate) ai: AiState,
     pub(crate) port: Rc<RefCell<Port>>,
@@ -420,6 +427,8 @@ impl Core {
             rules: Rules::ORIGINAL,
             split_held: [false; 2],
             shoot: [ShootView::default(); 2],
+            spawn_drops: 0,
+            bound_drops: 0,
         };
         let State { fx, eb, pb, en, sc, pl, title, flow, scenes, draw_params, sound, grids, tape } = initial;
         let mut g = Core {
@@ -450,6 +459,7 @@ impl Core {
             gens: [[0; 40]; POOLS],
             g2_slots: vec![0; 0x321],
             linger: Default::default(),
+            approach: Default::default(),
             ai: AiState::default(),
             port: Rc::new(RefCell::new(port)),
         };
@@ -834,6 +844,18 @@ impl Game {
     /// 標題、過場與片尾是 40。前端用它決定輸出寬度（欄數 × 8 像素）與能不能切到單色模式。
     pub fn field_cols(&self) -> u16 {
         self.state.grids.cols()
+    }
+
+    /// 時間表的生成列因為敵人池滿而放棄的累計次數。量測用：戰場加大時景物綁定的敵人提前生成，同時存在的敵人變多，
+    /// 用它和 100% 比有沒有更常放棄。
+    pub fn enemy_spawn_drops(&self) -> u32 {
+        self.port.borrow().spawn_drops
+    }
+
+    /// [`Game::enemy_spawn_drops`] 之中景物綁定的列（第一、二、三關跟著景物捲動的敵人）的次數。
+    /// 這些列放棄就是景物上少了一個敵人（例如第三關地面少一個圓頂）。
+    pub fn bound_spawn_drops(&self) -> u32 {
+        self.port.borrow().bound_drops
     }
 
     /// HUD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。

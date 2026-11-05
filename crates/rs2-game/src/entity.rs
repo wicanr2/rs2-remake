@@ -364,6 +364,62 @@ pub struct Linger {
 /// 飛出畫面的幀數上限：橫越一次戰場再加這麼多。
 const LINGER_SLACK: u16 = 16;
 
+/// 跟著景物捲動的敵人（規格 005「戰場大小」）。它們的位置是對著景物設計的：在原版生成幀出現在畫面右緣（欄 40），
+/// 也就是地圖的第 `左緣欄 + 40` 欄，之後的腳本一路和景物同步。戰場加大時如果把它平移到新右緣，就偏離地圖多出來的欄數，
+/// 地面敵人浮在缺口上方，所以改成提前生成、先隨景物移動到原版的位置。
+///
+/// 兩種速度是從程式碼查到的：
+///
+/// | 種類 | 景物速度 | 怎麼認 |
+/// |---|---|---|
+/// | [`Pace::Drift`] | 每幀 1 欄 | 模式 `Y`（`drift_with_scenery`）。第二關的柱（`draw_stage2_pillars`）也是每幀 1 欄 |
+/// | [`Pace::Map`] | 每兩幀 1 欄 | 第三關時間表裡腳本開頭是「往左一步、停一步」四組以上的列（地圖每兩個頁面捲 1 欄，見 `stage3/map.rs`） |
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pace {
+    Drift,
+    Map,
+}
+
+impl Pace {
+    /// 景物左移 1 欄要幾幀。
+    const fn frames_per_col(self) -> u16 {
+        match self {
+            Pace::Drift => 1,
+            Pace::Map => 2,
+        }
+    }
+}
+
+/// 提前生成的敵人在原版生成幀之前的狀態。不屬於原版狀態：欄數 40 時完全不用。
+///
+/// 欄數大於 40 時，景物綁定、x 在 40 以上的列在原版生成幀的 `lead` 幀之前（`lead` = 多出來的欄數 × 景物走 1 欄的幀數，
+/// 到第 0 幀為止）生成在新右緣。這段時間只隨景物移動：不讀腳本、不擲亂數、不開火、不吃 AI 計時，但有形狀、可以被打中、
+/// 也可以撞玩家（寬戰場裡這一段在畫面裡）。到原版生成幀它剛好在樣板的欄，從那一幀起照原版的腳本走，之後和 100% 完全相同。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Approach {
+    /// 距離原版生成幀還有幾幀（包含這一幀），0 是沒有在提前移動。
+    left: [u16; POOL_SIZE],
+    /// 樣板的欄，也就是原版生成幀那一幀的欄。
+    home: [u16; POOL_SIZE],
+    /// 地圖速度的敵人釘住的地圖欄：樣板的欄加上原版生成幀前一幀的地圖左緣欄。每幀的欄是它減地圖左緣欄。
+    /// 速度是 [`Pace::Drift`] 的敵人是 `None`。
+    anchor: [Option<u16>; POOL_SIZE],
+    /// 這一槽是景物綁定的敵人（含畫面內生成、不提前的）。它們的軌跡是對著景物設計的，腳本結束照原版釋放，
+    /// 不套用 [`Linger`]（那是給自由飛行的敵人補上多出來的橫向距離）。
+    bound: [bool; POOL_SIZE],
+}
+
+/// 生成時敵人放在哪裡。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Placement {
+    /// 自由飛行：樣板的 x 依 [`Core::spawn_col`] 平移或放大。
+    Free { boss: bool },
+    /// 景物綁定、畫面內生成（x 小於 40）：x 不動，景物在各寬度的同一欄是同一個位置。
+    Keep,
+    /// 景物綁定、x 在 40 以上：提前 `left` 幀生成，`frame` 是現在的幀計數。
+    Approach { pace: Pace, left: u16, frame: u16 },
+}
+
 /// 池的一槽。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Slot {
@@ -562,12 +618,67 @@ impl Core {
 
     /// 掃一張時間表，幀計數相符的每一列生成一個敵人（原版 `sub_15D1C`）。掃描不依賴排序，也不跳過；
     /// 池滿了該列放棄，後面的列照常處理。
+    ///
+    /// 戰場加大時，景物綁定的列（[`Core::scenery_pace`]）另外處理：x 在 40 以上的提前生成（[`Approach`]），
+    /// 畫面內生成的 x 不放大。
     pub(crate) fn spawn_scheduled(&mut self, table: Timetable) {
         let tables = self.tables();
-        for &(frame, template) in tables.timetable(table) {
-            if frame == self.stage_frame() {
-                self.spawn_row(template, table.is_boss_row(frame));
+        let frame = self.stage_frame();
+        let extra = self.field_extra();
+        for &(row_frame, template) in tables.timetable(table) {
+            let boss = table.is_boss_row(row_frame);
+            // 景物綁定的列最多提前 2 × 多出來的欄數幀（地圖速度）生成。
+            if extra > 0 && !boss && row_frame >= frame && row_frame - frame <= 2 * extra {
+                if let Some(pace) = self.scenery_pace(table, template) {
+                    self.spawn_bound(template, pace, row_frame, frame);
+                    continue;
+                }
             }
+            if row_frame == frame && !self.spawn_row(template, boss) && !boss && self.scenery_pace(table, template).is_some() {
+                // 量測用：景物綁定的列因為池滿放棄（100% 也算，才能和寬戰場比）。
+                self.port.borrow_mut().bound_drops += 1;
+            }
+        }
+    }
+
+    /// 這個樣板是不是跟著景物捲動，是的話景物的速度（[`Pace`]）。頭目列不算，由呼叫端先排除。
+    fn scenery_pace(&self, table: Timetable, template: u16) -> Option<Pace> {
+        let enemy = self.enemy_template(template);
+        if enemy.mode() == Mode::Scroll {
+            return Some(Pace::Drift);
+        }
+        (table == Timetable::Stage3 && self.script_tracks_map(enemy.script)).then_some(Pace::Map)
+    }
+
+    /// 腳本開頭是「往左一步、停一步」的交替（任一相位）四組：每兩幀左移 1 欄，和第三關的地圖捲速相同。
+    fn script_tracks_map(&self, at: u16) -> bool {
+        const W: u8 = 7;
+        const HOLD: u8 = 0;
+        let bytes: Vec<Option<u8>> = (0..8).map(|k| self.tables.script_byte_opt(at.wrapping_add(k))).collect();
+        [(W, HOLD), (HOLD, W)].iter().any(|&(a, b)| bytes.iter().enumerate().all(|(k, &v)| v == Some(if k % 2 == 0 { a } else { b })))
+    }
+
+    /// 景物綁定的列在現在這一幀要不要生成（`row_frame` 是原版的生成幀，`frame` 是現在的幀）。
+    ///
+    /// - x 在 40 以下（畫面內生成）：原版生成幀照原樣生成，x 不放大。
+    /// - x 在 40 以上：提前 `lead` 幀生成在新右緣，`lead` 是景物走完多出來的欄數的幀數，不夠就從第 0 幀起。
+    fn spawn_bound(&mut self, template: u16, pace: Pace, row_frame: u16, frame: u16) {
+        let home = self.enemy_template(template).col;
+        let placement = if (home as i16) < GRID_COLS as i16 {
+            if row_frame != frame {
+                return;
+            }
+            Placement::Keep
+        } else {
+            let start = row_frame.saturating_sub(self.field_extra() * pace.frames_per_col());
+            if start != frame {
+                return;
+            }
+            let left = row_frame - start;
+            if left == 0 { Placement::Free { boss: false } } else { Placement::Approach { pace, left, frame } }
+        };
+        if !self.spawn_with(template, placement) {
+            self.port.borrow_mut().bound_drops += 1;
         }
     }
 
@@ -579,7 +690,10 @@ impl Core {
     /// | 頭目列（見 [`Timetable::is_boss_row`]），含 x 為負的合成圖分件 | 同上，和頭目合成圖（`restart_boss_layer`）一起靠右對齊 |
     /// | 0 至 39 與負的其他列（畫面內、上下方與左緣進場） | x 乘 `cols / 40`（整數除法，往零取整） |
     ///
-    /// 時間表的幀與腳本內的相對位移不改，所以進場距離變遠，敵人到達玩家面前的時間會晚。
+    /// 這是自由飛行的敵人的規則。跟著景物捲動的列（[`Core::scenery_pace`]）不走這裡：x 在 40 以上的提前生成
+    /// （[`Approach`]），畫面內生成的 x 不放大，它們在各寬度站在同一個地圖欄上。
+    ///
+    /// 時間表的幀與腳本內的相對位移不改，所以自由飛行的敵人進場距離變遠，到達玩家面前的時間會晚。
     pub(crate) fn spawn_col(&self, col: u16, boss: bool) -> u16 {
         let extra = self.field_extra();
         if extra == 0 {
@@ -601,10 +715,36 @@ impl Core {
     }
 
     /// [`Core::spawn_enemy`]，`boss` 是時間表的這一列屬於頭目（戰場加大時 x 的平移規則見 [`Core::spawn_col`]）。
-    pub(crate) fn spawn_row(&mut self, template: u16, boss: bool) {
-        let Some(slot) = self.en.first_free() else { return };
+    pub(crate) fn spawn_row(&mut self, template: u16, boss: bool) -> bool {
+        self.spawn_with(template, Placement::Free { boss })
+    }
+
+    /// 生成的共同部分：`placement` 決定欄，其餘照樣板。回傳有沒有放進池裡（沒有空槽就放棄，回傳 `false`）。
+    fn spawn_with(&mut self, template: u16, placement: Placement) -> bool {
+        let Some(slot) = self.en.first_free() else {
+            self.port.borrow_mut().spawn_drops += 1;
+            return false;
+        };
         let mut enemy = self.enemy_template(template);
-        enemy.col = self.spawn_col(enemy.col, boss);
+        let home = enemy.col;
+        self.approach.left[slot] = 0;
+        self.approach.bound[slot] = !matches!(placement, Placement::Free { .. });
+        enemy.col = match placement {
+            Placement::Free { boss } => self.spawn_col(home, boss),
+            Placement::Keep => home,
+            Placement::Approach { pace, left, frame } => {
+                // 這一幀（動作之後）的欄：原版生成幀的前一幀剛好在樣板的欄，往前推到現在。
+                let col = match pace {
+                    Pace::Drift => home + left - 1,
+                    // 地圖左緣每兩幀加 1，偶數幀加（第二頁）：從現在到生成幀的前一幀加了幾欄。
+                    Pace::Map => home + (frame + left - 1) / 2 - frame / 2,
+                };
+                self.approach.left[slot] = left;
+                self.approach.home[slot] = home;
+                self.approach.anchor[slot] = (pace == Pace::Map).then(|| self.scenes.map.left_col.wrapping_add(col));
+                col
+            }
+        };
         enemy.blit_x = enemy.col;
         enemy.blit_y = enemy.row.wrapping_mul(ROW_PIXELS);
         let s = &mut self.en.slots[slot];
@@ -615,6 +755,7 @@ impl Core {
         self.bump_gen(Pool::Entity, slot as u8);
         // AI 強化只認得生成表生成的敵人（`ai.rs`）；這一步不碰資料段。
         self.ai.on_spawn(slot, template);
+        true
     }
 
     // ---- 每幀更新 ----
@@ -648,6 +789,12 @@ impl Core {
     /// 順序：結算傷害（死了就到此為止）、取移動碼、移動、隨景物左移、挑圖框、產生繪製值、寫足跡、擲亂數開火。
     /// 腳本結束碼（0Fh）那一幀不同：只標記要釋放，其餘步驟照常做，所以那一幀仍寫足跡、仍可開火、仍推進亂數。
     fn step_enemy(&mut self, enemy: &mut Enemy, slot: usize) -> Step {
+        // 戰場加大：景物綁定的敵人在原版生成幀之前只隨景物移動（[`Approach`]）。
+        let approaching = self.approach.left[slot];
+        if approaching > 0 {
+            self.approach.left[slot] = approaching - 1;
+            return self.approach_frame(enemy, slot, approaching);
+        }
         let flashing = match self.resolve_damage(enemy) {
             Damage::Killed => return Step { flashing: false, dying: true },
             Damage::Flash => true,
@@ -693,6 +840,36 @@ impl Core {
         Step { flashing, dying }
     }
 
+    /// 提前生成的敵人的一幀（[`Approach`]）：結算傷害、隨景物移到這一幀的欄、挑圖框、寫足跡。
+    /// 不讀腳本、不推動畫計數、不擲亂數、不開火、不走 AI。`left` 是距離原版生成幀的幀數（包含這一幀），
+    /// 這一幀動作之後的欄是原版生成幀前一幀剛好在樣板的欄往前推 `left - 1` 幀的景物位移。
+    fn approach_frame(&mut self, enemy: &mut Enemy, slot: usize, left: u16) -> Step {
+        let flashing = match self.resolve_damage(enemy) {
+            Damage::Killed => return Step { flashing: false, dying: true },
+            Damage::Flash => true,
+            Damage::None => false,
+        };
+        let home = self.approach.home[slot];
+        let col = match self.approach.anchor[slot] {
+            Some(anchor) => anchor.wrapping_sub(self.scenes.map.left_col),
+            None => home + left - 1,
+        };
+        enemy.col = col;
+        enemy.blit_x = col;
+        // 圖框用腳本第一個碼的那一張（原版生成幀那一幀會畫的），動畫計數不動。
+        let code = self.tables.script_byte_opt(enemy.script).unwrap_or(0);
+        let framed = u16::from(code) <= LAST_FRAMED_CODE;
+        let image = if framed {
+            self.tables.table_word(enemy.frames, u16::from(code) << 1).wrapping_add(enemy.anim)
+        } else {
+            self.tables.table_word(enemy.frames, 0)
+        };
+        self.en.last_sprite = Sprite { image, x: enemy.blit_x, y: enemy.blit_y, kind: enemy.kind };
+        self.stamp_footprint_g3(enemy);
+        self.stamp_footprint_g1(enemy, slot);
+        Step { flashing, dying: false }
+    }
+
     /// 戰場加大時敵人這一幀動作之後的處理（[`Linger`]），回傳這一幀要不要釋放。
     ///
     /// - 飛出畫面中：幀數減一，整個形狀離開左右界或幀數用完才釋放。
@@ -700,6 +877,9 @@ impl Core {
     ///   （或是隨景物左移的敵人），改成飛出畫面，這一幀不釋放。
     /// - 不套用在 `K` 型（死後要把損壞貼片畫進背景）與子彈字母 `E`（死亡就是過關旗標）的敵人。
     fn linger_after_motion(&mut self, enemy: &Enemy, slot: usize, code: u8, ended: bool, lingering: bool) -> bool {
+        if self.approach.bound[slot] {
+            return ended;
+        }
         if lingering {
             self.linger.left[slot] -= 1;
             return self.linger.left[slot] == 0 || !self.overlaps_field_columns(enemy);
@@ -1405,6 +1585,205 @@ mod tests {
         assert_eq!(run_until_released(48, &[CODE_DIE], 10, b'Y', 1, 100), (12, -2));
     }
 
+    // ---- 景物綁定的敵人（Approach） ----
+
+    /// 欄數 `cols` 的核心，時間表 `table` 只有一列 `(t0, 0x7400)`，樣板：模式 `mode`、x `x`、腳本 `script`、耐久 2。
+    fn bound_core(cols: u16, table: Timetable, mode: u8, x: u16, script: &[u8], t0: u16) -> Core {
+        let mut c = core();
+        if cols != 40 {
+            c.enter_field(cols);
+        }
+        let mut e = walker(&mut c, script, 0);
+        e.hp = 2;
+        e.mode = u16::from(mode);
+        e.col = x;
+        e.blit_x = x;
+        put_template(&mut c, 0x7400, &e);
+        c.tables_mut().put_timetable(table, &[(t0, 0x7400)]);
+        c
+    }
+
+    /// 照第三關的順序跑一段幀：幀計數、地圖左緣欄（每兩幀加 1，偶數幀加，幀 0 是 1）、生成、更新。
+    /// 每幀之後呼叫 `each`。
+    fn run_frames(c: &mut Core, table: Timetable, frames: std::ops::RangeInclusive<u16>, mut each: impl FnMut(&Core, u16)) {
+        for f in frames {
+            c.set_stage_frame(f);
+            c.scenes.map.left_col = 1 + f / 2;
+            c.spawn_scheduled(table);
+            c.update_enemies();
+            each(c, f);
+        }
+    }
+
+    /// 槽 0 在每一幀之後的欄（沒有就是 `None`）。
+    fn cols_of_slot0(c: &mut Core, table: Timetable, frames: std::ops::RangeInclusive<u16>) -> Vec<(u16, Option<i16>)> {
+        let mut out = Vec::new();
+        run_frames(c, table, frames, |c, f| {
+            let s = &c.en.slots[0];
+            out.push((f, s.is_active().then_some(s.enemy.col as i16)));
+        });
+        out
+    }
+
+    /// 往左一步、停一步的腳本，接結束碼。
+    fn map_script(pairs: usize) -> Vec<u8> {
+        let mut v: Vec<u8> = (0..pairs).flat_map(|_| [7u8, 0]).collect();
+        v.push(CODE_DIE);
+        v
+    }
+
+    #[test]
+    fn scenery_bound_rows_are_recognised_by_mode_and_by_the_map_speed_script() {
+        let mut c = core();
+        let y = walker(&mut c, &[7, 7, 7, 7, 7, 7, 7, 7], 0);
+        put_template(&mut c, 0x7400, &Enemy { mode: u16::from(b'Y'), ..y });
+        assert_eq!(c.scenery_pace(Timetable::Stage2, 0x7400), Some(Pace::Drift));
+        assert_eq!(c.scenery_pace(Timetable::Stage1, 0x7400), Some(Pace::Drift), "模式 Y 的敵人在哪一關都是每幀 1 欄");
+        // 第三關：往左一步、停一步四組以上（兩種相位）是地圖速度。
+        for script in [vec![7u8, 0, 7, 0, 7, 0, 7, 0, 7, 0], vec![0, 7, 0, 7, 0, 7, 0, 7, 0]] {
+            let mut c = core();
+            let e = walker(&mut c, &script, 0);
+            put_template(&mut c, 0x7400, &e);
+            assert_eq!(c.scenery_pace(Timetable::Stage3, 0x7400), Some(Pace::Map), "{script:?}");
+            assert_eq!(c.scenery_pace(Timetable::Stage2, 0x7400), None, "別的關的同樣腳本不算（只有第三關有地圖）");
+        }
+        // 自由飛行：每幀一步、只有三組、中途改方向、腳本比 8 個位元組短（不 panic）。
+        for script in [vec![7u8; 10], vec![7, 0, 7, 0, 7, 0, 3, 0], vec![7, 0, 7, 0, 7, 0, 0x0F]] {
+            let mut c = core();
+            let e = walker(&mut c, &script, 0);
+            put_template(&mut c, 0x7400, &e);
+            assert_eq!(c.scenery_pace(Timetable::Stage3, 0x7400), None, "{script:?}");
+        }
+    }
+
+    #[test]
+    fn a_wide_field_spawns_a_map_speed_row_early_and_it_arrives_on_the_original_column() {
+        // 第三關 t0 = 100 的列，x 40，腳本是往左一步停一步。100% 的軌跡當標準。
+        let script = map_script(30);
+        let mut base = bound_core(40, Timetable::Stage3, b'N', 40, &script, 100);
+        let want = cols_of_slot0(&mut base, Timetable::Stage3, 90..=160);
+        assert_eq!(want[10], (100, Some(39)), "100%：原版生成幀走第一步，欄 39");
+        for (cols, extra) in [(48u16, 8u16), (60, 20)] {
+            let mut c = bound_core(cols, Timetable::Stage3, b'N', 40, &script, 100);
+            let got = cols_of_slot0(&mut c, Timetable::Stage3, 0..=160);
+            let lead = 2 * extra;
+            // 提前 2 × 多出來的欄數幀生成，之前沒有。
+            let first = got.iter().find(|(_, col)| col.is_some()).unwrap().0;
+            assert_eq!(first, 100 - lead, "{cols} 欄：提前 {lead} 幀");
+            // 從原版生成幀起，每幀的欄和 100% 完全相同（同一個腳本位置、同一個地圖左緣）。
+            for (f, col) in got.iter().filter(|(f, _)| *f >= 90) {
+                let base_col = want.iter().find(|(g, _)| g == f).map(|(_, c)| *c);
+                if *f >= 100 {
+                    assert_eq!(Some(*col), base_col, "{cols} 欄第 {f} 幀");
+                }
+            }
+            // 原版生成幀的前一幀剛好在樣板的欄 40；提前的這段隨地圖每兩幀左移 1 欄，所在地圖欄（左緣欄加欄）不超過 1 欄的誤差。
+            assert_eq!(got.iter().find(|(f, _)| *f == 99).unwrap().1, Some(40));
+            let spawn_col = got.iter().find(|(f, _)| *f == first).unwrap().1.unwrap();
+            assert!((i32::from(spawn_col) - i32::from(40 + extra)).abs() <= 1, "{cols} 欄：新右緣進場的欄 {spawn_col}");
+            let mut maps = Vec::new();
+            for f in first..100 {
+                let col = got.iter().find(|(g, _)| *g == f).unwrap().1.unwrap();
+                maps.push(i32::from(col) + 1 + i32::from(f / 2));
+            }
+            assert!(maps.iter().all(|m| *m == maps[0]), "{cols} 欄：提前這段釘在同一個地圖欄：{maps:?}");
+        }
+    }
+
+    #[test]
+    fn a_wide_field_spawns_a_drift_row_early_and_it_arrives_on_the_original_column() {
+        let script = vec![7u8, 7, 7, 3, 3, 3, 7, 7, 7, CODE_DIE];
+        let mut base = bound_core(40, Timetable::Stage2, b'Y', 40, &script, 50);
+        let want = cols_of_slot0(&mut base, Timetable::Stage2, 40..=70);
+        for (cols, extra) in [(48u16, 8u16), (60, 20)] {
+            let mut c = bound_core(cols, Timetable::Stage2, b'Y', 40, &script, 50);
+            let got = cols_of_slot0(&mut c, Timetable::Stage2, 0..=70);
+            let first = got.iter().find(|(_, col)| col.is_some()).unwrap();
+            assert_eq!(first.0, 50 - extra, "{cols} 欄：模式 Y 每幀 1 欄，提前多出來的欄數那麼多幀");
+            assert_eq!(first.1, Some(39 + extra as i16), "新右緣進場：動作之後在新右緣的最後一欄");
+            for f in 40..=70u16 {
+                let g = got.iter().find(|(g, _)| *g == f).unwrap().1;
+                let b = want.iter().find(|(b, _)| *b == f).unwrap().1;
+                if f >= 50 {
+                    assert_eq!(g, b, "{cols} 欄第 {f} 幀");
+                }
+            }
+            assert_eq!(got.iter().find(|(f, _)| *f == 49).unwrap().1, Some(40), "原版生成幀的前一幀在樣板的欄");
+        }
+    }
+
+    #[test]
+    fn a_bound_row_inside_the_screen_keeps_its_column_and_free_rows_still_shift() {
+        // 模式 Y、x 20：畫面內生成，欄不放大（景物同欄在各寬度是同一個位置），也不提前。
+        let script = vec![7u8, 7, 7, CODE_DIE];
+        for cols in [40u16, 48, 60] {
+            let mut c = bound_core(cols, Timetable::Stage2, b'Y', 20, &script, 50);
+            let got = cols_of_slot0(&mut c, Timetable::Stage2, 0..=52);
+            assert_eq!(got.iter().find(|(_, col)| col.is_some()).unwrap().0, 50, "{cols} 欄不提前");
+            assert_eq!(got.iter().find(|(f, _)| *f == 50).unwrap().1, Some(18), "{cols} 欄：欄 20 走一步加隨景物左移一欄");
+        }
+        // 自由飛行（模式 N、腳本每幀一步）：照舊在原版生成幀生成在新右緣，不提前。
+        let free = vec![7u8; 6];
+        let mut c = bound_core(60, Timetable::Stage3, b'N', 40, &free, 50);
+        let got = cols_of_slot0(&mut c, Timetable::Stage3, 0..=51);
+        assert_eq!(got.iter().find(|(_, col)| col.is_some()).unwrap(), &(50, Some(59)));
+        // 頭目列不提前（即使模式是 Y）：它靠合成圖對齊，不靠景物。
+        let mut c = bound_core(60, Timetable::Stage2, b'Y', 40, &free, 263);
+        let got = cols_of_slot0(&mut c, Timetable::Stage2, 200..=264);
+        assert_eq!(got.iter().find(|(_, col)| col.is_some()).unwrap().0, 263);
+    }
+
+    #[test]
+    fn an_approaching_enemy_does_not_read_its_script_roll_or_fire_but_can_be_hit() {
+        let script = map_script(30);
+        let mut c = bound_core(60, Timetable::Stage3, b'N', 40, &script, 100);
+        run_frames(&mut c, Timetable::Stage3, 0..=70, |_, _| {});
+        let e = c.en.slots[0].enemy;
+        assert_eq!((e.script, e.rand_index, e.anim), (0x7800, 0, 0), "提前這段沒有讀腳本、沒有擲亂數、沒有動畫");
+        assert_eq!(c.approach.left[0], 100 - 70 - 1, "第 70 幀之後，距離原版生成幀（第 100 幀）還有 29 幀");
+        assert!(c.eb.slots.iter().all(|s| !s.is_active()), "沒有開火");
+        // 有形狀：寫了足跡，玩家彈打得到。
+        put_shape(&mut c, 0x7000, 1, 1, 1);
+        run_frames(&mut c, Timetable::Stage3, 71..=71, |_, _| {});
+        assert_eq!(c.grids.peek8(c.grid1_row_start(e.row) + c.en.slots[0].enemy.col), 1, "足跡寫進 G1");
+        // 被打中（傷害 3 大於耐久 2）就死，和在原版生成幀之後被打中一樣。
+        c.en.slots[0].enemy.damage = (u16::from(HIT_PENDING) << 8) | 3;
+        run_frames(&mut c, Timetable::Stage3, 72..=72, |_, _| {});
+        assert!(!c.en.slots[0].is_active(), "提前這段被打死");
+    }
+
+    #[test]
+    fn a_full_pool_drops_the_bound_row_and_counts_it() {
+        let script = map_script(10);
+        let mut c = bound_core(48, Timetable::Stage3, b'N', 40, &script, 100);
+        for slot in 0..POOL_SIZE {
+            c.en.slots[slot].link = enemy_record_link(slot);
+        }
+        c.set_stage_frame(100 - 16);
+        c.scenes.map.left_col = 1 + (100 - 16) / 2;
+        c.spawn_scheduled(Timetable::Stage3);
+        let port = c.port.borrow();
+        assert_eq!((port.spawn_drops, port.bound_drops), (1, 1), "提前生成沒有空槽：放棄，算景物綁定的列");
+        drop(port);
+        assert!(c.approach.left.iter().all(|&l| l == 0));
+    }
+
+    #[test]
+    fn an_early_start_before_frame_zero_begins_at_frame_zero() {
+        // 第三關有列在幀 21：150% 要提前 40 幀，不夠就從第 0 幀起，欄是從樣板往前推的位置。
+        let script = map_script(30);
+        let mut base = bound_core(40, Timetable::Stage3, b'N', 40, &script, 21);
+        let want = cols_of_slot0(&mut base, Timetable::Stage3, 0..=60);
+        let mut c = bound_core(60, Timetable::Stage3, b'N', 40, &script, 21);
+        let got = cols_of_slot0(&mut c, Timetable::Stage3, 0..=60);
+        let first = got.iter().find(|(_, col)| col.is_some()).unwrap();
+        assert_eq!(first.0, 0, "從第 0 幀起");
+        assert!(first.1.unwrap() >= 40 && first.1.unwrap() <= 60, "在畫面右半：{first:?}");
+        for f in 21..=60u16 {
+            assert_eq!(got.iter().find(|(g, _)| *g == f).unwrap().1, want.iter().find(|(g, _)| *g == f).unwrap().1, "第 {f} 幀");
+        }
+    }
+
     #[test]
     fn a_respawn_in_a_slot_forgets_the_flight_of_the_previous_enemy() {
         let mut c = core();
@@ -2015,6 +2394,46 @@ mod tests {
         assert_eq!(en.slots[4], Slot { link: 0, enemy: Enemy { hp: 9, ..Enemy::default() }, sprite: Sprite { image: 5, ..Sprite::default() }, flash: YES });
         assert_eq!(en.spare_link, 0);
         assert!(en.slots.iter().all(|s| !s.is_active()));
+    }
+
+    /// 真實時間表逐列盤點（景物綁定敵人的調查）：每列的幀、x、列、模式字母、畫法字母、耐久、單步與腳本前 24 個位元組。
+    /// 需要 `RS2_ORIG`：`tools/rust.sh test -p rs2-game entity::tests::real_timetables_inventory -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_timetables_inventory() {
+        let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
+        let image = rs2_formats::unpack_s_exe(&std::fs::read(dir.join("S.EXE")).unwrap()).unwrap();
+        let tables = crate::tables::Tables::parse(&image).unwrap();
+        for (name, table) in [("S1", Timetable::Stage1), ("S2", Timetable::Stage2), ("S3", Timetable::Stage3), ("S4", Timetable::Stage4), ("END", Timetable::Ending)] {
+            for &(frame, template) in tables.timetable(table) {
+                let e = tables.enemy_template(template);
+                let mut script = String::new();
+                let mut at = e.script;
+                for _ in 0..24 {
+                    let Some(b) = tables.script_byte_opt(at) else {
+                        script.push_str("-- ");
+                        break;
+                    };
+                    script.push_str(&format!("{b:02X} "));
+                    at = at.wrapping_add(1);
+                    if b == CODE_DIE {
+                        break;
+                    }
+                }
+                eprintln!(
+                    "[inv] {name} 幀 {frame} 樣板 {template:#06x} x {} 列 {} 模式 {} 型 {} hp {} bullet {} dcol {} bdx {} boss {} 腳本 {script}",
+                    e.col as i16,
+                    e.row as i16,
+                    e.mode as u8 as char,
+                    e.kind as u8 as char,
+                    e.hp,
+                    e.bullet as u8 as char,
+                    e.dcol,
+                    e.blit_dx,
+                    table.is_boss_row(frame)
+                );
+            }
+        }
     }
 
     /// 真實時間表的平移統計（規格 005「戰場大小」的生成規則）：每關的列數依 x 分類，頭目列與其他列的數量。

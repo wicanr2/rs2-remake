@@ -626,6 +626,164 @@ fn field_exits_enemies_leave_through_the_left_edge_instead_of_vanishing_in_view(
     }
 }
 
+/// 景物綁定的敵人（模式 `Y`，第三關腳本開頭是往左一步停一步的列）的一幀記錄：
+/// `((腳本讀取位置, 列, 耐久, 圖框表), 欄)`。前四項在同一步一起認出同一個敵人（腳本位置隨幀前進，
+/// 所以同一步同一個腳本位置就是同一個生成幀），欄是畫面欄，景物同欄在各寬度是同一個地圖位置。
+type BoundRow = ((u16, i16, u16, u16), i16);
+
+/// 一次執行的敵人記錄。
+struct EnemyTrace {
+    /// 每步畫面欄 0 至 39 內的景物綁定敵人（排序過）。
+    bound: Vec<Vec<BoundRow>>,
+    /// 同時在場的敵人數的最大值與每步平均。
+    peak: usize,
+    mean: f64,
+    /// 這段時間時間表的生成列因為池滿而放棄的次數，以及其中景物綁定的列。
+    drops: u32,
+    bound_drops: u32,
+}
+
+/// 從標題玩到第 `stage` 關，再走 `steps` 步，記下景物綁定敵人的位置、敵人數與放棄次數。`fire` 為真時玩家像
+/// `Driver` 那樣左右走並按住開火（會打死敵人，兩個寬度的局面因此不再逐步相同，只比統計），為假時玩家不動（不死）。
+///
+/// 景物綁定的認法：第三關是耐久 2 的 `N` 模式敵人與畫法 `S` 的敵人（腳本是往左一步停一步，和地圖同速）；
+/// 其他關是模式 `Y`。這是時間表的盤點結果（`workspace/progress/field-terrain.md`），不是通用判斷。
+fn enemy_trace(f: FieldSize, stage: u8, steps: u32, fire: bool) -> EnemyTrace {
+    let mut s = open(Begin::Title, f, view(DisplayMode::Vga));
+    let mut drv = reach(&mut s, stage);
+    let (drops0, bound0) = (s.game.enemy_spawn_drops(), s.game.bound_spawn_drops());
+    let mut t = EnemyTrace { bound: Vec::new(), peak: 0, mean: 0.0, drops: 0, bound_drops: 0 };
+    let mut active_sum = 0usize;
+    for _ in 0..steps {
+        s.set_invincible(true);
+        if fire {
+            let (sc, _) = drv.next(&s);
+            drv.in_play = 0;
+            s.step(&sc);
+        } else {
+            s.step(&[]);
+        }
+        let slots = &s.game.state().en.slots;
+        let active = slots.iter().filter(|e| e.link != 0).count();
+        t.peak = t.peak.max(active);
+        active_sum += active;
+        let mut rows: Vec<BoundRow> = slots
+            .iter()
+            .filter(|e| e.link != 0)
+            .map(|e| e.enemy)
+            .filter(|e| {
+                let bound = if stage == b'C' { (e.hp == 2 && e.mode == u16::from(b'N')) || e.kind == u16::from(b'S') } else { false };
+                bound || e.mode == u16::from(b'Y')
+            })
+            .filter(|e| (0..40).contains(&(e.col as i16)))
+            .map(|e| ((e.script, e.row as i16, e.hp, e.frames), e.col as i16))
+            .collect();
+        rows.sort();
+        t.bound.push(rows);
+    }
+    t.mean = active_sum as f64 / f64::from(steps);
+    t.drops = s.game.enemy_spawn_drops() - drops0;
+    t.bound_drops = s.game.bound_spawn_drops() - bound0;
+    t
+}
+
+/// 景物綁定的敵人對齊地圖：玩家不動、不死，120%、150% 的畫面欄 0 至 39 內，同一個敵人（同一步同一個腳本位置、
+/// 列、耐久、圖框表）的欄和 100% 的完全相同。地圖左緣欄只看幀計數，和寬度無關，所以同一步同一欄就是同一個地圖欄。
+/// 第三關的地面敵人（圓頂）、第二關沿柱子排列的敵人、第一關的盤旋敵人都驗。
+///
+/// 池滿時兩邊放棄的列不同（寬戰場自由飛行的敵人活得比較久），只在其中一邊出現的敵人不比；
+/// 景物綁定的列在寬戰場一次都沒有放棄時，100% 有的敵人寬戰場也都要有。
+#[test]
+#[ignore]
+fn field_terrain_bound_enemies_stand_on_the_same_map_columns_as_in_100_percent() {
+    for (stage, steps) in [(b'A', 400u32), (b'B', 700), (b'C', 1000)] {
+        let base = enemy_trace(FieldSize::Normal, stage, steps, false);
+        for f in [FieldSize::Wide, FieldSize::Wider] {
+            let t = enemy_trace(f, stage, steps, false);
+            let (mut matched, mut base_only, mut wide_only) = (0usize, 0usize, 0usize);
+            for i in 0..steps as usize {
+                let (a, b): (std::collections::HashMap<_, _>, std::collections::HashMap<_, _>) = (base.bound[i].iter().copied().collect(), t.bound[i].iter().copied().collect());
+                for (key, col) in &a {
+                    match b.get(key) {
+                        Some(c) => {
+                            assert_eq!(c, col, "關 {} {} 欄第 {i} 步：敵人 {key:?} 在 100% 是欄 {col}，寬戰場是欄 {c}", stage as char, f.cols());
+                            matched += 1;
+                        }
+                        None => base_only += 1,
+                    }
+                }
+                wide_only += b.keys().filter(|k| !a.contains_key(k)).count();
+            }
+            eprintln!(
+                "[terrain] 關 {} {} 欄：{steps} 步，同一個敵人同一欄 {matched} 筆；只在 100% {base_only}、只在寬戰場 {wide_only}；景物綁定列放棄 {}（100% 是 {}）",
+                stage as char,
+                f.cols(),
+                t.bound_drops,
+                base.bound_drops
+            );
+            assert!(matched > 50, "關 {}：要真的比到景物綁定的敵人（{matched} 筆）", stage as char);
+            if t.bound_drops == 0 {
+                assert_eq!(base_only, 0, "關 {} {} 欄：景物綁定的列沒有放棄過，100% 的敵人寬戰場也要有", stage as char, f.cols());
+            }
+            if base.bound_drops == 0 {
+                assert_eq!(wide_only, 0, "關 {} {} 欄：100% 沒有放棄過，寬戰場不該多出敵人", stage as char, f.cols());
+            }
+        }
+    }
+}
+
+/// 池滿的壓力：提前生成讓同時存在的敵人變多。玩家左右走並按住開火（不死），量每關同時存在的敵人數（最多與平均）與
+/// 生成列因為沒有空槽而放棄的次數（全部，以及其中景物綁定的列），三個寬度並排印出。
+/// 景物綁定的列放棄就是景物上少一個敵人，寬戰場不能比 100% 多放棄超過 4 次。
+/// （敵人池是原版的 15 槽，100% 也常滿：最多同時 15。寬戰場自由飛行的敵人在畫面裡多待幾幀，總放棄次數比 100% 多，
+/// 例如 150% 第四關 0 次變 9 次，這是量測不是要求，見 `workspace/progress/field-terrain.md`。）
+#[test]
+#[ignore]
+fn field_terrain_pool_pressure_stays_close_to_100_percent() {
+    for (stage, steps) in [(b'A', 700u32), (b'B', 700), (b'C', 1200), (b'D', 1100)] {
+        let base = enemy_trace(FieldSize::Normal, stage, steps, true);
+        eprintln!(
+            "[terrain] 關 {} 100%：最多同時 {}、平均 {:.1}、放棄 {}（景物綁定 {}）",
+            stage as char, base.peak, base.mean, base.drops, base.bound_drops
+        );
+        for f in [FieldSize::Wide, FieldSize::Wider] {
+            let t = enemy_trace(f, stage, steps, true);
+            eprintln!("[terrain] 關 {} {} 欄：最多同時 {}、平均 {:.1}、放棄 {}（景物綁定 {}）", stage as char, f.cols(), t.peak, t.mean, t.drops, t.bound_drops);
+            assert!(t.bound_drops <= base.bound_drops + 4, "關 {} {} 欄：景物綁定的列放棄 {} 次，100% 是 {}", stage as char, f.cols(), t.bound_drops, base.bound_drops);
+        }
+    }
+}
+
+/// 第三關地面敵人多的幾個畫面（玩家不動、不死、不開火，敵人不會被打掉）：100%、120%、150%，原版圖與 HD，
+/// 存在 `RS2_OUT/field-shots/terrain/`，給人確認圓頂站在岩石上（地面敵人跟地圖同欄）。
+#[test]
+#[ignore]
+fn field_terrain_shots_stage_three_ground_enemies() {
+    let Some(base_dir) = shots_dir() else { return };
+    let dir = base_dir.join("terrain");
+    std::fs::create_dir_all(&dir).unwrap();
+    for hd in [false, true] {
+        for f in [FieldSize::Normal, FieldSize::Wide, FieldSize::Wider] {
+            let tag = format!("{}{}", f.cols() * 5 / 2, if hd { "hd" } else { "sd" });
+            let Some(mut s) = open_shot(Begin::Title, f, hd) else {
+                eprintln!("[terrain] 沒有 RS2_HD，略過 HD 截圖");
+                break;
+            };
+            let _ = reach(&mut s, b'C');
+            let mut done = 0u32;
+            for at in [380u32, 420, 450, 475, 520, 560] {
+                for _ in done..at {
+                    s.set_invincible(true);
+                    s.step(&[]);
+                }
+                done = at;
+                let (px, w, h) = s.render(1.0);
+                std::fs::write(dir.join(format!("stage3_{tag}_{at:04}.png")), rs2_gfx::png::encode_rgba(w, h, px)).unwrap();
+            }
+        }
+    }
+}
+
 /// 進關後的開場畫面（150%，原版圖）：每次欄數從 40 變成 60，存進場後第 4、12、24、40、60 步的畫面，
 /// 確認右下角的大宇資訊橫幅靠右對齊、玩家機與背景在寬畫面裡的位置。關卡字卡在 40 欄的過場裡，不在這些畫面中。
 #[test]

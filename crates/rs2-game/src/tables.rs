@@ -654,6 +654,11 @@ impl Tables {
         self.scripts.byte(at).unwrap_or_else(|| missing("腳本", at))
     }
 
+    /// 位元組腳本在 `at` 的位元組，表外回傳 `None`（不 panic：偷看腳本開頭判斷類型用，腳本可能比讀的長度短）。
+    pub(crate) fn script_byte_opt(&self, at: u16) -> Option<u8> {
+        self.scripts.byte(at)
+    }
+
     /// 位元組腳本在 `at` 的字組。
     pub(crate) fn script_word(&self, at: u16) -> u16 {
         u16::from_le_bytes([self.script_byte(at), self.script_byte(at.wrapping_add(1))])
