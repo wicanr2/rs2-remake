@@ -13,7 +13,7 @@
 
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
 use crate::mode::DisplayMode;
-use crate::options::{self, Options, FEEL_INDEX, INVINCIBLE_INDEX, OPTIONS};
+use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS};
 use crate::resources::{Env, Os, non_empty};
 use crate::ui::text;
 use std::io::Write;
@@ -99,6 +99,11 @@ impl Settings {
     /// 無敵開著。
     pub fn invincible(&self) -> bool {
         self.opts.get(INVINCIBLE_INDEX) != 0
+    }
+
+    /// 打擊回饋開著（只在 HD 畫面生效）。
+    pub fn hit_feedback(&self) -> bool {
+        self.opts.get(HIT_FEEDBACK_INDEX) != 0
     }
 
     /// 有「已實作而且改變規則」的選項開著。沒實作的選項值再怎麼寫都不算，因為它不會生效。

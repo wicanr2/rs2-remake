@@ -9,10 +9,11 @@ use crate::pacer::Pacer;
 use crate::pad::{Devices, PadEvent, PadMapper, STICK_ENGAGE, STICK_RELEASE};
 use crate::resources::{self, Env, Os};
 use crate::session::{Begin, Outcome, Session, ViewOpts};
+use crate::options::HIT_FEEDBACK_INDEX;
 use crate::settings::{self, Settings};
-use crate::toolbar::{BarState, desktop_height, metrics};
+use crate::toolbar::{BarState, Button, desktop_height, metrics};
 use crate::touch::TouchMapper;
-use crate::ui::panel::{Cx, Page, Panel, PanelOut};
+use crate::ui::panel::{self, Cx, Page, Panel, PanelOut};
 use crate::ui::{self, text};
 use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size};
 use rs2_audio::Engine;
@@ -186,6 +187,9 @@ fn prepare(args: Args) -> Result<Ctx, String> {
     if let Some(m) = args.mode {
         st.mode = m;
     }
+    if let Some(f) = args.feedback {
+        st.set_opt_value(HIT_FEEDBACK_INDEX, f as u8);
+    }
     let hd_dir = found.hd;
     Ok(Ctx { args, inputs, assets, mono, settings: st, cfg_dir, replay, hd_dir })
 }
@@ -312,14 +316,28 @@ fn log_missing(session: &mut Session) {
     }
 }
 
-fn toggle_action(t: ToggleName) -> Action {
-    match t {
+/// 測試用的切換。打擊回饋是設定畫面的選項，沒有熱鍵，所以直接改設定。
+fn apply_toggle(ctl: &mut Controls, t: ToggleName) {
+    let a = match t {
         ToggleName::Tween => Action::Tween,
         ToggleName::Counter => Action::Counter,
         ToggleName::Hd => Action::Gfx,
         ToggleName::Feel => Action::Feel,
         ToggleName::Mode => Action::Mode,
-    }
+        ToggleName::Feedback => {
+            let v = ctl.settings.hit_feedback();
+            ctl.settings.set_opt_value(HIT_FEEDBACK_INDEX, (!v) as u8);
+            return;
+        }
+    };
+    ctl.apply(a);
+}
+
+/// 把前端的開關交給 `Session`：畫面選項、HUD 右端的標籤、打擊回饋。
+fn sync_session(session: &mut Session, ctl: &Controls) {
+    session.set_view(ctl.view());
+    session.set_hud_flags(ctl.hud_flags());
+    session.set_hit_feedback(ctl.settings.hit_feedback());
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +373,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     };
     let hd = finish_hd(cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone())))?;
     let mut session = build_session(&cx, hd, ctl.view());
+    sync_session(&mut session, &ctl);
     log_missing(&mut session);
     eprintln!(
         "[headless] 起點 {:?}，{steps} 步，補間 {}，幀計數 {}，HD {}，顯示模式 {}",
@@ -382,13 +401,15 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         // 第 N 步之後的切換：在 steps == N 時、下一步之前套用。
         toggles.retain(|&(n, t)| {
             if n == done {
-                ctl.apply(toggle_action(t));
+                apply_toggle(&mut ctl, t);
                 false
             } else {
                 true
             }
         });
-        session.set_view(ctl.view());
+        sync_session(&mut session, &ctl);
+        // 沒有真實時鐘：介面層的時間用步數換算（一步約 110 毫秒），同樣的輸入得到同樣的畫面。
+        session.set_clock_ms(session.steps() * 110);
         apply_invincible(&mut session, ctl.settings.invincible(), &mut god_applied);
         let sc: &[u8] = cx.replay.get(done as usize).map(|v| v.as_slice()).unwrap_or(&[]);
         let t0 = Instant::now();
@@ -404,6 +425,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         let n = session.steps();
         // 每步各畫一次 alpha 0.5 與 1.0（補間關閉時 alpha 沒有作用，但仍走同一段程式）。
         for alpha in [0.5f32, 1.0] {
+            let shake = session.shake_offset();
             let t1 = Instant::now();
             let fit = session.fit();
             let (frame, fw, fh) = session.render(alpha);
@@ -412,6 +434,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
                 let shot_idx = if alpha == 1.0 { shots.iter().position(|(s, _)| *s == n) } else { None };
                 let shot_path = shot_idx.map(|i| shots[i].1.clone());
                 let t2 = Instant::now();
+                p.shake = shake;
                 let info = p.draw(c, frame, fw, fh, fit, &ctl.toolbar(), &ctl.bar_state(), None, None, shot_path.as_deref())?;
                 stats.present(t2.elapsed().as_micros() as u64);
                 if let (Some(i), Some(info)) = (shot_idx, info) {
@@ -483,6 +506,11 @@ struct Front {
     trig_down: [bool; 2],
     /// 已經交給 `mapper` 與 `pads` 的對應。
     synced: (KeyMap, PadMap),
+    /// 滑鼠移過、按著的工具列按鈕（規格 005：移過變亮，按下變深）。
+    hover_btn: Option<Button>,
+    down_btn: Option<Button>,
+    /// 設定畫面開啟的時間（毫秒），淡入用。
+    panel_opened_ms: u64,
 }
 
 impl Front {
@@ -492,7 +520,7 @@ impl Front {
         let mut pads = PadMapper::new();
         pads.set_map(ctl.settings.pad);
         let synced = (ctl.settings.keys, ctl.settings.pad);
-        Front { ctl, panel: None, last_page: Page::Game, devs: Devices::new(), pads, mapper, touch, notice: None, panel_gen: 0, trig_down: [false; 2], synced }
+        Front { ctl, panel: None, last_page: Page::Game, devs: Devices::new(), pads, mapper, touch, notice: None, panel_gen: 0, trig_down: [false; 2], synced, hover_btn: None, down_btn: None, panel_opened_ms: 0 }
     }
 
     fn say(&mut self, s: String, now_us: u64) {
@@ -515,6 +543,8 @@ impl Front {
         if let Some((s, _)) = &self.notice {
             b.notice = s.clone();
         }
+        b.hover = self.hover_btn;
+        b.down = self.down_btn;
         b
     }
 
@@ -614,7 +644,7 @@ fn panel_size(canvas: &WindowCanvas, ctl: &Controls) -> (u32, u32) {
 
 /// 處理一個動作的後續：視窗大小、全螢幕、授權頁、存檔、開關設定畫面，並讓輸入層跟上。回傳要不要離開。
 fn apply_effect(eff: Effect, front: &mut Front, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>, now_us: u64) -> bool {
-    session.set_view(front.ctl.view());
+    sync_session(session, &front.ctl);
     if eff.about {
         // Android 的 AboutActivity 收這個網址（android/AndroidManifest.xml）。桌面版沒有對應程式，開不了就算了。
         if let Err(e) = sdl2::url::open_url("rs2about://license") {
@@ -653,6 +683,9 @@ fn apply_effect(eff: Effect, front: &mut Front, session: &mut Session, canvas: &
     match eff.panel {
         PanelChange::Open(t) => {
             let size = panel_size(canvas, &front.ctl);
+            if front.panel.is_none() {
+                front.panel_opened_ms = now_us / 1000;
+            }
             front.open_panel(t, size);
         }
         PanelChange::Close => front.close_panel(),
@@ -691,27 +724,6 @@ fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
     video.display_dpi(0).map(|(d, _, _)| d / 160.0).ok().filter(|d| *d >= 0.5).unwrap_or(2.0)
 }
 
-fn loading_frame() -> Vec<u8> {
-    let (w, h) = (320usize, 200usize);
-    let mut buf = vec![0u8; w * h * 4];
-    crate::font::fill_rect(&mut buf, w, h, 0, 0, w as i32, h as i32, [10, 12, 24, 255]);
-    let t = "LOADING.";
-    crate::font::draw_text(&mut buf, w, h, (w as i32 - crate::font::text_width(t, 2) as i32) / 2, 90, t, 2, [220, 220, 240, 255]);
-    buf
-}
-
-/// 第一次啟動解資料時的畫面。
-fn install_frame(f: f32) -> Vec<u8> {
-    let (w, h) = (320usize, 200usize);
-    let mut buf = vec![0u8; w * h * 4];
-    crate::font::fill_rect(&mut buf, w, h, 0, 0, w as i32, h as i32, [10, 12, 24, 255]);
-    let t = "INSTALLING";
-    crate::font::draw_text(&mut buf, w, h, (w as i32 - crate::font::text_width(t, 2) as i32) / 2, 80, t, 2, [220, 220, 240, 255]);
-    crate::font::fill_rect(&mut buf, w, h, 60, 110, 200, 8, [52, 56, 76, 255]);
-    crate::font::fill_rect(&mut buf, w, h, 60, 110, (200.0 * f.clamp(0.0, 1.0)) as i32, 8, [255, 180, 84, 255]);
-    buf
-}
-
 fn run_window(cx: Ctx) -> Result<i32, String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
@@ -742,7 +754,7 @@ pub fn run_installing(install: impl FnOnce(&mut dyn FnMut(f32)) -> Result<Args, 
             if pct != shown {
                 shown = pct;
                 pump.pump_events();
-                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, Fit::SD, &toolbar, &state, None, None, None) {
+                if let Err(e) = pres.draw(&mut canvas, &ui::loading::install_frame(f), 1280, 800, Fit::HD, &toolbar, &state, None, None, None) {
                     eprintln!("[install] 畫不了進度：{e}");
                 }
             }
@@ -772,11 +784,23 @@ fn window_loop<'a>(
     eprintln!("[window] 視訊驅動 {}，繪圖器 {}，垂直同步 {}", video.current_video_driver(), canvas.info().name, vsync);
     // HD 預載在背景跑，視窗先顯示載入畫面。
     let hd_handle = cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone()));
-    if hd_handle.is_some() {
-        pres.draw(&mut canvas, &loading_frame(), 320, 200, Fit::SD, &ctl.toolbar(), &ctl.bar_state(), None, None, None)?;
+    let mut pump = sdl.event_pump()?;
+    if let Some(h) = &hd_handle {
+        // 載入畫面（規格 005）：中文字樣加圓角進度條，預載沒有進度可報，條裡一段光帶來回。
+        let t0 = Instant::now();
+        loop {
+            pump.pump_events();
+            let phase = (t0.elapsed().as_secs_f32() / 1.6).fract();
+            pres.draw(&mut canvas, &ui::loading::hd_frame(phase), 1280, 800, Fit::HD, &ctl.toolbar(), &ctl.bar_state(), None, None, None)?;
+            if h.is_finished() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
     }
     let hd = finish_hd(hd_handle)?;
     let mut session = build_session(&cx, hd, ctl.view());
+    sync_session(&mut session, &ctl);
     log_missing(&mut session);
     let output = if cx.args.no_audio {
         None
@@ -790,7 +814,6 @@ fn window_loop<'a>(
         }
     };
 
-    let mut pump = sdl.event_pump()?;
     // 手把。子系統開不起來（沒有裝置節點的環境）就只用鍵盤。手把不自動指派，要在設定畫面指派。
     let pad_sys = match sdl.game_controller() {
         Ok(p) => Some(p),
@@ -994,6 +1017,8 @@ fn window_loop<'a>(
                     let bar_h = tb.height(ww) as i32;
                     if y < bar_h {
                         if let Some(b) = tb.hit(ww, x, y) {
+                            front.down_btn = Some(b);
+                            dirty = true;
                             if let Some(a) = Action::from_button(b) {
                                 if do_action(a, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
                                     break 'main;
@@ -1004,10 +1029,27 @@ fn window_loop<'a>(
                         p.press(x, y - bar_h);
                     }
                 }
-                Event::MouseMotion { mousestate, y, .. } => {
+                Event::MouseMotion { mousestate, x, y, .. } => {
+                    let (ww, _) = canvas.output_size()?;
+                    let tb = front.ctl.toolbar();
+                    let bar_h = tb.height(ww) as i32;
+                    // 滑鼠移過：工具列的按鈕與設定畫面的欄位變亮。觸控合成的滑鼠事件不追蹤，免得放開後還亮著。
+                    if !front.ctl.mobile {
+                        let hb = if y < bar_h { tb.hit(ww, x, y) } else { None };
+                        if hb != front.hover_btn {
+                            front.hover_btn = hb;
+                            dirty = true;
+                        }
+                        let Front { panel, ctl, devs, .. } = &mut front;
+                        if let Some(p) = panel.as_mut() {
+                            if y >= bar_h {
+                                p.hover_at(x, y - bar_h, ctl, devs);
+                            } else {
+                                p.clear_hover();
+                            }
+                        }
+                    }
                     if mousestate.left() && front.panel.is_some() {
-                        let (ww, _) = canvas.output_size()?;
-                        let bar_h = front.ctl.toolbar().height(ww) as i32;
                         let Front { panel, ctl, devs, .. } = &mut front;
                         if let Some(p) = panel.as_mut() {
                             p.drag(y - bar_h, ctl, devs);
@@ -1015,6 +1057,9 @@ fn window_loop<'a>(
                     }
                 }
                 Event::MouseButtonUp { mouse_btn: MouseButton::Left, x, y, .. } => {
+                    if front.down_btn.take().is_some() {
+                        dirty = true;
+                    }
                     if front.panel.is_some() {
                         let (ww, _) = canvas.output_size()?;
                         let bar_h = front.ctl.toolbar().height(ww) as i32;
@@ -1080,6 +1125,14 @@ fn window_loop<'a>(
                 }
                 Event::Window { win_event, .. } => match win_event {
                     WindowEvent::FocusLost => front.release_everything(t_us),
+                    WindowEvent::Leave => {
+                        if front.hover_btn.take().is_some() {
+                            dirty = true;
+                        }
+                        if let Some(p) = front.panel.as_mut() {
+                            p.clear_hover();
+                        }
+                    }
                     WindowEvent::FocusGained => pacer.reset(timer.performance_counter()),
                     WindowEvent::SizeChanged(..) => {
                         if front.touch.is_some() {
@@ -1107,6 +1160,9 @@ fn window_loop<'a>(
 
         let now = timer.performance_counter();
         let now_us = ticks_to_us(now, freq);
+        let now_ms = now_us / 1000;
+        // 介面層（HUD、回饋、面板淡入）的時間。不影響模擬時間。
+        session.set_clock_ms(now_ms);
         if front.expire_notice(now_us) {
             front.panel_gen += 1;
             dirty = true;
@@ -1200,6 +1256,10 @@ fn window_loop<'a>(
                     match plan {
                         Some(page) => {
                             let size = panel_size(&canvas, &front.ctl);
+                            if front.panel.is_none() {
+                                // 存圖要看到完整的畫面，不拍到淡入的中途。
+                                front.panel_opened_ms = now_ms.saturating_sub(panel::FADE_IN_MS + 1);
+                            }
                             front.show_page(page, size);
                         }
                         None => front.close_panel(),
@@ -1211,7 +1271,7 @@ fn window_loop<'a>(
             }
         }
         let paused = front.ctl.frontend_paused();
-        let animating = front.ctl.settings.tween && !paused;
+        let animating = (front.ctl.settings.tween || session.hd_effective()) && !paused;
         if dirty || animating || pending_shot.is_some() {
             // 存圖固定用 alpha 1.0：畫出剛跑完的那一步。
             let alpha = if pending_shot.is_some() { 1.0 } else { pacer.alpha() };
@@ -1226,6 +1286,7 @@ fn window_loop<'a>(
             let (ww, wh) = canvas.output_size()?;
             let tb = front.ctl.toolbar();
             let bar_h = tb.height(ww);
+            let shake = session.shake_offset();
             let t1 = Instant::now();
             let fit = session.fit();
             let (frame, fw, fh) = session.render(alpha);
@@ -1236,12 +1297,16 @@ fn window_loop<'a>(
             let overlay = if front.panel.is_some() { None } else { front.touch.as_ref().map(|t| Overlay { controls: t.controls(), playable: in_play }) };
             // 設定畫面；沒有的話，工具列收起來又暫停時畫一個「已暫停」標示。
             let mut layer: Option<UiLayer<'_>> = None;
+            let mut fading = false;
             let (ctl, devs) = (&front.ctl, &front.devs);
             if let Some(p) = front.panel.as_mut() {
                 p.resize(ww as i32, wh.saturating_sub(bar_h) as i32, ctl.mobile, ctl.dp);
-                let key = front.panel_gen.wrapping_mul(1_000_003).wrapping_add(p.version());
+                // 開啟後 120 毫秒淡入（規格 005），分 8 級重畫；淡入的級數也是圖的一部分。
+                let step = panel::fade_step(now_ms.saturating_sub(front.panel_opened_ms));
+                fading = step < panel::FADE_STEPS;
+                let key = front.panel_gen.wrapping_mul(1_000_003).wrapping_add(p.version()).wrapping_mul(16).wrapping_add(step as u64);
                 if key != panel_img_key {
-                    panel_img = p.render(ctl, devs);
+                    panel_img = p.render_faded(ctl, devs, step as f32 / panel::FADE_STEPS as f32);
                     panel_img_key = key;
                 }
                 let (pw, ph) = p.size();
@@ -1257,13 +1322,15 @@ fn window_loop<'a>(
                 }
             }
             let bar_state = front.bar_state();
+            // 打擊回饋的畫面震動：只改輸出位置。
+            pres.shake = shake;
             let info = pres.draw(&mut canvas, frame, fw, fh, fit, &tb, &bar_state, overlay, layer, shot_path.as_deref())?;
             stats.present(t2.elapsed().as_micros() as u64);
             if let (Some((s, path)), Some(info)) = (pending_shot.take(), info) {
                 shot_ok &= report_shot(&path, info, s);
                 shots_taken += 1;
             }
-            dirty = false;
+            dirty = fading;
             // 有垂直同步時 present 自己會等；仍然加一道下限，免得繪圖器宣稱有同步卻沒等時空轉。
             let budget = if vsync { Duration::from_micros(2_000) } else { frame_budget };
             let spent = iter_start.elapsed();

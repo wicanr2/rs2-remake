@@ -7,9 +7,11 @@ pub mod driver;
 pub mod engine;
 pub mod opl2;
 pub mod oracle;
+pub mod sfx;
 pub mod speaker;
 
 pub use driver::{Driver, Mix};
 pub use engine::{Engine, Track};
 pub use opl2::{NATIVE_RATE, Opl2};
+pub use sfx::{Sfx, SfxKind};
 pub use speaker::{SpkEv, SpkKind};

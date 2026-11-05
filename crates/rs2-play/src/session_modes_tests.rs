@@ -665,7 +665,8 @@ fn m7_set_mode_reports_success_and_the_effective_mode() {
 // ---------------------------------------------------------------------------
 
 /// 有 `RS2_HD` 才跑：EGA 加 HD 時輸出 1280×800 且只有 EGA 色表的顏色；單色模式 HD 用 `MonoHdSink`，
-/// 輸出 1280×800，只有黑白兩色，比例同單色的 4:3。
+/// 輸出 1280×800，遊戲畫面只有黑白兩色，比例同單色的 4:3。HUD 蓋底部 40 列，不屬於遊戲畫面：EGA 不量化，
+/// 單色轉灰階。打擊回饋關掉，光暈才不會混進遊戲畫面。
 #[test]
 #[ignore]
 fn m8_hd_with_ega_is_quantized_and_mono_uses_the_mono_hd_sink() {
@@ -678,6 +679,7 @@ fn m8_hd_with_ega_is_quantized_and_mono_uses_the_mono_hd_sink() {
     hd.preload(&assets, 1);
     let v = |mode| ViewOpts { tween: true, hd: true, feel: false, counter: false, mode };
     let mut s = Session::new(inputs(), assets, Some(mono_assets()), Some(hd), new_game(), Fixes::ALL, v(DisplayMode::Vga));
+    s.set_hit_feedback(false);
     for n in 0..120 {
         s.step(&script(n));
     }
@@ -686,15 +688,17 @@ fn m8_hd_with_ega_is_quantized_and_mono_uses_the_mono_hd_sink() {
         s.set_view(v(mode));
         let fit = s.fit();
         let (px, w, h) = s.render(1.0);
+        let game = &px[..1280 * 760 * 4];
         match mode {
             DisplayMode::Vga => assert_eq!(((w, h), fit), ((1280, 800), Fit::HD)),
             DisplayMode::Ega => {
                 assert_eq!(((w, h), fit), ((1280, 800), Fit::HD));
-                assert!(px.chunks_exact(4).all(|p| pal.iter().any(|c| c[..] == p[..3])), "EGA 加 HD：有像素不在 EGA 色表內");
+                assert!(game.chunks_exact(4).all(|p| pal.iter().any(|c| c[..] == p[..3])), "EGA 加 HD：有像素不在 EGA 色表內");
             }
             DisplayMode::Cga | DisplayMode::Mga => {
                 assert_eq!(((w, h), fit), ((1280, 800), Fit::MONO), "{mode:?}：單色 HD");
-                assert!(px.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2] && (p[0] == 0 || p[0] == 255)), "{mode:?}：單色 HD 只有黑白");
+                assert!(game.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2] && (p[0] == 0 || p[0] == 255)), "{mode:?}：單色 HD 只有黑白");
+                assert!(px.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2]), "{mode:?}：HUD 要是灰階");
             }
         }
         assert!(px.chunks_exact(4).any(|p| p[0] != 0 || p[1] != 0 || p[2] != 0), "{mode:?}：全黑");

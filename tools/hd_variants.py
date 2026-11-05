@@ -101,6 +101,8 @@ def mono_bank(name):
 MONO_IMG = {"BEG1.BDB": "BEG1", "BH1.BDB": "BH1", "BH2.BDB": "BH2", "BH4.BDB": "BH4", "J1.GOB": "J1", "J2.GOB": "J2", "J3.GOB": "J3", "J4.GOB": "J4",
             "MY.BDB": "MY", "SHT1.BDB": "SHT1", "SHT2.BDB": "SHT2", "SHT3.BDB": "SHT3", "SHT4.BDB": "SHT4", "SHT5.BDB": "SHT5"}
 MONO_MASK = {"MYB.BDT": "MY", "SHT1.BDH": "SHT1", "SHT2.BDH": "SHT2", "SHT3.BDH": "SHT3", "SHT4.BDH": "SHT4", "SHT5.BDH": "SHT5"}
+# 署名與商標（AGENTS.md「文化保存」）：抖動會把字弄糊，直接放大原版單色圖。
+MONO_CREDITS = {("MY.BDB", 15), ("MY.BDB", 26), ("MY.BDB", 47), ("MY.BDB", 48)}
 mono = {}
 report = []
 
@@ -119,7 +121,7 @@ for fname, lib in MONO_IMG.items():
         tw, th = it["stride"] * 8 * 2, it["height"] * SCALE
         a = man["assets"].get(f"{lib}:{i}")
         orig = np.array(mono_to_rows(it["data"], it["height"], it["stride"]), dtype=np.float32) if it["height"] else None
-        if a is None or it["height"] <= 1:
+        if a is None or it["height"] <= 1 or (fname, i) in MONO_CREDITS:
             arr = np.repeat(np.repeat((orig * 255).astype(np.uint8), SCALE, axis=0), 2, axis=1)
             al = np.full(arr.shape, 255, np.uint8)
             method = "mono-nearest"

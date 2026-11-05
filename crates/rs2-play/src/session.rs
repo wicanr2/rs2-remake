@@ -20,16 +20,18 @@
 //!   一局裡每個第三關各用進場當下的模式，關內切換只換畫面（已決定的取捨）。
 //! - PC 喇叭附帶音。原版只有 E 的特效 blit 驅動喇叭，CGA、MGA 沒有，所以單色模式不產生 `AudioMsg::Speaker`。
 
-use rs2_audio::SpkEv;
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, MixFile, Pool, Start, boot_ds_with_dm1};
+use rs2_audio::{SfxKind, SpkEv};
+use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, MonoAssets, MonoHdSink, MonoKind, MonoSink, RenderOpts, VgaSink};
 use rs2_trace::Inputs;
 use std::sync::Arc;
 
+use crate::feedback::{Feedback, FxEvent, Scanner};
 use crate::mode::DisplayMode;
 use crate::predict::{Dir, Predictor, Reach};
+use crate::ui::hud::{self, HudFlags, HudIcons, HudState, IconImg};
 use crate::view::Fit;
 
 /// 遊戲從哪裡開始。
@@ -48,6 +50,8 @@ pub enum AudioMsg {
     Stop,
     /// 一段繪圖附帶音。靜音時不產生。
     Speaker(Vec<SpkEv>),
+    /// 打擊回饋的音效層（規格 005）。只在 HD 畫面且打擊回饋開著時產生。
+    Sfx(SfxKind),
 }
 
 /// 顯示選項。`hd` 只有在 `Session::hd_available()` 時才生效。
@@ -195,6 +199,44 @@ pub struct Session {
     live_input: bool,
     /// 最新一幀畫了玩家機。標題與過場沒有畫，那裡按鍵不會移動任何東西。
     player_drawn: [bool; 2],
+    /// 介面層（HUD、打擊回饋）的狀態，全部只看繪製命令與玩家狀態，不碰模擬。見 `feedback`、`ui::hud`。
+    ui: UiState,
+}
+
+/// HD 介面的執行狀態。時間來自呼叫端傳入的毫秒，不讀時鐘。
+struct UiState {
+    clock_ms: u64,
+    scanner: Scanner,
+    feedback: Feedback,
+    feedback_on: bool,
+    hud_state: HudState,
+    hud_flags: HudFlags,
+    hud_icons: HudIcons,
+    /// 圖示載入時的調色盤名稱，換了調色盤（換關）就重載。
+    hud_icons_pal: Option<Option<&'static str>>,
+    /// 上一步每位玩家的血量亮格數，用來偵測死亡。
+    prev_cells: [usize; 2],
+}
+
+impl UiState {
+    fn new() -> UiState {
+        UiState {
+            clock_ms: 0,
+            scanner: Scanner::new(),
+            feedback: Feedback::new(),
+            feedback_on: true,
+            hud_state: HudState::new(),
+            hud_flags: HudFlags::default(),
+            hud_icons: HudIcons::default(),
+            hud_icons_pal: None,
+            prev_cells: [0; 2],
+        }
+    }
+}
+
+/// `MY` 圖庫第 `index` 項的邏輯像素寬高。
+fn my_item_size(a: &Assets, index: u16) -> (i32, i32) {
+    a.my.planes[0].get(index as usize).map(|it| (it.stride as i32 * 8, it.height as i32)).unwrap_or((16, 16))
 }
 
 impl Session {
@@ -248,7 +290,10 @@ impl Session {
             predictor: Predictor::new(),
             live_input: false,
             player_drawn: [false; 2],
+            ui: UiState::new(),
         };
+        // HD 畫面的標題選單選中列用圓角高亮條代替取反（只影響 HD 引擎，原版圖與 VgaSink 不變）。
+        s.layer.set_menu_highlight(true);
         s.set_counter(view.counter);
         s.feed(&init);
         s
@@ -382,10 +427,99 @@ impl Session {
         }
         self.feed(&frame.draws);
         self.sync_predictor(&frame.draws);
+        self.scan_feedback(&frame.draws);
         match frame.exit {
             None => Outcome::Continue,
             Some(e) => Outcome::Ended(e),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // HD 介面：HUD 與打擊回饋（規格 005）。只讀模擬的結果，不寫回。
+    // -----------------------------------------------------------------------
+
+    /// 介面層的時鐘（毫秒，單調遞增）。HUD 的淡出與呼吸、震動、光暈都以它為準，所以呼叫端傳什麼時間就畫什麼，單元測試不必等。
+    pub fn set_clock_ms(&mut self, ms: u64) {
+        self.ui.clock_ms = ms;
+    }
+
+    /// HUD 右端的標籤與充能條是否顯示。幀計數的值由 `ViewOpts::counter` 決定。
+    pub fn set_hud_flags(&mut self, f: HudFlags) {
+        self.ui.hud_flags = f;
+    }
+
+    /// 打擊回饋選項（規格 005）。實際生效還要 HD 畫面：原貌模式不生效。
+    pub fn set_hit_feedback(&mut self, on: bool) {
+        if !on {
+            self.ui.feedback.clear();
+        }
+        self.ui.feedback_on = on;
+    }
+
+    /// 打擊回饋實際生效：選項開著而且正在用 HD 圖。
+    pub fn feedback_active(&self) -> bool {
+        self.ui.feedback_on && self.hd_effective()
+    }
+
+    /// 畫面震動的位移，HD 像素（輸出 1280×800 的座標）。沒在震動或不是 HD 是 (0, 0)。
+    pub fn shake_offset(&self) -> (i32, i32) {
+        if self.feedback_active() { self.ui.feedback.shake_offset(self.ui.clock_ms) } else { (0, 0) }
+    }
+
+    /// 掃這一步的繪製命令與玩家血量，產生回饋事件。選項關閉時只維持基準，不累積事件。
+    fn scan_feedback(&mut self, draws: &[DrawCmd]) {
+        let assets = &self.assets;
+        let mut events = self.ui.scanner.scan(draws, &|i| my_item_size(assets, i));
+        for p in 0..2 {
+            let st = self.game.hud_status(p);
+            let n = if st.active { hud::hp_cells(st.hp) } else { 0 };
+            if self.ui.prev_cells[p] > 0 && n == 0 && st.active {
+                events.push(FxEvent::PlayerDown);
+            }
+            self.ui.prev_cells[p] = n;
+        }
+        if self.feedback_active() {
+            self.ui.feedback.ingest(self.ui.clock_ms, &events);
+            for k in self.ui.feedback.take_sfx() {
+                self.audio.push(AudioMsg::Sfx(k));
+            }
+        }
+    }
+
+    /// 兩位玩家的 HUD 狀態。
+    pub fn hud_status(&self) -> [HudStatus; 2] {
+        [self.game.hud_status(0), self.game.hud_status(1)]
+    }
+
+    /// 武器圖示依目前調色盤從 HD 道具球載入（`MY` 第 42 到 45 項）。沒有 HD 資料時留空，HUD 畫字母圓形。
+    fn ensure_hud_icons(&mut self) {
+        let pal = self.layer.palette_name();
+        if self.ui.hud_icons_pal == Some(pal) {
+            return;
+        }
+        let mut icons = HudIcons::default();
+        for (slot, idx) in hud::WEAPON_MY_INDEX.iter().enumerate() {
+            icons.balls[slot] = self.layer.my_image(*idx).map(|(rgba, w, h)| IconImg { w, h, rgba });
+        }
+        self.ui.hud_icons = icons;
+        self.ui.hud_icons_pal = Some(pal);
+    }
+
+    /// HD 畫面上的介面層：命中光暈，再蓋 HUD。HUD 只在玩家機在畫面上時畫（標題與過場原版也是黑的）。
+    fn draw_hd_ui(&mut self) {
+        if self.feedback_active() {
+            let t = self.ui.clock_ms;
+            self.ui.feedback.draw_glows(&mut self.frame, 1280, 800, t);
+        }
+        let st = self.hud_status();
+        self.ui.hud_state.update(self.ui.clock_ms, &st);
+        if !self.player_drawn.iter().any(|d| *d) {
+            return;
+        }
+        self.ensure_hud_icons();
+        let flags = HudFlags { counter: if self.view.counter { self.layer.counter_value() } else { None }, ..self.ui.hud_flags };
+        let bar = hud::render(&self.ui.hud_state, &st, &flags, &self.ui.hud_icons, self.ui.clock_ms);
+        hud::overlay(&mut self.frame, &bar);
     }
 
     /// 取走累積的音訊訊息。
@@ -521,7 +655,22 @@ impl Session {
             }
             (w, h) = (iw, ih);
         }
+        // 規格 005「HD 介面」：HD 畫面才有現代化的 HUD 與回饋。原貌模式（上面第一個分支）不碰，逐像素等於 `VgaSink`。
+        if hd && (w, h) == (1280, 800) {
+            self.draw_hd_ui();
+            if self.mode.is_mono() {
+                desaturate(&mut self.frame);
+            }
+        }
         (&self.frame, w, h)
+    }
+}
+
+/// 單色畫面沒有彩色：HUD 與命中光暈轉成灰階。遊戲畫面本來就只有黑與白，轉完不變。
+fn desaturate(rgba: &mut [u8]) {
+    for px in rgba.chunks_exact_mut(4) {
+        let luma = (u32::from(px[0]) * 77 + u32::from(px[1]) * 150 + u32::from(px[2]) * 29) >> 8;
+        px[..3].fill(luma as u8);
     }
 }
 
@@ -544,6 +693,16 @@ mod tests {
 
     fn orig() -> PathBuf {
         PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh play-test 跑"))
+    }
+
+    #[test]
+    fn desaturate_keeps_black_and_white_and_grays_the_rest() {
+        let mut px = [0, 0, 0, 255, 255, 255, 255, 255, 70, 200, 160, 255];
+        desaturate(&mut px);
+        assert_eq!(&px[..8], &[0, 0, 0, 255, 255, 255, 255, 255], "遊戲畫面的黑白不變");
+        assert_eq!(px[8], px[9]);
+        assert_eq!(px[9], px[10]);
+        assert!(px[8] > 0 && px[8] < 255);
     }
 
     fn open(begin: Begin, view: ViewOpts) -> Session {
@@ -910,5 +1069,313 @@ mod tests {
         assert!(moved_steps >= 8);
         // 一步 16 像素分三次畫，每次約 5.3 像素；第一步要追上一步的差距，上限放到一步以內。
         assert!(worst <= 16.0, "{worst}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 規格 005「HD 介面」：HUD、打擊回饋、選單高亮。E7：不改模擬，原貌模式逐像素等於 `VgaSink`。
+    // -----------------------------------------------------------------------
+
+    fn hd_dir() -> Option<PathBuf> {
+        std::env::var("RS2_HD").ok().map(PathBuf::from)
+    }
+
+    /// 有 HD 資料夾的 `Session`；沒有 `RS2_HD` 回傳 `None`。
+    fn open_hd(begin: Begin, view: ViewOpts) -> Option<Session> {
+        let hd_path = hd_dir()?;
+        let dir = orig();
+        let inputs = load_inputs(&dir).unwrap();
+        let assets = Assets::load(&dir).unwrap();
+        let mut hd = HdAssets::open(&hd_path).unwrap();
+        hd.preload(&assets, 4);
+        Some(Session::new(&inputs, assets, None, Some(hd), begin, Fixes::ALL, view))
+    }
+
+    const HD_VIEW: ViewOpts = ViewOpts { tween: true, counter: false, hd: true, feel: true, mode: DisplayMode::Vga };
+
+    fn shots_dir() -> Option<PathBuf> {
+        std::env::var("RS2_SHOTS").ok().map(PathBuf::from).inspect(|d| std::fs::create_dir_all(d).unwrap())
+    }
+
+    fn save_png(dir: &Option<PathBuf>, name: &str, px: &[u8], w: usize, h: usize) {
+        if let Some(d) = dir {
+            std::fs::write(d.join(name), rs2_gfx::png::encode_rgba(w, h, px)).unwrap();
+        }
+    }
+
+    /// 玩家 1 的狀態：血量字組、武器字母、砲座數。
+    fn set_p1(s: &mut Session, hp: u16, weapon: u8, pods: u8) {
+        let yn = |n: u8, k: u8| if n > k { b'Y' } else { b'N' };
+        s.game.poke16(rs2_core::a(0x1CFDE), hp);
+        s.game.poke16(rs2_core::a(0x1DAA9), weapon as u16);
+        s.game.poke8(rs2_core::a(0x1DA8D), yn(pods, 0));
+        s.game.poke8(rs2_core::a(0x1DA8E), yn(pods, 1));
+    }
+
+    fn bottom_bar(img: &[u8]) -> Vec<u8> {
+        img[(hud::Y0 as usize * 1280 * 4)..].to_vec()
+    }
+
+    /// 原貌模式（補間關、原版圖）逐像素等於 `VgaSink`；HUD、打擊回饋的開關與設定都不改它。
+    #[test]
+    #[ignore]
+    fn e7_original_mode_is_pixel_identical_to_vga_sink_whatever_the_hd_ui_settings() {
+        let off = ViewOpts { tween: false, counter: false, hd: false, feel: true, mode: DisplayMode::Vga };
+        let mut plain = new_game(off);
+        let mut ui = new_game(off);
+        ui.set_hit_feedback(true);
+        ui.set_hud_flags(HudFlags { rules: true, god: true, charge_bar: true, counter: Some(9) });
+        let mut compared = 0;
+        for n in 0..260 {
+            let sc: Vec<u8> = if n == 40 { vec![0x39] } else { Vec::new() };
+            plain.step(&sc);
+            ui.step(&sc);
+            ui.set_clock_ms(n * 110);
+            let a = plain.render(1.0).0.to_vec();
+            let (b, w, h) = {
+                let (b, w, h) = ui.render(1.0);
+                (b.to_vec(), w, h)
+            };
+            assert_eq!((w, h), (320, 200), "原貌模式輸出 320x200");
+            assert_eq!(a, b, "第 {n} 步：HUD 與回饋的設定不能改變原貌畫面");
+            // 正對照：直接問 VgaSink。
+            let mut rgb = vec![0u8; 320 * 200 * 3];
+            ui.vga.render_page(ui.layer.draw_page(), &mut rgb);
+            let want: Vec<u8> = rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect();
+            assert_eq!(b, want, "第 {n} 步：不等於 VgaSink");
+            compared += 1;
+        }
+        assert!(compared > 0);
+        assert_eq!(plain.dseg_hash(), ui.dseg_hash(), "模擬沒有被改到");
+    }
+
+    /// HUD、打擊回饋與選單高亮不改每步雜湊：同樣的輸入，開與關兩份的 `Dseg` 完全相同。
+    #[test]
+    #[ignore]
+    fn e7_hud_feedback_and_menu_highlight_never_change_the_simulation() {
+        let Some(mut on) = open_hd(Begin::Title, HD_VIEW) else { return };
+        let mut off = open_hd(Begin::Title, HD_VIEW).unwrap();
+        off.set_hit_feedback(false);
+        off.layer.set_menu_highlight(false);
+        on.set_hit_feedback(true);
+        let mut released: Vec<u8> = Vec::new();
+        let mut shown = 0u32;
+        for n in 0..900u64 {
+            // 標題、選單與進關：偶爾按 C 與空白鍵。
+            let mut sc: Vec<u8> = std::mem::take(&mut released);
+            if n % 37 == 5 {
+                sc.push(0x2E);
+                released.push(0xAE);
+            } else if n % 53 == 7 {
+                sc.push(0x39);
+                released.push(0xB9);
+            }
+            on.set_clock_ms(n * 110);
+            off.set_clock_ms(n * 110);
+            on.step(&sc);
+            off.step(&sc);
+            assert_eq!(on.dseg_hash(), off.dseg_hash(), "第 {n} 步");
+            on.render(0.5);
+            off.render(1.0);
+            shown += 1;
+        }
+        assert!(shown > 0);
+        // 進了關卡之後再跑一段，涵蓋 HUD 與事件掃描。
+        let mut a = open_hd(Begin::Stage1(Start::NewGame { difficulty: None }), HD_VIEW).unwrap();
+        let mut b = open_hd(Begin::Stage1(Start::NewGame { difficulty: None }), HD_VIEW).unwrap();
+        b.set_hit_feedback(false);
+        for n in 0..500u64 {
+            let sc: Vec<u8> = if n == 3 { vec![0x39] } else { Vec::new() };
+            a.set_clock_ms(n * 110);
+            b.set_clock_ms(n * 110);
+            a.step(&sc);
+            b.step(&sc);
+            assert_eq!(a.dseg_hash(), b.dseg_hash(), "關卡第 {n} 步");
+            a.render(1.0);
+            b.render(1.0);
+        }
+    }
+
+    /// HUD 只蓋底部 40 列；上面 760 列和沒有 HUD 時相同。標題沒有玩家機，不畫 HUD。
+    #[test]
+    #[ignore]
+    fn hud_covers_only_the_bottom_forty_rows_and_only_while_the_player_is_on_screen() {
+        let Some(mut s) = open_hd(Begin::Title, HD_VIEW) else { return };
+        for _ in 0..30 {
+            s.step(&[]);
+        }
+        assert!(!s.player_drawn.iter().any(|d| *d), "標題沒有玩家機");
+        let title = s.render(1.0).0.to_vec();
+        let st = s.hud_status();
+        let _ = st;
+        // 標題的最下面 40 列和 `LayerSink` 原樣輸出相同（沒有 HUD）。
+        let raw = s.layer.render(1.0, RenderOpts { interpolate: true, hd: true, show_counter: false, player: [None, None] }).0.to_vec();
+        assert_eq!(bottom_bar(&title), bottom_bar(&raw), "標題不畫 HUD");
+
+        let mut g = open_hd(Begin::Stage1(Start::NewGame { difficulty: None }), HD_VIEW).unwrap();
+        until_playable(&mut g);
+        let raw_opts = RenderOpts { interpolate: true, hd: true, show_counter: false, player: [None, None] };
+        // `poke` 在下一步才寫進資料段，所以每次改狀態都要走一步。
+        set_p1(&mut g, 0xFF, b'L', 1);
+        g.step(&[]);
+        let with = g.render(1.0).0.to_vec();
+        let raw = g.layer.render(1.0, raw_opts).0.to_vec();
+        assert_eq!(with[..hud::Y0 as usize * 1280 * 4], raw[..hud::Y0 as usize * 1280 * 4], "上面 760 列不動");
+        assert_ne!(bottom_bar(&with), bottom_bar(&raw), "底部 40 列是 HUD");
+        // HUD 讀的是玩家狀態：改血量與武器，底部跟著變，上面仍然不動。
+        set_p1(&mut g, 0x03, b'K', 2);
+        g.step(&[]);
+        assert_eq!(hud::hp_cells(g.hud_status()[0].hp), 2);
+        let after = g.render(1.0).0.to_vec();
+        let raw2 = g.layer.render(1.0, raw_opts).0.to_vec();
+        assert_eq!(after[..hud::Y0 as usize * 1280 * 4], raw2[..hud::Y0 as usize * 1280 * 4], "改血量之後上面仍不動");
+        assert_ne!(bottom_bar(&with), bottom_bar(&after), "血量與武器變了，HUD 跟著變");
+    }
+
+    /// 存圖：各種 HUD 狀態（`RS2_SHOTS` 指定目錄才存），並驗證血條格數與玩家狀態一致。
+    #[test]
+    #[ignore]
+    fn ui_shots_hud_states() {
+        let Some(mut g) = open_hd(Begin::Stage1(Start::NewGame { difficulty: None }), HD_VIEW) else { return };
+        let dir = shots_dir();
+        until_playable(&mut g);
+        let mut t = 100_000u64;
+        let shot = |g: &mut Session, name: &str, clock: u64| {
+            // poke 在下一步才寫進資料段。
+            g.step(&[]);
+            g.set_clock_ms(clock);
+            let (px, w, h) = g.render(1.0);
+            assert_eq!((w, h), (1280, 800));
+            save_png(&dir, name, px, w, h);
+        };
+        set_p1(&mut g, 0xFF, b'K', 2);
+        shot(&mut g, "hud_stage1_full.png", t);
+        set_p1(&mut g, 0x07, b'B', 1);
+        shot(&mut g, "hud_stage1_amber.png", t + 50);
+        // 剩 1 格：呼吸最亮與最暗各一張。
+        set_p1(&mut g, 0x01, b'L', 0);
+        shot(&mut g, "hud_stage1_low_bright.png", 200_000);
+        shot(&mut g, "hud_stage1_low_dim.png", 200_500);
+        // 掉格淡出：從 7 格掉到 6 格，剛掉與 100 毫秒後。
+        set_p1(&mut g, 0x7F, b'S', 2);
+        shot(&mut g, "tmp.png", t + 1000);
+        let _ = std::fs::remove_file(dir.as_ref().map(|d| d.join("tmp.png")).unwrap_or_default());
+        set_p1(&mut g, 0x3F, b'S', 2);
+        t += 1100;
+        shot(&mut g, "hud_stage1_fade_0ms.png", t);
+        shot(&mut g, "hud_stage1_fade_100ms.png", t + 100);
+        // 雙人：P2 在場，兩邊武器不同，標籤與幀計數都開。
+        g.game.poke8(rs2_core::a(0x1CFDD), 0x11);
+        g.game.poke16(rs2_core::a(0x1CFE0), 0x1F);
+        g.game.poke16(rs2_core::a(0x1DB0B), b'B' as u16);
+        g.game.poke8(rs2_core::a(0x1DAEF), b'Y');
+        g.game.poke8(rs2_core::a(0x1DAF0), b'N');
+        set_p1(&mut g, 0xFF, b'L', 2);
+        g.set_hud_flags(HudFlags { rules: true, god: true, charge_bar: true, counter: None });
+        g.set_view(ViewOpts { counter: true, ..HD_VIEW });
+        shot(&mut g, "hud_two_players.png", t + 5000);
+        let st = g.hud_status();
+        assert!(st[0].active && st[1].active);
+        assert_eq!(hud::hp_cells(st[0].hp), 8);
+        assert_eq!(hud::hp_cells(st[1].hp), 5);
+        assert_eq!((st[0].pods, st[1].pods), (2, 1));
+    }
+
+    /// 存圖與驗證：用 boss1 收據跑，抓命中光暈與震動。`RS2_DOSRUN` 要有 `boss1_kill/trace-s1.jsonl`。
+    #[test]
+    #[ignore]
+    fn ui_shots_hit_feedback_from_the_boss_receipt() {
+        let Some(mut s) = open_hd(Begin::Stage1(Start::NewGame { difficulty: None }), HD_VIEW) else { return };
+        let dir = shots_dir();
+        let receipt = PathBuf::from(std::env::var("RS2_DOSRUN").expect("缺 RS2_DOSRUN")).join("boss1_kill/trace-s1.jsonl");
+        let text = std::fs::read_to_string(receipt).unwrap();
+        let steps: Vec<Vec<u8>> = text.lines().filter(|l| !l.trim().is_empty()).map(rs2_trace::parse_sc).collect();
+        let (mut glow_shot, mut shake_shot) = (false, false);
+        let (mut hits, mut booms, mut fires, mut sfx) = (0u32, 0u32, 0u32, 0u32);
+        let mut quiet = Session::new(&load_inputs(&orig()).unwrap(), Assets::load(&orig()).unwrap(), None, None, Begin::Stage1(Start::NewGame { difficulty: None }), Fixes::ALL, HD_VIEW);
+        quiet.set_hit_feedback(false);
+        for (n, sc) in steps.iter().enumerate() {
+            let clock = 1000 + n as u64 * 110;
+            s.set_clock_ms(clock);
+            s.step(sc);
+            quiet.step(sc);
+            assert_eq!(s.dseg_hash(), quiet.dseg_hash(), "打擊回饋不改模擬（第 {n} 步）");
+            for m in s.take_audio() {
+                if let AudioMsg::Sfx(k) = m {
+                    sfx += 1;
+                    match k {
+                        SfxKind::Fire => fires += 1,
+                        SfxKind::Boom => booms += 1,
+                    }
+                }
+            }
+            let g = s.ui.feedback.glow_count(clock);
+            hits += g as u32;
+            if g > 0 && !glow_shot && n > 100 {
+                let (px, w, h) = s.render(1.0);
+                save_png(&dir, "hit_glow.png", px, w, h);
+                glow_shot = true;
+            }
+            if s.shake_offset() != (0, 0) && !shake_shot {
+                let off = s.shake_offset();
+                eprintln!("[shots] 第 {n} 步開始震動，位移 {off:?}");
+                let (px, w, h) = s.render(1.0);
+                save_png(&dir, "boom_frame.png", px, w, h);
+                shake_shot = true;
+            }
+        }
+        eprintln!("[shots] boss1 收據 {} 步：光暈累計 {hits}，音效 {sfx}（開火 {fires}、爆炸 {booms}），光暈圖 {glow_shot}，震動圖 {shake_shot}", steps.len());
+        assert!(glow_shot, "收據裡要有命中火花");
+        assert!(shake_shot, "收據裡要有大爆炸");
+        assert!(fires > 0 && booms > 0);
+    }
+
+    /// 標題選單：HD 選中列是圓角高亮條，不取反；存圖並確認有高亮色。
+    #[test]
+    #[ignore]
+    fn ui_shots_title_menu_highlight() {
+        let Some(mut s) = open_hd(Begin::Title, HD_VIEW) else { return };
+        let dir = shots_dir();
+        let mut released: Vec<u8> = Vec::new();
+        let mut found = None;
+        for n in 0..3000u64 {
+            let mut sc: Vec<u8> = std::mem::take(&mut released);
+            if n % 25 == 3 && found.is_none() {
+                sc.push(0x2E);
+                released.push(0xAE);
+            }
+            s.set_clock_ms(n * 110);
+            s.step(&sc);
+            if s.palette_name() == Some("menu") && found.is_none() {
+                found = Some(n);
+                // 走幾步讓選單畫完。
+                for _ in 0..6 {
+                    s.step(&[]);
+                }
+                break;
+            }
+        }
+        let n = found.expect("3000 步內進不了選單");
+        eprintln!("[shots] 第 {n} 步進入選單");
+        let (px, w, h) = s.render(1.0);
+        save_png(&dir, "title_menu_row1.png", px, w, h);
+        // 第一列（LEVEL:）選中：圖的左上角附近（底色處）是高亮條的藍色；第二列（CTRL:）沒選中，仍是近黑。
+        let at = |x: usize, y: usize| [px[(y * w + x) * 4], px[(y * w + x) * 4 + 1], px[(y * w + x) * 4 + 2]];
+        let bar = at(650, 130);
+        let idle = at(650, 170);
+        assert!(bar[2] > 150 && bar[2] as i32 > bar[0] as i32 + 60, "選中列有圓角高亮條：{bar:?}");
+        assert!(idle[2] < 30, "沒選中的列不變：{idle:?}");
+        // 圓角：圖矩形的左上角那個像素在圓角之外，仍是黑底。
+        assert!(at(640, 120)[2] < 60, "圓角把角落切掉：{:?}", at(640, 120));
+        // 字不取反：矩形裡有亮字（銀灰加亮後接近白），不是黑字。
+        let bright = (120..156).flat_map(|y| (640..864).map(move |x| (x, y))).filter(|&(x, y)| at(x, y)[0] > 200).count();
+        assert!(bright > 200, "字是亮的：{bright}");
+        // 按下鍵換到第二列。
+        s.step(&[0x50]);
+        s.step(&[0xD0]);
+        for _ in 0..6 {
+            s.step(&[]);
+        }
+        let (px, w, h) = s.render(1.0);
+        save_png(&dir, "title_menu_row2.png", px, w, h);
     }
 }

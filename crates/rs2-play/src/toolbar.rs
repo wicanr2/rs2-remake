@@ -7,6 +7,7 @@
 
 use crate::mode::DisplayMode;
 pub use crate::ui::Rect;
+use crate::ui::style::{self, Icon, Rgba, Vis, color};
 use crate::ui::{Align, Canvas, font, text};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +51,10 @@ pub struct BarState {
     pub mono_available: bool,
     /// 最近一則訊息（手把接上、拔除等），空字串是沒有。
     pub notice: String,
+    /// 滑鼠移過的按鈕（變亮）。觸控沒有。
+    pub hover: Option<Button>,
+    /// 滑鼠按著的按鈕（變深）。
+    pub down: Option<Button>,
 }
 
 impl Default for BarState {
@@ -64,6 +69,8 @@ impl Default for BarState {
             mode: DisplayMode::Vga,
             mono_available: true,
             notice: String::new(),
+            hover: None,
+            down: None,
         }
     }
 }
@@ -76,14 +83,12 @@ const DESKTOP_BUTTONS: [Button; 7] =
 const MOBILE_BUTTONS: [Button; 9] =
     [Button::Start, Button::Pause, Button::Controls, Button::Game, Button::Gfx, Button::Mode, Button::About, Button::Quit, Button::Hide];
 
-const BG: [u8; 4] = [14, 20, 34, 255];
-const BTN_BG: [u8; 4] = [35, 50, 75, 255];
-const BTN_ACTIVE: [u8; 4] = [57, 82, 121, 255];
-pub const INK: [u8; 4] = [237, 243, 255, 255];
-pub const INK_OFF: [u8; 4] = [120, 139, 165, 255];
-pub const INK_NOTE: [u8; 4] = [170, 190, 220, 255];
-pub const INK_WARN: [u8; 4] = [255, 220, 110, 255];
-const INK_ON: [u8; 4] = [130, 230, 130, 255];
+// 色彩見規格 005「工具列與設定畫面的風格」，定義在 `ui::style::color`。
+pub const INK: Rgba = color::TEXT;
+pub const INK_OFF: Rgba = color::TEXT3;
+pub const INK_NOTE: Rgba = color::TEXT2;
+pub const INK_WARN: Rgba = color::WARN;
+const INK_ON: Rgba = color::ON;
 
 /// 尺寸，單位像素。桌面版由視窗寬度決定，手機版由每 dp 的像素數決定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,6 +105,8 @@ pub struct Metrics {
     pub row_h: i32,
     /// 狀態列高度。
     pub status_h: i32,
+    /// 按鈕與欄位的圓角半徑（規格 005：6 到 8 像素，手機版按比例放大）。
+    pub rad: i32,
 }
 
 /// `dp` 是手機每 dp 的像素數，桌面版忽略。
@@ -109,7 +116,8 @@ pub fn metrics(width: u32, mobile: bool, dp: f32) -> Metrics {
         let fh = ((14.0 * dp).round() as i32).clamp(20, 56);
         let btn_h = ((48.0 * dp).ceil() as i32).max(fh * 7 / 4);
         let gap = ((4.0 * dp).round() as i32).max(3);
-        return Metrics { fh, pad: fh * 2 / 3, gap, btn_h, row_h: btn_h + 2 * gap, status_h: fh * 3 / 2 };
+        let rad = ((4.0 * dp).round() as i32).clamp(8, 16);
+        return Metrics { fh, pad: fh * 2 / 3, gap, btn_h, row_h: btn_h + 2 * gap, status_h: fh * 3 / 2, rad };
     }
     let fh = match width {
         0..=799 => 16,
@@ -120,7 +128,8 @@ pub fn metrics(width: u32, mobile: bool, dp: f32) -> Metrics {
     };
     let gap = (fh / 5).max(3);
     let btn_h = fh * 3 / 2;
-    Metrics { fh, pad: fh * 2 / 3, gap, btn_h, row_h: btn_h + 2 * gap, status_h: fh * 3 / 2 }
+    let rad = (btn_h * 3 / 10).clamp(6, 8);
+    Metrics { fh, pad: fh * 2 / 3, gap, btn_h, row_h: btn_h + 2 * gap, status_h: fh * 3 / 2, rad }
 }
 
 impl Button {
@@ -154,6 +163,22 @@ impl Button {
         }
     }
 
+    /// 按鈕前面的圖示（程式畫的，不用圖檔）。
+    pub fn icon(self) -> Icon {
+        match self {
+            Button::Start => Icon::Play,
+            Button::Pause => Icon::Pause,
+            Button::Controls => Icon::Gamepad,
+            Button::Game => Icon::Gear,
+            Button::Fullscreen => Icon::Fullscreen,
+            Button::Gfx => Icon::Image,
+            Button::Mode => Icon::Monitor,
+            Button::About => Icon::Info,
+            Button::Quit => Icon::Power,
+            Button::Hide => Icon::ChevronUp,
+        }
+    }
+
     pub fn enabled(self, s: &BarState) -> bool {
         match self {
             Button::Gfx => s.hd_available,
@@ -171,17 +196,30 @@ pub struct BarLayout {
     pub rows: i32,
     pub status: Rect,
     pub height: i32,
+    /// 按鈕前面有圖示。桌面版一列放不下時拿掉圖示，字比圖示重要。
+    pub icons: bool,
 }
 
-pub fn layout(width: u32, mobile: bool, dp: f32) -> BarLayout {
+/// 按鈕左右的留白。有圖示時收窄一點，讓圖示塞得進同樣的寬度。
+fn button_pad(m: &Metrics, mobile: bool, icons: bool) -> i32 {
+    if icons && !mobile { m.fh / 2 } else { m.pad }
+}
+
+/// 圖示佔的寬度（含圖示與字之間的間距）。
+fn icon_block(m: &Metrics, icons: bool) -> i32 {
+    if icons { m.fh + m.fh / 3 } else { 0 }
+}
+
+fn layout_with(width: u32, mobile: bool, dp: f32, icons: bool) -> BarLayout {
     let m = metrics(width, mobile, dp);
     let f = font::builtin();
     let list: &[Button] = if mobile { &MOBILE_BUTTONS } else { &DESKTOP_BUTTONS };
     let w = width as i32;
     let mut buttons = Vec::with_capacity(list.len());
     let (mut x, mut row) = (m.gap, 0);
+    let pad = button_pad(&m, mobile, icons);
     for &b in list {
-        let bw = (b.widest_width(f, m.fh) + 2 * m.pad).min((w - 2 * m.gap).max(1));
+        let bw = (b.widest_width(f, m.fh) + 2 * pad + icon_block(&m, icons)).min((w - 2 * m.gap).max(1));
         if x + bw > w - m.gap && x > m.gap {
             row += 1;
             x = m.gap;
@@ -191,7 +229,18 @@ pub fn layout(width: u32, mobile: bool, dp: f32) -> BarLayout {
     }
     let rows = row + 1;
     let status = Rect { x: 0, y: rows * m.row_h, w, h: m.status_h };
-    BarLayout { buttons, rows, status, height: rows * m.row_h + m.status_h }
+    BarLayout { buttons, rows, status, height: rows * m.row_h + m.status_h, icons }
+}
+
+pub fn layout(width: u32, mobile: bool, dp: f32) -> BarLayout {
+    let l = layout_with(width, mobile, dp, true);
+    if !mobile && l.rows > 1 {
+        let plain = layout_with(width, mobile, dp, false);
+        if plain.rows < l.rows {
+            return plain;
+        }
+    }
+    l
 }
 
 /// 狀態列的段落：文字與顏色。
@@ -257,39 +306,68 @@ impl Toolbar {
     pub fn render(&self, width: u32, s: &BarState) -> Vec<u8> {
         let l = self.layout(width);
         let m = metrics(width, self.mobile, self.dp);
-        let mut c = Canvas::new(width as i32, l.height, BG);
+        let mut c = Canvas::new(width as i32, l.height, color::BG);
+        let rad = m.rad as f32;
         for (b, r) in &l.buttons {
-            let on = match b {
-                Button::Pause => s.paused,
-                _ => false,
-            };
-            c.rect(*r, if on { BTN_ACTIVE } else { BTN_BG });
-            let ink = if !b.enabled(s) {
+            let enabled = b.enabled(s);
+            let vis = Vis { hover: enabled && s.hover == Some(*b), down: enabled && s.down == Some(*b), focus: false, enabled };
+            let accent = *b == Button::Pause && s.paused;
+            style::button(&mut c, *r, rad, vis, accent);
+            let ink = if !enabled {
                 INK_OFF
             } else if (*b == Button::Gfx && s.hd) || (*b == Button::Mode && s.mode != DisplayMode::Vga) {
                 INK_ON
+            } else if accent {
+                color::PRIMARY
             } else {
                 INK
             };
-            c.text_in(*r, &b.label(s), m.fh, m.pad / 2, Align::Center, ink);
+            let label = b.label(s);
+            let pad = button_pad(&m, self.mobile, l.icons);
+            let block = icon_block(&m, l.icons);
+            let fnt = font::builtin();
+            let tw = fnt.text_width(&fnt.fit(&label, (r.w - 2 * pad - block).max(1), m.fh), m.fh);
+            // 圖示加字當成一組置中。
+            let x0 = r.x + (r.w - tw - block) / 2;
+            if l.icons {
+                style::draw_icon(&mut c, b.icon(), Rect::new(x0, r.y + (r.h - m.fh) / 2, m.fh, m.fh), ink);
+            }
+            let text_rect = Rect::new(x0 + block, r.y, tw + 2, r.h);
+            c.text_in(text_rect, &label, m.fh, 0, Align::Left, ink);
         }
-        // 狀態列：各段用不同顏色，放不下的尾端截掉。
+        // 狀態列：各段是半透明的小膠囊，放不下的尾端截掉。
         let fnt = font::builtin();
         let mut x = l.status.x + m.gap * 2;
-        let ty = l.status.y + (l.status.h - m.fh) / 2;
-        let sep = text::ST_SEP;
+        let ch = (l.status.h - 4).max(m.fh + 2);
+        let cy = l.status.y + (l.status.h - ch) / 2;
+        let tx = |r: &Rect| r.y + (r.h - m.fh) / 2;
         for (i, (t, ink)) in status_parts(s).iter().enumerate() {
-            if i > 0 {
-                x += fnt.text_width(sep, m.fh);
-            }
             let room = width as i32 - x - m.gap;
             if room <= 0 {
                 break;
             }
-            let t = fnt.fit(t, room, m.fh);
-            c.text(x, ty, &t, m.fh, *ink);
-            x += fnt.text_width(&t, m.fh);
+            // 第三段起的訊息（手把接上、拔除）是一般文字，不做膠囊。
+            let chip = i < 2 || (s.god && i == 2 && t.as_str() == text::ST_GOD);
+            if chip {
+                let dot = m.fh / 3;
+                let padx = m.fh / 2;
+                let want = fnt.text_width(t, m.fh) + 2 * padx + dot + m.fh / 4;
+                let w = want.min(room);
+                let r = Rect::new(x, cy, w, ch);
+                style::fill_rrect(&mut c, r, ch as f32 / 2.0, style::with_alpha(*ink, 30));
+                style::stroke_rrect(&mut c, r, ch as f32 / 2.0, 1.0, style::with_alpha(*ink, 70));
+                style::fill_circle(&mut c, (r.x + padx) as f32 + dot as f32 / 2.0 - 1.0, (r.y + r.h / 2) as f32, dot as f32 / 2.0, *ink);
+                let tr = Rect::new(r.x + padx + dot + m.fh / 4, tx(&r), (r.w - 2 * padx - dot - m.fh / 4).max(1), m.fh + 2);
+                c.text_in(tr, t, m.fh, 0, Align::Left, *ink);
+                x += w + m.gap;
+            } else {
+                let t = fnt.fit(t, room, m.fh);
+                c.text(x + m.gap, l.status.y + (l.status.h - m.fh) / 2, &t, m.fh, *ink);
+                x += fnt.text_width(&t, m.fh) + m.gap * 3;
+            }
         }
+        // 工具列與遊戲畫面之間一條細線。
+        c.rect(Rect::new(0, l.height - 1, width as i32, 1), [255, 255, 255, 26]);
         c.px
     }
 }
@@ -524,5 +602,150 @@ mod tests {
             assert_eq!(&px[..above], &blank[..above], "{width}");
             assert_eq!(px.len(), blank.len());
         }
+    }
+
+    fn px_at(img: &[u8], w: i32, x: i32, y: i32) -> [u8; 4] {
+        let o = ((y * w + x) * 4) as usize;
+        [img[o], img[o + 1], img[o + 2], img[o + 3]]
+    }
+
+    #[test]
+    fn hover_brightens_and_press_darkens_only_that_button_and_disabled_ones_ignore_both() {
+        let tb = Toolbar::new(true);
+        let width = 1280;
+        let l = tb.layout(width);
+        let base = tb.render(width, &st());
+        let rect_of = |b: Button| l.buttons.iter().find(|(x, _)| *x == b).unwrap().1;
+        let sum = |p: [u8; 4]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+        let g = rect_of(Button::Game);
+        // 按鈕左上角附近、字與圖示之外的位置。
+        let probe = (g.x + 6, g.y + g.h / 2);
+        let hover = tb.render(width, &BarState { hover: Some(Button::Game), ..st() });
+        let down = tb.render(width, &BarState { hover: Some(Button::Game), down: Some(Button::Game), ..st() });
+        let (b, h, d) = (px_at(&base, width as i32, probe.0, probe.1), px_at(&hover, width as i32, probe.0, probe.1), px_at(&down, width as i32, probe.0, probe.1));
+        assert!(sum(h) > sum(b), "移過變亮：{b:?} {h:?}");
+        assert!(sum(d) < sum(b), "按下變深：{b:?} {d:?}");
+        // 只有那顆按鈕（含 1 像素外框）的像素變。
+        let area = g.inset(-2);
+        for y in 0..l.height {
+            for x in 0..width as i32 {
+                if !area.contains(x, y) {
+                    assert_eq!(px_at(&base, width as i32, x, y), px_at(&hover, width as i32, x, y), "({x},{y}) 在按鈕之外卻變了");
+                }
+            }
+        }
+        // 灰掉的鈕（沒有 HD 資料時的原貌／HD）不理會移過與按下。
+        let no_hd = BarState { hd: false, hd_available: false, ..BarState::default() };
+        let off = tb.render(width, &BarState { hover: Some(Button::Gfx), down: Some(Button::Gfx), ..no_hd.clone() });
+        assert_eq!(tb.render(width, &no_hd), off);
+    }
+
+    #[test]
+    fn icons_fit_when_there_is_room_and_drop_before_the_row_would_wrap() {
+        for w in [960u32, 1280, 1600, 1920] {
+            let l = layout(w, false, 1.0);
+            assert!(l.icons && l.rows == 1, "{w} 放得下圖示：icons {} rows {}", l.icons, l.rows);
+        }
+        let narrow = layout(640, false, 1.0);
+        assert!(!narrow.icons && narrow.rows == 1, "640 寬拿掉圖示也要一列放完");
+        assert!(layout(320, false, 1.0).rows > 1);
+        // 手機版一律有圖示。
+        assert!(layout(2400, true, 2.5).icons && layout(1280, true, 2.0).icons);
+    }
+
+    #[test]
+    fn every_enabled_button_draws_its_icon_in_front_of_the_text_at_960() {
+        let tb = Toolbar::new(true);
+        let l = tb.layout(960);
+        assert!(l.icons);
+        let m = metrics(960, false, 1.0);
+        let img = tb.render(960, &st());
+        for (b, r) in &l.buttons {
+            // 圖示和字當成一組置中：圖示在組的最左邊，那個正方形裡要有亮像素。
+            let f = font::builtin();
+            let pad = button_pad(&m, false, true);
+            let block = icon_block(&m, true);
+            let tw = f.text_width(&f.fit(&b.label(&st()), (r.w - 2 * pad - block).max(1), m.fh), m.fh);
+            let x0 = r.x + (r.w - tw - block) / 2;
+            let cell = Rect::new(x0, r.y + (r.h - m.fh) / 2, m.fh, m.fh);
+            let ink = (cell.y..cell.bottom()).flat_map(|y| (cell.x..cell.right()).map(move |x| (x, y))).filter(|&(x, y)| {
+                let p = px_at(&img, 960, x, y);
+                p[0] as u32 + p[1] as u32 + p[2] as u32 > 330
+            });
+            if b.enabled(&st()) {
+                assert!(ink.count() > 6, "{b:?} 的圖示不見了");
+            }
+        }
+    }
+
+    #[test]
+    fn corner_radius_is_6_to_8_px_on_desktop() {
+        for w in [640u32, 800, 960, 1280, 1600, 1920, 2560] {
+            let m = metrics(w, false, 1.0);
+            assert!((6..=8).contains(&m.rad), "{w}：{}", m.rad);
+        }
+        // 圓角真的畫出來：按鈕左上角那一格不是按鈕色。
+        let tb = Toolbar::new(true);
+        let l = tb.layout(960);
+        let r = l.buttons[0].1;
+        let img = tb.render(960, &st());
+        let corner = px_at(&img, 960, r.x, r.y);
+        let inner = px_at(&img, 960, r.x + 8, r.y + r.h / 2);
+        assert!(corner[2] < inner[2], "角落{corner:?} 比內部{inner:?}更接近背景");
+    }
+
+    #[test]
+    fn status_chips_use_warning_colour_for_paused_rules_and_god() {
+        let tb = Toolbar::new(true);
+        let l = tb.layout(960);
+        let warm = |s: &BarState| {
+            let img = tb.render(960, s);
+            let mut n = 0;
+            for y in l.status.y..l.status.bottom() {
+                for x in 0..960 {
+                    let p = px_at(&img, 960, x, y);
+                    if p[0] > 200 && p[0] as i32 > p[2] as i32 + 60 {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let calm = warm(&st());
+        assert!(warm(&BarState { paused: true, ..st() }) > calm + 40);
+        assert!(warm(&BarState { rules: true, ..st() }) > calm + 40);
+        assert!(warm(&BarState { god: true, rules: true, ..st() }) > warm(&BarState { rules: true, ..st() }) + 20);
+    }
+
+    /// 存圖（`RS2_SHOTS` 指定目錄才存）：工具列各狀態，桌面與手機版。
+    #[test]
+    fn ui_shots_toolbar_states() {
+        let Some(dir) = std::env::var("RS2_SHOTS").ok().map(std::path::PathBuf::from) else { return };
+        std::fs::create_dir_all(&dir).unwrap();
+        let stack = |tb: &Toolbar, width: u32, states: &[BarState]| -> (Vec<u8>, usize, usize) {
+            let h = tb.height(width) as usize;
+            let mut out = Vec::new();
+            for s in states {
+                out.extend_from_slice(&tb.render(width, s));
+                // 兩張之間 8 像素的深色間隔。
+                out.extend(std::iter::repeat_n([5u8, 8, 14, 255], width as usize * 8).flatten());
+            }
+            (out, width as usize, (h + 8) * states.len())
+        };
+        let hd = BarState { hd: true, hd_available: true, ..BarState::default() };
+        let states = [
+            hd.clone(),
+            BarState { hover: Some(Button::Game), ..hd.clone() },
+            BarState { hover: Some(Button::Pause), down: Some(Button::Pause), ..hd.clone() },
+            BarState { paused: true, rules: true, god: true, notice: "偵測到手把：Xbox Controller，請到控制設定指派。".into(), ..hd.clone() },
+            BarState { hd: false, hd_available: false, ..BarState::default() },
+        ];
+        let (px, w, h) = stack(&Toolbar::new(true), 1280, &states);
+        std::fs::write(dir.join("toolbar_states_desktop.png"), rs2_gfx::png::encode_rgba(w, h, &px)).unwrap();
+        let (px, w, h) = stack(&Toolbar::new(true), 800, &states[..2]);
+        std::fs::write(dir.join("toolbar_states_desktop_narrow.png"), rs2_gfx::png::encode_rgba(w, h, &px)).unwrap();
+        let mstates = [BarState { mobile: true, ..hd.clone() }, BarState { mobile: true, paused: true, ..hd }];
+        let (px, w, h) = stack(&Toolbar::mobile(true).with_dp(2.5), 2400, &mstates);
+        std::fs::write(dir.join("toolbar_states_touch.png"), rs2_gfx::png::encode_rgba(w, h, &px)).unwrap();
     }
 }

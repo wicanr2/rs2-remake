@@ -129,6 +129,8 @@ pub struct LayerSink {
     pushed: u64,
     /// BIOS 8x8 字型（2048 位元組）。設了之後幀計數照原版寫進記憶體並永遠畫，不再用輸出時疊上的自繪數字。
     counter_font: Option<Vec<u8>>,
+    /// 標題選單選中列在 HD 用圓角高亮條，不取反（規格 005「HD 介面」）。預設關，和原版取反的畫法一致。
+    menu_highlight: bool,
 }
 
 #[inline]
@@ -302,6 +304,7 @@ impl LayerSink {
             out: Vec::new(),
             pushed: 0,
             counter_font: None,
+            menu_highlight: false,
         }
     }
 
@@ -422,7 +425,11 @@ impl LayerSink {
                             None if self.hd_space.is_some() => &self.hd_pal,
                             None => &self.pal,
                         };
-                        hd::apply(m, h, &self.assets, p, c, Off::default());
+                        if self.menu_highlight && c.op == Op::S18C6E {
+                            hd::menu_highlight(m, h, &self.assets, p, c);
+                        } else {
+                            hd::apply(m, h, &self.assets, p, c, Off::default());
+                        }
                     }
                 }
             }
@@ -537,6 +544,7 @@ impl LayerSink {
 
     fn render_hd(&mut self, t: f32, replay: bool, opts: RenderOpts) {
         let show_counter = opts.show_counter;
+        let menu_highlight = self.menu_highlight;
         let Self { hd_space, hd_pal, hdm, hd: hd_assets, assets, pal, pal_before, hd_base_page, hd_scratch_before, hd_mask_before, hd_spare, cur, out, counter_font, .. } = self;
         let (Some(mem), Some(hda)) = (hdm.as_mut(), hd_assets.as_mut()) else { return };
         let pg = ((cur.page >> 15) & 1) as usize;
@@ -596,7 +604,11 @@ impl LayerSink {
                             let dl = cur.deltas[i].filter(|_| opts.interpolate);
                             dl.map(|dl| interp::offsets(&dl, t, hd::S)).unwrap_or_default()
                         });
-                        hd::apply(&mut tmp, hda, assets, &p, c, off);
+                        if menu_highlight && c.op == Op::S18C6E {
+                            hd::menu_highlight(&mut tmp, hda, assets, &p, c);
+                        } else {
+                            hd::apply(&mut tmp, hda, assets, &p, c, off);
+                        }
                     }
                 }
             }
@@ -617,6 +629,27 @@ impl LayerSink {
             }
         }
         *hd_spare = std::mem::replace(out, page.px);
+    }
+
+    /// 標題選單選中列在 HD 畫面用圓角高亮條代替取反（規格 005「HD 介面」）。預設關。
+    /// 只影響 HD 引擎之後套用的 `S18C6E`；原版圖引擎與 `VgaSink` 不受影響，補間關閉時逐像素等於原版。
+    pub fn set_menu_highlight(&mut self, on: bool) {
+        self.menu_highlight = on;
+    }
+
+    /// 這一幀的幀計數值（座標 (12h, BFh) 的 `S1890D`）。這一幀沒有畫幀計數、或已設 `set_counter_font` 時是 `None`。
+    /// HD HUD 用它自己畫幀計數。
+    pub fn counter_value(&self) -> Option<u16> {
+        self.cur.counter
+    }
+
+    /// `MY` 圖庫第 `index` 項的 HD 圖（RGBA，寬，高），依目前的調色盤選變體。沒有 HD 資料夾或項號不存在時是 `None`。
+    /// 資料夾裡缺這張圖時，退回原版圖的放大。HUD 的武器圖示用它。
+    pub fn my_image(&mut self, index: u16) -> Option<(Vec<u8>, usize, usize)> {
+        let pal = if self.hd_space.is_some() { self.hd_pal.clone() } else { self.pal.clone() };
+        let h = self.hd.as_mut()?;
+        let img = h.image(HdLib::My, index, &pal, &self.assets)?;
+        Some((img.rgba.clone(), img.w, img.h))
     }
 
     /// 預載第一關會用到的 HD 圖（`MY`、`SHT1`、`BH1` 的圖、遮罩與 `stage1_boss` 變體），避免第一次出現時在 `push_frame` 內解碼。

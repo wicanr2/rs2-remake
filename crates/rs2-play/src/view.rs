@@ -68,6 +68,15 @@ pub fn fill_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
     fit_rect_for(win_w, win_h, bar_h, Fit::SD, true)
 }
 
+/// 震動位移換成視窗像素：只有 1280 寬的 HD 畫面震動，`frame_w` 是畫面寬，`shown_w` 是貼到視窗的寬。
+pub fn shake_px(shake: (i32, i32), frame_w: usize, shown_w: i32) -> (i32, i32) {
+    if frame_w != 1280 || shake == (0, 0) {
+        return (0, 0);
+    }
+    let k = shown_w as f32 / frame_w as f32;
+    ((shake.0 as f32 * k).round() as i32, (shake.1 as f32 * k).round() as i32)
+}
+
 /// 觸控控制鈕的疊加層。
 #[derive(Clone, Copy, Debug)]
 pub struct Overlay<'o> {
@@ -117,6 +126,8 @@ pub struct Presenter<'a> {
     overlay_key: Option<(bool, u32, u32)>,
     layer: Option<(Texture<'a>, u32, u32)>,
     layer_key: Option<(u64, u32, u32)>,
+    /// 畫面震動的位移（HD 像素，規格 005「打擊回饋」）。只改遊戲畫面貼到視窗的位置，內容不動，不蓋到工具列。
+    pub shake: (i32, i32),
 }
 
 fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: ScaleMode) -> Result<Texture<'a>, String> {
@@ -140,6 +151,7 @@ impl<'a> Presenter<'a> {
             overlay_key: None,
             layer: None,
             layer_key: None,
+            shake: (0, 0),
         })
     }
 
@@ -202,7 +214,15 @@ impl<'a> Presenter<'a> {
         let tex = &mut self.game.0;
         tex.update(None, frame, fw * 4).map_err(|e| format!("更新畫面貼圖失敗：{e}"))?;
         let r = fit_rect_for(ww, wh, bar_h, fit, toolbar.mobile);
-        canvas.copy(tex, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
+        // 震動：只有 HD 畫面，位移從 HD 像素換成視窗像素；夾在遊戲區內，不蓋到工具列。
+        let (sx, sy) = shake_px(self.shake, fw, r.w);
+        if (sx, sy) != (0, 0) {
+            canvas.set_clip_rect(Rect::new(0, bar_h as i32, ww, wh.saturating_sub(bar_h).max(1)));
+        }
+        canvas.copy(tex, None, Rect::new(r.x + sx, r.y + sy, r.w as u32, r.h as u32))?;
+        if (sx, sy) != (0, 0) {
+            canvas.set_clip_rect(sdl2::render::ClippingRect::None);
+        }
         if let Some(o) = overlay {
             let key = (o.playable, ww, wh);
             if self.overlay_key != Some(key) {
@@ -373,6 +393,14 @@ mod tests {
         assert_eq!((vga.w, vga.h), (960, 600));
         assert_eq!((mono.w, mono.h), (800, 600));
         assert_eq!(vga.y, mono.y);
+    }
+
+    #[test]
+    fn shake_scales_with_the_shown_size_and_only_applies_to_hd() {
+        assert_eq!(shake_px((6, -3), 1280, 1280), (6, -3));
+        assert_eq!(shake_px((6, -3), 1280, 640), (3, -2), "半尺寸顯示，位移跟著減半（四捨五入）");
+        assert_eq!(shake_px((6, 6), 320, 960), (0, 0), "原版圖不震動");
+        assert_eq!(shake_px((0, 0), 1280, 960), (0, 0));
     }
 
     #[test]

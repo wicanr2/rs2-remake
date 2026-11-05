@@ -5,9 +5,11 @@
 
 use crate::input::Hotkey;
 use crate::mode::DisplayMode;
+use crate::options::OPTIONS;
 use crate::session::ViewOpts;
 use crate::settings::Settings;
 use crate::toolbar::{BarState, Button, Toolbar};
+use crate::ui::hud::HudFlags;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -266,7 +268,15 @@ impl Controls {
             mode: self.settings.mode,
             mono_available: self.mono_available,
             notice: String::new(),
+            hover: None,
+            down: None,
         }
+    }
+
+    /// HD 介面的 HUD 要顯示的前端狀態（規格 005「HUD」）：右端標籤與充能條。幀計數的值由繪製端補。
+    pub fn hud_flags(&self) -> HudFlags {
+        let charge = crate::options::index_of("wave_charge").is_some_and(|i| OPTIONS[i].implemented && self.settings.opt_value(i) != 0);
+        HudFlags { rules: self.settings.rules_enhanced(), god: self.settings.invincible(), charge_bar: charge, counter: None }
     }
 
     pub fn toolbar(&self) -> Toolbar {

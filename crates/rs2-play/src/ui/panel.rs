@@ -6,28 +6,46 @@
 //! | 手把按鍵 | 開火、轉向、分離、暫停、確定、選單的按鈕（各兩格）。方向固定十字鍵與左搖桿 |
 //! | 鍵盤 | 兩人各十一個欄位的實體鍵。點欄位或 Enter 後按新鍵，Delete 清空，Esc 取消，衝突不覆寫 |
 //! | 遊戲 | 規格 005「選項」表的全部選項，分群組。沒實作的灰色、標開發中、不能切換 |
-//! | 顯示 | 補間、幀計數、倍率、工具列 |
+//! | 顯示 | 顯示模式、補間、幀計數、倍率、工具列 |
 //!
 //! 操作：F8 換頁（`next_page`），Tab 選欄位，Enter 啟動，Esc 關閉；滑鼠與觸控可以點，上下拖曳或滾輪捲動。
 //! 內容比視窗高時可以捲動，焦點移動時自動捲到看得見。
 
 use crate::controls::{Action, Controls, Effect};
 use crate::keymap::{ACTS, Act, BindError, Btn, PADFNS, PadBindError, PadFn};
-use crate::options::{FEEL_INDEX, OPTIONS};
+use crate::mode::DisplayMode;
+use crate::options::{FEEL_INDEX, Kind, OPTIONS, OptDef};
 use crate::pad::{AssignError, Devices};
+use crate::settings::SCALES;
 use crate::toolbar::{INK, INK_NOTE, INK_OFF, INK_WARN, metrics};
+use crate::ui::style::{self, Rgba, Vis, color};
 use crate::ui::{Align, Canvas, Rect, font, text};
 use sdl2::keyboard::Scancode as K;
 
-const BG: [u8; 4] = [17, 29, 48, 255];
-const FIELD: [u8; 4] = [35, 50, 75, 255];
-const FIELD_OFF: [u8; 4] = [26, 38, 58, 255];
-const FOCUS: [u8; 4] = [57, 82, 121, 255];
-const TAB_ON: [u8; 4] = [57, 82, 121, 255];
-const CAPTURE: [u8; 4] = [96, 76, 30, 255];
-const RING: [u8; 4] = [150, 190, 255, 255];
-const GREEN: [u8; 4] = [130, 230, 130, 255];
-const SCROLL: [u8; 4] = [90, 112, 150, 255];
+/// 設定畫面後面的遊戲畫面調暗的程度：60%（規格 005）。
+pub const DIM_ALPHA: u8 = 153;
+/// 面板開啟時淡入的毫秒數（規格 005：120 毫秒），不影響模擬時間。
+pub const FADE_IN_MS: u64 = 120;
+
+const BG: Rgba = color::PANEL;
+const CARD: Rgba = color::SURFACE;
+const GREEN: Rgba = color::ON;
+const SCROLL: Rgba = [143, 163, 194, 120];
+/// 卡片的圓角。
+const CARD_RAD: f32 = 14.0;
+
+/// 開啟後經過 `elapsed_ms` 毫秒的不透明度：線性淡入，`FADE_IN_MS` 之後是 1.0。
+pub fn fade_in(elapsed_ms: u64) -> f32 {
+    (elapsed_ms as f32 / FADE_IN_MS as f32).clamp(0.0, 1.0)
+}
+
+/// 淡入分成幾級。呼叫端用級數當重畫的依據，同一級不重畫。
+pub const FADE_STEPS: u32 = 8;
+
+/// 不透明度量化成 `0..=FADE_STEPS` 級。
+pub fn fade_step(elapsed_ms: u64) -> u32 {
+    (fade_in(elapsed_ms) * FADE_STEPS as f32).round() as u32
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Page {
@@ -90,6 +108,7 @@ pub enum Id {
     Counter,
     Scale,
     Toolbar,
+    Mode,
 }
 
 /// 設定畫面碰得到的前端狀態。
@@ -139,12 +158,17 @@ struct Cell {
 
 struct Layout {
     cells: Vec<Cell>,
+    /// 群組卡片，內容座標。
+    groups: Vec<Rect>,
     content_h: i32,
+    /// 以下都是卡片內的座標，原點在卡片左上角。
     view: Rect,
     title: Rect,
     close: Rect,
     tabs: Vec<(Page, Rect)>,
     msg: Rect,
+    /// 卡片在設定畫面內的位置。
+    card: Rect,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -164,7 +188,11 @@ struct Pm {
     gap: i32,
     pad: i32,
     mar: i32,
-    ring: i32,
+    /// 欄位與按鈕的圓角。
+    rad: f32,
+    /// 群組卡片內的左右、上下留白。
+    cpx: i32,
+    cpy: i32,
 }
 
 fn pm(g: &Geom) -> Pm {
@@ -181,28 +209,131 @@ fn pm(g: &Geom) -> Pm {
         }
     };
     let rh = if g.mobile { m.btn_h } else { m.fh * 7 / 5 };
-    Pm { fh: m.fh, nfh, rh, gap: if g.mobile { m.gap } else { (m.fh / 6).max(3) }, pad: m.fh / 2, mar: (m.fh / 2).max(6), ring: if g.mobile { 3 } else { 2 } }
+    let gap = if g.mobile { m.gap } else { (m.fh / 6).max(3) };
+    Pm { fh: m.fh, nfh, rh, gap, pad: m.fh / 2, mar: (m.fh * 3 / 4).max(8), rad: m.rad as f32, cpx: m.fh * 2 / 3, cpy: gap * 2 }
 }
 
 fn tw(s: &str, h: i32) -> i32 {
     font::builtin().text_width(s, h)
 }
 
+/// 面板卡片在設定畫面（視窗工具列以下的整塊）內的位置：置中，四周留一圈，讓後面調暗的遊戲畫面露出來。
+fn card_rect(g: &Geom) -> Rect {
+    let m = metrics(g.w.max(1) as u32, g.mobile, g.dp);
+    let (mx, my) = if g.mobile { (m.fh / 2, m.fh / 3) } else { (m.fh.max(g.w / 28), (m.fh * 3 / 4).max(g.h / 30)) };
+    let (w, h) = ((g.w - 2 * mx).max(1), (g.h - 2 * my).max(1));
+    Rect::new((g.w - w) / 2, (g.h - h) / 2, w, h)
+}
+
+/// 開關的高度（偶數，圓頭才對稱）。
+fn switch_h(p: &Pm) -> i32 {
+    (if p.rh >= 40 { p.rh * 3 / 5 } else { p.rh * 2 / 3 }).max(12) & !1
+}
+
+fn switch_w(p: &Pm) -> i32 {
+    style::switch_width(switch_h(p))
+}
+
+/// 分段按鈕每段左右的留白。
+fn seg_pad(p: &Pm) -> i32 {
+    p.pad * 3 / 4
+}
+
+/// 分段按鈕的總寬：各段加左右各 2 像素的內縮。
+fn seg_total(labels: &[&str], p: &Pm) -> i32 {
+    style::seg_widths(labels, p.fh, seg_pad(p)).iter().sum::<i32>() + 4
+}
+
+fn opt_labels(o: &OptDef) -> Vec<&'static str> {
+    (0..o.values()).map(|v| o.value_label(v)).collect()
+}
+
+/// 遊戲頁選項的控制項寬度：開關，或各值排成一列的分段按鈕。
+fn opt_control_width(o: &OptDef, p: &Pm) -> i32 {
+    match o.kind {
+        Kind::Toggle => switch_w(p) + 2,
+        _ => seg_total(&opt_labels(o), p),
+    }
+}
+
+fn scale_labels() -> Vec<String> {
+    SCALES.iter().map(|n| text::scale_value(*n)).collect()
+}
+
+fn mode_labels() -> Vec<String> {
+    DisplayMode::ALL.iter().map(|m| m.label().to_string()).collect()
+}
+
+/// 顯示頁值欄的寬度：開關與顯示模式的分段按鈕，桌面版再加倍率的分段按鈕。
+fn display_control_width(p: &Pm, mobile: bool) -> i32 {
+    let modes = mode_labels();
+    let m: Vec<&str> = modes.iter().map(|s| s.as_str()).collect();
+    let mut vw = (switch_w(p) + 2).max(seg_total(&m, p));
+    if !mobile {
+        let l = scale_labels();
+        let r: Vec<&str> = l.iter().map(|s| s.as_str()).collect();
+        vw = vw.max(seg_total(&r, p));
+    }
+    vw
+}
+
+/// 欄位畫成什麼控制項。
+#[derive(Clone, Debug, PartialEq)]
+enum Widget {
+    /// 沒有 id 的框（裝置名稱），不能操作。
+    Static,
+    /// 鍵位與手把按鈕的欄位。
+    Field,
+    /// 動作按鈕（指派、還原預設）。
+    Button,
+    /// 布林選項：滑動開關。
+    Switch(bool),
+    /// 多值選項：分段按鈕。
+    Seg { labels: Vec<String>, sel: Option<usize> },
+}
+
 /// 一頁內容的建造器。座標是內容座標，原點在捲動區左上角。
 struct Builder {
     p: Pm,
+    /// 目前可用的內容寬度。在群組卡片裡是卡片內側的寬度。
     cw: i32,
+    /// 整個內容區的寬度。
+    full: i32,
     y: i32,
+    /// 目前的左側縮進（在群組卡片裡是卡片的左右留白）。`push` 會把它加到每個欄位的 x。
+    x0: i32,
     cells: Vec<Cell>,
+    groups: Vec<Rect>,
+    open: Option<i32>,
 }
 
 impl Builder {
     fn new(p: Pm, cw: i32) -> Builder {
-        Builder { p, cw, y: 0, cells: Vec::new() }
+        Builder { p, cw, full: cw, y: 0, x0: 0, cells: Vec::new(), groups: Vec::new(), open: None }
     }
 
     fn push(&mut self, id: Option<Id>, kind: CK, rect: Rect, text: String, ink: [u8; 4], enabled: bool, fh: i32, align: Align) {
+        let rect = rect.offset(self.x0, 0);
         self.cells.push(Cell { id, kind, rect, text, ink, enabled, fh, align });
+    }
+
+    /// 開一張群組卡片：之後的內容縮進，上下留白。分組用卡片，不用線。
+    fn begin_card(&mut self) {
+        self.open = Some(self.y);
+        self.y += self.p.cpy;
+        self.x0 = self.p.cpx;
+        self.cw = (self.full - 2 * self.p.cpx).max(1);
+    }
+
+    /// 收起群組卡片。最後一列後面本來就留了一個列距。
+    fn end_card(&mut self) {
+        if let Some(top) = self.open.take() {
+            self.y += self.p.cpy - self.p.gap.min(self.p.cpy);
+            self.groups.push(Rect::new(0, top, self.full, self.y - top));
+            self.y += self.p.gap * 2;
+            self.x0 = 0;
+            self.cw = self.full;
+        }
     }
 
     /// 群組標題。
@@ -275,12 +406,21 @@ pub struct Panel {
     press: Option<Press>,
     geom: Geom,
     version: u64,
+    /// 指標目前在哪個目標上（變亮）。觸控沒有。
+    hover: Hit,
+    /// 指標按下時所在的目標（變深）。
+    down: Hit,
+    /// 調暗的背景加陰影的點陣，鍵是（視窗寬、高、卡片位置與大小、字高）。
+    base: std::cell::RefCell<Option<(BaseKey, Vec<u8>)>>,
 }
+
+/// `Panel::base` 的鍵。
+type BaseKey = (i32, i32, i32, i32, i32, i32, i32);
 
 impl Panel {
     /// `w × h` 是設定畫面的大小（視窗寬度、工具列以下的高度）。
     pub fn new(page: Page, w: i32, h: i32, mobile: bool, dp: f32) -> Panel {
-        Panel { page, focus: None, scroll: 0, capture: None, msg: String::new(), press: None, geom: Geom { w, h, mobile, dp }, version: 1 }
+        Panel { page, focus: None, scroll: 0, capture: None, msg: String::new(), press: None, geom: Geom { w, h, mobile, dp }, version: 1, hover: Hit::None, down: Hit::None, base: std::cell::RefCell::new(None) }
     }
 
     pub fn page(&self) -> Page {
@@ -337,7 +477,8 @@ impl Panel {
     fn layout(&self, ctl: &Controls, devs: &Devices) -> Layout {
         let g = self.geom;
         let p = pm(&g);
-        let (w, h) = (g.w.max(1), g.h.max(1));
+        let card = card_rect(&g);
+        let (w, h) = (card.w.max(1), card.h.max(1));
         let mar = p.mar;
         let cw = (w - 2 * mar).max(1);
         // 上方：標題列與關閉鈕，再來是頁籤。
@@ -351,7 +492,7 @@ impl Panel {
         let (title, tab_y, tab_x) = if one_row {
             (Rect::new(mar, mar, title_w, p.rh), mar, mar + title_w + p.gap * 3)
         } else {
-            (Rect::new(mar, mar, (close.x - mar - p.gap).max(0), p.rh), mar + p.rh + p.gap, mar)
+            (Rect::new(mar, mar, (close.x - mar - p.gap).max(0), p.rh), mar + p.rh + p.gap * 2, mar)
         };
         let mut tabs = Vec::new();
         let mut x = tab_x;
@@ -366,11 +507,11 @@ impl Panel {
         let msg = Rect::new(mar, (h - mar - msg_h).max(0), cw, msg_h);
         let vy = tab_y + p.rh + p.gap;
         let view = Rect::new(mar, vy, cw, (msg.y - p.gap - vy).max(0));
-        let (cells, content_h) = self.build(ctl, devs, p, cw);
-        Layout { cells, content_h, view, title, close, tabs, msg }
+        let (cells, groups, content_h) = self.build(ctl, devs, p, cw);
+        Layout { cells, groups, content_h, view, title, close, tabs, msg, card }
     }
 
-    fn build(&self, ctl: &Controls, devs: &Devices, p: Pm, cw: i32) -> (Vec<Cell>, i32) {
+    fn build(&self, ctl: &Controls, devs: &Devices, p: Pm, cw: i32) -> (Vec<Cell>, Vec<Rect>, i32) {
         let mut b = Builder::new(p, cw);
         match self.page {
             Page::Pad => self.build_pad(&mut b, devs),
@@ -380,17 +521,18 @@ impl Panel {
             Page::Display => self.build_display(&mut b, ctl),
         }
         let h = b.y;
-        (b.cells, h)
+        (b.cells, b.groups, h)
     }
 
     fn build_pad(&self, b: &mut Builder, devs: &Devices) {
         let p = b.p;
+        b.begin_card();
+        b.header(text::PAD_LIST_HEAD);
         if devs.list().is_empty() {
-            b.header(text::PAD_LIST_HEAD);
             b.line(text::PAD_NONE.to_string(), INK_WARN);
+            b.end_card();
             return;
         }
-        b.header(text::PAD_LIST_HEAD);
         let mut bw = 0;
         for pl in 0..2 {
             for a in [false, true] {
@@ -421,16 +563,20 @@ impl Panel {
             }
             b.y += p.rh + p.gap;
         }
+        b.end_card();
+        b.begin_card();
         b.header(text::PAD_ASSIGN_HEAD);
         for pl in 0..2 {
             let name = devs.assigned_dev(pl).map(|d| d.name.as_str());
             b.line(text::pad_player_line(pl, name), if name.is_some() { INK } else { INK_NOTE });
         }
         b.note(text::PAD_NOTE, INK_NOTE);
+        b.end_card();
     }
 
     fn build_padkeys(&self, b: &mut Builder, ctl: &Controls) {
         let p = b.p;
+        b.begin_card();
         let mut lw = tw(text::PADFN_COL_FN, p.fh);
         for f in PADFNS {
             lw = lw.max(tw(f.label(), p.fh));
@@ -459,14 +605,17 @@ impl Panel {
             b.y += p.rh + p.gap;
         }
         b.button(Id::PadReset, text::PADKEY_RESET);
+        b.end_card();
         b.note(text::PADKEY_NOTE1, INK_NOTE);
         b.note(text::PADKEY_NOTE2, INK_NOTE);
     }
 
     fn build_keyboard(&self, b: &mut Builder, ctl: &Controls) {
         let p = b.p;
+        // 兩人各一張卡片並排。
         let col_gap = p.gap * 3;
         let colw = ((b.cw - col_gap) / 2).max(1);
+        let inner = (colw - 2 * p.cpx).max(1);
         let mut lw = 0;
         for a in ACTS {
             lw = lw.max(tw(a.label(), p.fh));
@@ -475,10 +624,10 @@ impl Panel {
         let top = b.y;
         let mut bottom = top;
         for pl in 0..2usize {
-            let x0 = pl as i32 * (colw + col_gap);
-            let mut y = top;
+            let x0 = pl as i32 * (colw + col_gap) + p.cpx;
+            let mut y = top + p.cpy;
             let hh = p.nfh + p.gap * 2;
-            b.push(None, CK::Header, Rect::new(x0, y, colw, hh), text::kb_head(pl), INK_NOTE, true, p.fh, Align::Left);
+            b.push(None, CK::Header, Rect::new(x0, y, inner, hh), text::kb_head(pl), INK_NOTE, true, p.fh, Align::Left);
             y += hh + p.gap;
             for a in ACTS {
                 b.push(None, CK::Label, Rect::new(x0, y, lw, p.rh), a.label().to_string(), INK, true, p.fh, Align::Left);
@@ -492,12 +641,16 @@ impl Panel {
                 } else {
                     INK
                 };
-                b.push(Some(Id::Key { player: pl, act: a }), CK::Box, Rect::new(x0 + lw, y, (colw - lw).max(1), p.rh), s, ink, true, p.fh, Align::Left);
+                b.push(Some(Id::Key { player: pl, act: a }), CK::Box, Rect::new(x0 + lw, y, (inner - lw).max(1), p.rh), s, ink, true, p.fh, Align::Left);
                 y += p.rh + p.gap;
             }
             bottom = bottom.max(y);
         }
-        b.y = bottom;
+        let card_h = bottom - top + p.cpy - p.gap;
+        for pl in 0..2i32 {
+            b.groups.push(Rect::new(pl * (colw + col_gap), top, colw, card_h));
+        }
+        b.y = top + card_h + p.gap * 2;
         b.button(Id::KeyReset, text::KB_RESET);
         b.note(text::KB_NOTE, INK_NOTE);
         b.note(text::KB_NOTE_SPLIT, INK_NOTE);
@@ -508,13 +661,10 @@ impl Panel {
         let p = b.p;
         let mut vw = 0;
         for o in OPTIONS.iter() {
-            for v in 0..o.values() {
-                vw = vw.max(tw(o.value_label(v), p.fh));
-            }
+            vw = vw.max(opt_control_width(o, &p));
         }
-        let vw = vw + 2 * p.pad;
         let tag_w = tw(text::IN_DEVELOPMENT, p.nfh) + 2 * p.pad;
-        // 群組名放在左邊一欄，只寫在群組的第一列，省下標題列的高度。
+        // 群組名放在卡片左邊一欄，只寫在群組的第一列。
         let mut gw = 0;
         for o in OPTIONS.iter() {
             gw = gw.max(tw(o.group.label(), p.fh));
@@ -524,8 +674,9 @@ impl Panel {
         for (i, o) in OPTIONS.iter().enumerate() {
             if last != Some(o.group) {
                 if last.is_some() {
-                    b.y += p.gap;
+                    b.end_card();
                 }
+                b.begin_card();
                 b.push(None, CK::Header, Rect::new(0, b.y, gw, p.rh), o.group.label().to_string(), INK_NOTE, true, p.fh, Align::Left);
                 last = Some(o.group);
             }
@@ -536,16 +687,11 @@ impl Panel {
                 b.push(None, CK::Tag, Rect::new(label_x + label_w + p.gap, b.y, tag_w, p.rh), text::IN_DEVELOPMENT.to_string(), INK_WARN, true, p.nfh, Align::Center);
             }
             let v = ctl.settings.opt_value(i);
-            let ink = if !o.implemented {
-                INK_OFF
-            } else if o.kind != crate::options::Kind::Size && o.kind != crate::options::Kind::Feel && v != 0 {
-                GREEN
-            } else {
-                INK
-            };
+            let ink = if !o.implemented { INK_OFF } else { INK };
             b.push(Some(Id::Opt(i)), CK::Box, Rect::new(b.cw - vw, b.y, vw, p.rh), o.value_label(v).to_string(), ink, o.implemented, p.fh, Align::Center);
             b.y += p.rh + p.gap;
         }
+        b.end_card();
         b.note(text::GAME_NOTE1, INK_NOTE);
         b.note(text::GAME_NOTE2, INK_NOTE);
     }
@@ -555,6 +701,7 @@ impl Panel {
         let s = &ctl.settings;
         let on_off = |v: bool| (if v { text::ON } else { text::OFF }).to_string();
         let mut rows: Vec<(Id, &str, String, [u8; 4])> = vec![
+            (Id::Mode, text::DISP_MODE, s.mode.label().to_string(), INK),
             (Id::Tween, text::DISP_TWEEN, on_off(s.tween), if s.tween { GREEN } else { INK }),
             (Id::Counter, text::DISP_COUNTER, on_off(s.counter), if s.counter { GREEN } else { INK }),
         ];
@@ -562,17 +709,15 @@ impl Panel {
             rows.push((Id::Scale, text::DISP_SCALE, text::scale_value(s.scale), INK));
         }
         rows.push((Id::Toolbar, text::DISP_TOOLBAR, (if s.toolbar { text::DISP_SHOWN } else { text::DISP_HIDDEN }).to_string(), INK));
-        let mut vw = tw(text::DISP_SHOWN, p.fh).max(tw(text::DISP_HIDDEN, p.fh)).max(tw(text::ON, p.fh));
-        for n in 1..=8 {
-            vw = vw.max(tw(&text::scale_value(n), p.fh));
-        }
-        let vw = vw + 2 * p.pad;
+        let vw = display_control_width(&p, self.geom.mobile);
+        b.begin_card();
         for (id, label, value, ink) in rows {
             let label_w = (b.cw - vw - p.gap).max(1);
             b.push(None, CK::Label, Rect::new(0, b.y, label_w, p.rh), label.to_string(), INK, true, p.fh, Align::Left);
             b.push(Some(id), CK::Box, Rect::new(b.cw - vw, b.y, vw, p.rh), value, ink, true, p.fh, Align::Center);
             b.y += p.rh + p.gap;
         }
+        b.end_card();
         b.note(text::DISP_NOTE, INK_NOTE);
         if !self.geom.mobile {
             b.note(text::DISP_KEYS, INK_NOTE);
@@ -619,11 +764,13 @@ impl Panel {
         let lay = self.layout(ctl, devs);
         let focus = self.current_focus(&lay);
         let scroll = self.scroll.clamp(0, Self::max_scroll(&lay));
+        let (ox, oy) = (lay.card.x, lay.card.y);
+        let view = lay.view.offset(ox, oy);
         lay.cells
             .iter()
             .map(|c| {
-                let r = c.rect.offset(lay.view.x, lay.view.y - scroll);
-                CellInfo { id: c.id, rect: r, text: c.text.clone(), enabled: c.enabled, focused: c.id.is_some() && c.id == focus, visible: r.intersect(&lay.view).h > 0 }
+                let r = c.rect.offset(ox + lay.view.x, oy + lay.view.y - scroll);
+                CellInfo { id: c.id, rect: r, text: c.text.clone(), enabled: c.enabled, focused: c.id.is_some() && c.id == focus, visible: r.intersect(&view).h > 0 }
             })
             .collect()
     }
@@ -638,13 +785,118 @@ impl Panel {
     // 繪製
     // -----------------------------------------------------------------------
 
-    /// 畫成 `w × h` 的 RGBA（不透明）。
+    /// 畫成 `w × h` 的 RGBA：後面的遊戲畫面調暗 60%（半透明黑），面板卡片置中、有陰影。
     pub fn render(&self, ctl: &Controls, devs: &Devices) -> Vec<u8> {
+        self.render_faded(ctl, devs, 1.0)
+    }
+
+    /// 同 `render`，整張圖的不透明度再乘上 `fade`（0.0 到 1.0），開啟時淡入用。
+    pub fn render_faded(&self, ctl: &Controls, devs: &Devices, fade: f32) -> Vec<u8> {
         let lay = self.layout(ctl, devs);
         let p = pm(&self.geom);
-        let mut c = Canvas::new(self.geom.w, self.geom.h, BG);
-        let focus = self.current_focus(&lay);
-        let scroll = self.scroll.clamp(0, Self::max_scroll(&lay));
+        let card = lay.card;
+        // 調暗的背景加陰影只和視窗與卡片的幾何有關，換內容時不用重畫。
+        let key = (self.geom.w, self.geom.h, card.x, card.y, card.w, card.h, p.fh);
+        let base = {
+            let mut cache = self.base.borrow_mut();
+            match &*cache {
+                Some((k, px)) if *k == key => px.clone(),
+                _ => {
+                    let mut b = Canvas::new(self.geom.w, self.geom.h, [0, 0, 0, DIM_ALPHA]);
+                    style::shadow(&mut b, card, CARD_RAD, (p.fh * 3 / 2).max(16), p.fh / 2, [0, 0, 0, 170]);
+                    *cache = Some((key, b.px.clone()));
+                    b.px
+                }
+            }
+        };
+        let mut full = Canvas::new(1, 1, [0, 0, 0, 0]);
+        full.w = self.geom.w.max(1);
+        full.h = self.geom.h.max(1);
+        full.px = base;
+        let mut c = Canvas::new(card.w, card.h, BG);
+        self.draw_card(&mut c, &lay, &p, ctl, devs);
+        // 圓角遮罩貼到畫面上：四個角各 `CARD_RAD` 見方用距離函式，其餘整段複製。
+        let local = Rect::new(0, 0, card.w, card.h);
+        let r = CARD_RAD.ceil() as i32 + 1;
+        for y in 0..card.h {
+            let (dy, edge_row) = (card.y + y, y < r || y >= card.h - r);
+            if dy < 0 || dy >= full.h {
+                continue;
+            }
+            let (x0, x1) = (if edge_row { card.w } else { r }, if edge_row { card.w } else { card.w - r });
+            for x in (0..x0.min(card.w)).chain(x1.min(card.w)..card.w) {
+                let cv = style::cov(style::sd_rrect(x as f32 + 0.5, y as f32 + 0.5, local, CARD_RAD));
+                let dx = card.x + x;
+                if cv > 0.0 && dx >= 0 && dx < full.w {
+                    let so = ((y * card.w + x) * 4) as usize;
+                    let d = ((dy * full.w + dx) * 4) as usize;
+                    let src = [c.px[so], c.px[so + 1], c.px[so + 2], c.px[so + 3]];
+                    style::over(&mut full.px[d..d + 4], src, cv);
+                }
+            }
+            if !edge_row && x0 < x1 {
+                // 中段完全在圓角之內：不透明，整段複製（超出視窗的部分略過）。
+                let lo = (card.x + x0).max(0);
+                let hi = (card.x + x1).min(full.w);
+                if hi > lo {
+                    let so = ((y * card.w + (lo - card.x)) * 4) as usize;
+                    let d = ((dy * full.w + lo) * 4) as usize;
+                    let n = ((hi - lo) * 4) as usize;
+                    full.px[d..d + n].copy_from_slice(&c.px[so..so + n]);
+                }
+            }
+        }
+        style::stroke_rrect(&mut full, card, CARD_RAD, 1.0, [255, 255, 255, 34]);
+        if fade < 1.0 {
+            let f = fade.clamp(0.0, 1.0);
+            for px in full.px.chunks_exact_mut(4) {
+                px[3] = (px[3] as f32 * f).round() as u8;
+            }
+        }
+        full.px
+    }
+
+    fn widget_of(&self, c: &Cell, ctl: &Controls) -> Widget {
+        match c.id {
+            None => Widget::Static,
+            Some(Id::PadAssign { .. }) | Some(Id::PadReset) | Some(Id::KeyReset) => Widget::Button,
+            Some(Id::Key { .. }) | Some(Id::PadFn { .. }) => Widget::Field,
+            Some(Id::Tween) => Widget::Switch(ctl.settings.tween),
+            Some(Id::Counter) => Widget::Switch(ctl.settings.counter),
+            Some(Id::Toolbar) => Widget::Switch(ctl.settings.toolbar),
+            Some(Id::Scale) => Widget::Seg { labels: scale_labels(), sel: SCALES.iter().position(|n| *n == ctl.settings.scale) },
+            Some(Id::Mode) => Widget::Seg { labels: mode_labels(), sel: DisplayMode::ALL.iter().position(|m| *m == ctl.settings.mode) },
+            Some(Id::Opt(i)) => {
+                let o = &OPTIONS[i];
+                match o.kind {
+                    Kind::Toggle => Widget::Switch(ctl.settings.opt_value(i) != 0),
+                    _ => Widget::Seg { labels: opt_labels(o).into_iter().map(String::from).collect(), sel: Some(ctl.settings.opt_value(i) as usize) },
+                }
+            }
+        }
+    }
+
+    /// 控制項本體在欄位矩形裡的位置：開關靠右，分段按鈕填滿。
+    fn control_rect(w: &Widget, cell: Rect, p: &Pm) -> Rect {
+        match w {
+            Widget::Switch(_) => {
+                let (sw, sh) = (switch_w(p), switch_h(p));
+                Rect::new(cell.right() - sw - 1, cell.y + (cell.h - sh) / 2, sw, sh)
+            }
+            _ => Rect::new(cell.x, cell.y + 1, cell.w, (cell.h - 2).max(1)),
+        }
+    }
+
+    fn vis_of(&self, id: Option<Id>, enabled: bool, focused: bool) -> Vis {
+        let t = id.map(Hit::Cell);
+        Vis { hover: enabled && t.is_some_and(|t| self.hover == t), down: enabled && t.is_some_and(|t| self.down == t), focus: focused, enabled }
+    }
+
+    /// 在卡片座標系畫卡片的全部內容。
+    fn draw_card(&self, c: &mut Canvas, lay: &Layout, p: &Pm, ctl: &Controls, devs: &Devices) {
+        let focus = self.current_focus(lay);
+        let scroll = self.scroll.clamp(0, Self::max_scroll(lay));
+        let _ = devs;
 
         // 標題與說明。
         let title = self.page.title();
@@ -657,15 +909,41 @@ impl Panel {
                 c.text_in(room, text::PANEL_HINT, p.nfh, 0, Align::Left, INK_NOTE);
             }
         }
-        c.rect(lay.close, FIELD);
+        let cv = Vis { hover: self.hover == Hit::Close, down: self.down == Hit::Close, focus: false, enabled: true };
+        style::button(c, lay.close, p.rad, cv, false);
         c.text_in(lay.close, text::PANEL_CLOSE, p.fh, p.pad / 2, Align::Center, INK);
+
+        // 頁籤：一條膠囊，選中的頁是主色。
+        if let (Some((_, first)), Some((_, last))) = (lay.tabs.first(), lay.tabs.last()) {
+            let strip = Rect::new(first.x - 3, first.y, last.right() - first.x + 6, first.h);
+            style::fill_rrect(c, strip, p.rad + 2.0, color::BG);
+            style::stroke_rrect(c, strip, p.rad + 2.0, 1.0, [255, 255, 255, 24]);
+        }
         for (pg, r) in &lay.tabs {
-            c.rect(*r, if *pg == self.page { TAB_ON } else { FIELD });
-            c.text_in(*r, pg.label(), p.fh, p.pad / 2, Align::Center, if *pg == self.page { INK } else { INK_NOTE });
+            let sel = *pg == self.page;
+            let inner = r.inset(2);
+            let hv = self.hover == Hit::Tab(*pg);
+            let dn = self.down == Hit::Tab(*pg);
+            if sel {
+                let top = if dn { style::darken(color::PRIMARY, 0.2) } else { color::PRIMARY };
+                style::fill_rrect_vgrad(c, inner, p.rad, style::lighten(top, 0.14), top);
+            } else if hv || dn {
+                style::fill_rrect(c, inner, p.rad, [255, 255, 255, if dn { 8 } else { 22 }]);
+            }
+            let ink = if sel { color::BG } else if hv { INK } else { INK_NOTE };
+            c.text_in(inner, pg.label(), p.fh, p.pad / 2, Align::Center, ink);
         }
 
-        // 捲動區。
+        // 捲動區：先畫群組卡片，再畫欄位。
         c.set_clip(Some(lay.view));
+        for g in &lay.groups {
+            let r = g.offset(lay.view.x, lay.view.y - scroll);
+            if r.intersect(&lay.view).h <= 0 {
+                continue;
+            }
+            style::fill_rrect(c, r, p.rad + 4.0, CARD);
+            style::stroke_rrect(c, r, p.rad + 4.0, 1.0, [255, 255, 255, 20]);
+        }
         for cell in &lay.cells {
             let r = cell.rect.offset(lay.view.x, lay.view.y - scroll);
             if r.intersect(&lay.view).h <= 0 {
@@ -675,34 +953,54 @@ impl Panel {
             let capturing = self.is_capture_target(cell.id);
             match cell.kind {
                 CK::Box => {
-                    let bg = if capturing {
-                        CAPTURE
-                    } else if cell.id.is_some() && !cell.enabled {
-                        FIELD_OFF
-                    } else if focused {
-                        FOCUS
-                    } else {
-                        FIELD
-                    };
-                    c.rect(r, bg);
-                    if focused {
-                        c.frame(r, p.ring, RING);
+                    let vis = self.vis_of(cell.id, cell.enabled, focused);
+                    let w = self.widget_of(cell, ctl);
+                    match &w {
+                        Widget::Static => {
+                            style::fill_rrect(c, r, p.rad, if cell.enabled { color::FIELD } else { color::BG });
+                            style::stroke_rrect(c, r, p.rad, 1.0, [255, 255, 255, 18]);
+                            c.text_in(r, &cell.text, cell.fh, p.pad, cell.align, cell.ink);
+                        }
+                        Widget::Field => {
+                            style::field(c, r, p.rad, vis, capturing);
+                            c.text_in(r, &cell.text, cell.fh, p.pad, cell.align, cell.ink);
+                        }
+                        Widget::Button => {
+                            // 已指派的按鈕用開啟色的調子。
+                            style::button(c, r, p.rad, vis, cell.ink == GREEN);
+                            c.text_in(r, &cell.text, cell.fh, p.pad, cell.align, cell.ink);
+                        }
+                        Widget::Switch(on) => {
+                            let sr = Self::control_rect(&w, r, p);
+                            style::draw_switch(c, sr, *on, vis);
+                        }
+                        Widget::Seg { labels, sel } => {
+                            let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+                            let widths = style::seg_widths(&refs, p.fh, seg_pad(p));
+                            style::draw_segmented(c, Self::control_rect(&w, r, p), labels, &widths, *sel, p.fh, vis);
+                        }
                     }
-                    c.text_in(r, &cell.text, cell.fh, p.pad, cell.align, cell.ink);
                 }
-                CK::Header | CK::Label | CK::Note | CK::Tag => {
+                CK::Tag => {
+                    let th = (cell.fh + cell.fh / 2).min(r.h);
+                    let chip = Rect::new(r.x, r.y + (r.h - th) / 2, r.w, th);
+                    style::fill_rrect(c, chip, p.rad, style::with_alpha(color::WARN, 28));
+                    style::stroke_rrect(c, chip, p.rad, 1.0, style::with_alpha(color::WARN, 90));
+                    c.text_in(r, &cell.text, cell.fh, 0, cell.align, cell.ink);
+                }
+                CK::Header | CK::Label | CK::Note => {
                     c.text_in(r, &cell.text, cell.fh, 0, cell.align, cell.ink);
                 }
             }
         }
         c.set_clip(None);
         // 捲軸：畫在捲動區右邊的邊界裡，不超出面板。
-        let max = Self::max_scroll(&lay);
+        let max = Self::max_scroll(lay);
         if max > 0 && lay.view.h > 0 {
-            let bar_w = (p.mar / 2 - 1).max(2);
+            let bar_w = (p.mar / 3).clamp(3, 6);
             let th = ((lay.view.h as i64 * lay.view.h as i64 / lay.content_h as i64) as i32).clamp(p.fh.min(lay.view.h), lay.view.h);
             let ty = lay.view.y + ((lay.view.h - th) as i64 * scroll as i64 / max as i64) as i32;
-            c.rect(Rect::new(lay.view.right() + 1, ty, bar_w, th), SCROLL);
+            style::fill_rrect(c, Rect::new(lay.view.right() + 2, ty, bar_w, th), bar_w as f32 / 2.0, SCROLL);
         }
 
         // 訊息列。
@@ -711,7 +1009,6 @@ impl Panel {
         } else if self.geom.mobile {
             c.text_in(lay.msg, text::PANEL_HINT_TOUCH, p.nfh, 0, Align::Left, INK_NOTE);
         }
-        c.px
     }
 
     fn is_capture_target(&self, id: Option<Id>) -> bool {
@@ -799,7 +1096,7 @@ impl Panel {
             K::Left | K::Right => {
                 let d = if key == K::Left { Dir::Left } else { Dir::Right };
                 match cur {
-                    Some(id @ (Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar)) => {
+                    Some(id @ (Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode)) => {
                         self.adjust(id, if d == Dir::Left { -1 } else { 1 }, cx, &mut out);
                     }
                     _ => self.move_focus(&lay, cur, d),
@@ -952,7 +1249,7 @@ impl Panel {
                 self.msg = text::KB_RESET_DONE.to_string();
                 out.eff.save = true;
             }
-            Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar => self.adjust(id, 1, cx, out),
+            Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode => self.adjust(id, 1, cx, out),
         }
     }
 
@@ -977,6 +1274,14 @@ impl Panel {
             Id::Counter => out.eff.merge(cx.ctl.apply(Action::Counter)),
             Id::Scale => out.eff.merge(cx.ctl.apply(Action::Scale)),
             Id::Toolbar => out.eff.merge(cx.ctl.apply(Action::Toolbar)),
+            Id::Mode => {
+                // 動作只有「下一個」，往前等於繞一圈少一步。單色圖庫不可用時只有 VGA 與 EGA 兩個。
+                let available = if cx.ctl.mono_available { DisplayMode::ALL.len() } else { 2 };
+                let steps = if delta < 0 { available - 1 } else { 1 };
+                for _ in 0..steps {
+                    out.eff.merge(cx.ctl.apply(Action::Mode));
+                }
+            }
             _ => {}
         }
     }
@@ -984,6 +1289,33 @@ impl Panel {
     /// 指標按下（面板座標）。
     pub fn press(&mut self, _x: i32, y: i32) {
         self.press = Some(Press { y, scroll0: self.scroll, dragged: false });
+        // 按下的目標就是指標所在的目標（`hover_at` 追蹤）；觸控沒有 hover，就沒有按下的變深。
+        self.down = self.hover;
+        self.version += 1;
+    }
+
+    /// 指標移動到 `(x, y)`（設定畫面座標）：追蹤滑鼠移過的目標，變了就要重畫。
+    pub fn hover_at(&mut self, x: i32, y: i32, ctl: &Controls, devs: &Devices) {
+        let lay = self.layout(ctl, devs);
+        let h = self.hit(&lay, x - lay.card.x, y - lay.card.y);
+        if h != self.hover {
+            self.hover = h;
+            self.version += 1;
+        }
+    }
+
+    /// 指標離開視窗或設定畫面關閉時清掉移過與按下的狀態。
+    pub fn clear_hover(&mut self) {
+        if self.hover != Hit::None || self.down != Hit::None {
+            self.hover = Hit::None;
+            self.down = Hit::None;
+            self.version += 1;
+        }
+    }
+
+    /// 目前移過的是不是 `id` 這個欄位（測試用）。
+    pub fn hovering(&self, id: Id) -> bool {
+        self.hover == Hit::Cell(id)
     }
 
     /// 指標拖曳。垂直移動超過門檻就變成捲動，放開時不算點擊。
@@ -1002,6 +1334,8 @@ impl Panel {
 
     /// 指標放開。沒有拖曳就是點擊。
     pub fn release(&mut self, x: i32, y: i32, cx: &mut Cx) -> PanelOut {
+        self.down = Hit::None;
+        self.version += 1;
         let Some(pr) = self.press.take() else { return PanelOut::default() };
         if pr.dragged {
             return PanelOut::default();
@@ -1014,6 +1348,7 @@ impl Panel {
         self.version += 1;
         let mut out = PanelOut::default();
         let lay = self.layout(cx.ctl, cx.devs);
+        let (x, y) = (x - lay.card.x, y - lay.card.y);
         let hit = self.hit(&lay, x, y);
         // 重綁中點任何地方：先取消。點到的是別的欄位就接著啟動它。
         let was_capturing = self.capture.is_some();
@@ -1035,10 +1370,66 @@ impl Panel {
         match hit {
             Hit::Close => out.close = true,
             Hit::Tab(p) => self.set_page(p),
-            Hit::Cell(id) => self.activate(id, None, cx, &mut out),
+            Hit::Cell(id) => match self.seg_target(&lay, cx.ctl, id, x) {
+                Some(i) => self.pick_segment(id, i, cx, &mut out),
+                None => self.activate(id, None, cx, &mut out),
+            },
             Hit::None => {}
         }
         out
+    }
+
+    /// 點在分段按鈕的哪一段（0 起算）。不是分段按鈕或停用的回傳 `None`。`x` 是卡片座標。
+    fn seg_target(&self, lay: &Layout, ctl: &Controls, id: Id, x: i32) -> Option<usize> {
+        let cell = lay.cells.iter().find(|c| c.id == Some(id) && c.enabled)?;
+        let w = self.widget_of(cell, ctl);
+        let Widget::Seg { labels, .. } = &w else { return None };
+        let p = pm(&self.geom);
+        let refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let widths = style::seg_widths(&refs, p.fh, seg_pad(&p));
+        let rects = style::seg_rects(Self::control_rect(&w, cell.rect, &p), &widths, 2);
+        let lx = x - lay.view.x;
+        rects.iter().position(|r| lx >= r.x && lx < r.right())
+    }
+
+    /// 點分段按鈕的第 `i` 段。已經是這一段，或只有兩個值時，行為同一般點擊（換到下一個值）；
+    /// 三個值以上點別段就直接換到那一段。
+    fn pick_segment(&mut self, id: Id, i: usize, cx: &mut Cx, out: &mut PanelOut) {
+        self.focus = Some(id);
+        match id {
+            Id::Scale => {
+                let target = SCALES.get(i).copied();
+                match target {
+                    Some(t) if t != cx.ctl.settings.scale => {
+                        // 倍率只有「下一個」的動作，轉到目標為止（最多繞一圈）。
+                        for _ in 0..SCALES.len() {
+                            out.eff.merge(cx.ctl.apply(Action::Scale));
+                            if cx.ctl.settings.scale == t {
+                                break;
+                            }
+                        }
+                    }
+                    _ => self.adjust(id, 1, cx, out),
+                }
+            }
+            Id::Mode => match DisplayMode::ALL.get(i).copied() {
+                Some(t) if t.is_mono() && !cx.ctl.mono_available => self.msg = text::ST_MONO_MISSING.to_string(),
+                Some(t) if t != cx.ctl.settings.mode => {
+                    for _ in 0..DisplayMode::ALL.len() {
+                        out.eff.merge(cx.ctl.apply(Action::Mode));
+                        if cx.ctl.settings.mode == t {
+                            break;
+                        }
+                    }
+                }
+                _ => self.adjust(id, 1, cx, out),
+            },
+            Id::Opt(o) if OPTIONS[o].implemented && OPTIONS[o].values() > 2 && i < OPTIONS[o].values() as usize && cx.ctl.settings.opt_value(o) as usize != i => {
+                cx.ctl.settings.set_opt_value(o, i as u8);
+                out.eff.save = true;
+            }
+            _ => self.activate(id, None, cx, out),
+        }
     }
 
     fn hit(&self, lay: &Layout, x: i32, y: i32) -> Hit {
@@ -1206,7 +1597,8 @@ mod tests {
 
     #[test]
     fn rendered_text_stays_inside_cells_and_the_viewport() {
-        // 畫出來的像素只在標題、頁籤、捲動區與訊息列之內：捲動區與頁籤之間、訊息列與捲動區之間的縫是背景色。
+        // 畫出來的像素只在標題、頁籤、捲動區與訊息列之內：卡片裡捲動區與頁籤之間、訊息列與捲動區之間的縫，
+        // 以及卡片左右的留白，都是卡片底色。
         for (w, h, mobile, dp) in [(640, 400, false, 1.0), (960, 600, false, 1.0), (2400, 880, true, 2.5)] {
             for page in PAGES {
                 let mut c = ctl();
@@ -1225,22 +1617,22 @@ mod tests {
                     let lay = pn.layout(&c, &d);
                     let px = pn.render(&c, &d);
                     let p = pm(&pn.geom);
-                    // 捲動區上方的縫（頁籤與捲動區之間）和下方的縫（捲動區與訊息列之間）全是背景色。
+                    let at = |x: i32, y: i32| {
+                        let o = (((lay.card.y + y) * w + lay.card.x + x) * 4) as usize;
+                        [px[o], px[o + 1], px[o + 2], px[o + 3]]
+                    };
                     let gap_rows = [(lay.tabs[0].1.bottom()..lay.view.y), (lay.view.bottom()..lay.msg.y)];
                     for rows in gap_rows {
                         for y in rows {
-                            for x in 0..w {
-                                let o = ((y * w + x) * 4) as usize;
-                                // 捲軸在縫的橫向外側，但仍在捲動區的列範圍；縫的列不該有任何非背景像素。
-                                assert_eq!(&px[o..o + 4], &BG, "{page:?} {w}x{h}：縫 ({x},{y}) 有東西");
+                            for x in 2..lay.card.w - 2 {
+                                assert_eq!(at(x, y), BG, "{page:?} {w}x{h}：縫 ({x},{y}) 有東西");
                             }
                         }
                     }
-                    // 左右邊界之外全是背景。
-                    for y in 0..h {
-                        for x in (0..p.mar / 2).chain(w - p.mar / 2..w) {
-                            let o = ((y * w + x) * 4) as usize;
-                            assert_eq!(&px[o..o + 4], &BG, "{page:?} {w}x{h}：邊界 ({x},{y})");
+                    // 卡片左右的留白（避開圓角與邊線）是底色。
+                    for y in 16..lay.card.h - 16 {
+                        for x in (2..p.mar / 2).chain(lay.card.w - p.mar / 2..lay.card.w - 2) {
+                            assert_eq!(at(x, y), BG, "{page:?} {w}x{h}：留白 ({x},{y})");
                         }
                     }
                 }
@@ -1350,7 +1742,7 @@ mod tests {
         let mut p = panel(Page::Game);
         assert!(key(&mut p, &mut c, &mut d, K::Escape).close);
         let lay = p.layout(&c, &d);
-        let r = lay.close;
+        let r = lay.close.offset(lay.card.x, lay.card.y);
         assert!(p.click(r.x + 1, r.y + 1, &mut Cx { ctl: &mut c, devs: &mut d }).close);
     }
 
@@ -1359,7 +1751,8 @@ mod tests {
         let (mut c, mut d) = (ctl(), devs2());
         let mut p = panel(Page::Pad);
         for pg in PAGES {
-            let r = p.layout(&c, &d).tabs.iter().find(|(x, _)| *x == pg).unwrap().1;
+            let lay = p.layout(&c, &d);
+            let r = lay.tabs.iter().find(|(x, _)| *x == pg).unwrap().1.offset(lay.card.x, lay.card.y);
             let out = p.click(r.x + r.w / 2, r.y + r.h / 2, &mut Cx { ctl: &mut c, devs: &mut d });
             assert!(!out.close);
             assert_eq!(p.page(), pg);
@@ -1667,7 +2060,7 @@ mod tests {
         }
         let tags = cells.iter().filter(|i| i.text == "開發中").count();
         assert_eq!(tags, OPTIONS.iter().filter(|o| !o.implemented).count());
-        assert_eq!(tags, 10);
+        assert_eq!(tags, 9, "打擊回饋已實作，只剩九個開發中");
         // 沒實作的欄位是灰的、不能聚焦。
         for (i, o) in OPTIONS.iter().enumerate() {
             let cell = cells.iter().find(|x| x.id == Some(Id::Opt(i))).unwrap();
@@ -1760,6 +2153,42 @@ mod tests {
     }
 
     #[test]
+    fn display_mode_row_goes_through_the_same_action_as_the_hotkey() {
+        let (mut c, mut d) = (ctl(), Devices::new());
+        let mut p = panel(Page::Display);
+        assert_eq!(find(&p, &c, &d, Id::Mode).text, "VGA");
+        // 四段，點中心落在第三段。點分段按鈕直接到那一段；鍵盤的左右鍵往前往後。
+        let out = click_id(&mut p, &mut c, &mut d, Id::Mode);
+        assert_eq!(c.settings.mode, DisplayMode::Cga);
+        assert!(out.eff.save);
+        let out = {
+            let mut cx = Cx { ctl: &mut c, devs: &mut d };
+            let mut out = PanelOut::default();
+            p.pick_segment(Id::Mode, 3, &mut cx, &mut out);
+            out
+        };
+        assert_eq!(c.settings.mode, DisplayMode::Mga);
+        assert!(out.eff.save);
+        let mut out = PanelOut::default();
+        p.adjust(Id::Mode, -1, &mut Cx { ctl: &mut c, devs: &mut d }, &mut out);
+        assert_eq!(c.settings.mode, DisplayMode::Cga);
+    }
+
+    #[test]
+    fn display_mode_row_refuses_mono_when_the_bank_files_are_missing() {
+        let (mut c, mut d) = (ctl(), Devices::new());
+        c.set_mono_available(false);
+        let mut p = panel(Page::Display);
+        let mut out = PanelOut::default();
+        p.pick_segment(Id::Mode, 2, &mut Cx { ctl: &mut c, devs: &mut d }, &mut out);
+        assert_eq!(c.settings.mode, DisplayMode::Vga, "CGA 不可選");
+        assert_eq!(p.msg, text::ST_MONO_MISSING);
+        let mut out = PanelOut::default();
+        p.adjust(Id::Mode, -1, &mut Cx { ctl: &mut c, devs: &mut d }, &mut out);
+        assert_eq!(c.settings.mode, DisplayMode::Ega, "只有兩個可選，往前也是換到另一個");
+    }
+
+    #[test]
     fn mobile_display_page_has_no_scale_row() {
         let (c, d) = (ctl(), Devices::new());
         let p = Panel::new(Page::Display, 2400, 880, true, 2.5);
@@ -1831,24 +2260,59 @@ mod tests {
     // -------------------------------------------------------------------
 
     #[test]
-    fn render_has_the_panel_size_is_opaque_and_differs_by_page_and_state() {
+    fn render_dims_the_game_to_60_percent_and_centres_an_opaque_card_with_a_shadow() {
         let (mut c, d) = (ctl(), devs2());
+        let (w, h) = (1600, 1000);
         let mut seen = std::collections::HashSet::new();
         for page in PAGES {
-            let p = panel(page);
+            let p = Panel::new(page, w, h, false, 1.0);
             let a = p.render(&c, &d);
-            assert_eq!(a.len(), 960 * 600 * 4);
-            assert!(a.chunks_exact(4).all(|px| px[3] == 255));
-            assert!(a.chunks_exact(4).filter(|px| px[..3] != BG[..3]).count() > 5000, "{page:?} 畫得太空");
+            assert_eq!(a.len(), (w * h * 4) as usize);
+            let at = |x: i32, y: i32| {
+                let o = ((y * w + x) * 4) as usize;
+                [a[o], a[o + 1], a[o + 2], a[o + 3]]
+            };
+            // 遠處的角落是調暗 60% 的半透明黑。
+            assert_eq!(at(2, 2), [0, 0, 0, DIM_ALPHA], "{page:?}");
+            assert_eq!(DIM_ALPHA, 153, "60% 的 255");
+            // 卡片置中且不透明，四周留邊，陰影讓卡片外緣附近比純調暗更深。
+            let lay = p.layout(&c, &d);
+            let card = lay.card;
+            assert_eq!(card.x * 2 + card.w, w, "水平置中");
+            assert_eq!(card.y * 2 + card.h, h, "垂直置中");
+            assert!(card.x > 0 && card.y > 0 && card.w < w && card.h < h, "四周留一圈");
+            assert_eq!(at(card.x + card.w / 2, card.y + 3)[3], 255, "卡片內不透明");
+            assert!(at(card.x + card.w / 2, card.y + card.h + 6)[3] > DIM_ALPHA, "卡片下緣有陰影");
+            assert!(a.chunks_exact(4).filter(|px| px[3] == 255).count() > 200_000, "{page:?} 卡片畫得太空");
             assert!(seen.insert(a.iter().map(|b| *b as u64).sum::<u64>() * 31 + a[1000] as u64), "{page:?} 和別頁一樣");
         }
-        let p = panel(Page::Display);
+        let p = Panel::new(Page::Display, w, h, false, 1.0);
         let a = p.render(&c, &d);
         c.settings.tween = false;
         assert_ne!(a, p.render(&c, &d), "設定值改變，畫面跟著變");
-        let mut q = panel(Page::Display);
+        let mut q = Panel::new(Page::Display, w, h, false, 1.0);
         q.msg = "訊息".into();
         assert_ne!(a, q.render(&c, &d));
+    }
+
+    #[test]
+    fn opening_fades_in_over_120_ms_without_touching_the_pixels_beneath() {
+        assert_eq!(fade_in(0), 0.0);
+        assert!((fade_in(60) - 0.5).abs() < 1e-6);
+        assert_eq!(fade_in(120), 1.0);
+        assert_eq!(fade_in(5000), 1.0);
+        assert_eq!((fade_step(0), fade_step(60), fade_step(120), fade_step(999)), (0, FADE_STEPS / 2, FADE_STEPS, FADE_STEPS));
+        let (c, d) = (ctl(), devs2());
+        let p = panel(Page::Game);
+        let full = p.render(&c, &d);
+        let half = p.render_faded(&c, &d, 0.5);
+        let none = p.render_faded(&c, &d, 0.0);
+        assert_eq!(full, p.render_faded(&c, &d, 1.0));
+        assert!(none.chunks_exact(4).all(|px| px[3] == 0), "淡入第一刻完全透明");
+        for (f, hf) in full.chunks_exact(4).zip(half.chunks_exact(4)) {
+            assert_eq!(f[..3], hf[..3], "只改不透明度，顏色不動");
+            assert!((hf[3] as i32 - (f[3] as f32 * 0.5).round() as i32).abs() <= 1);
+        }
     }
 
     #[test]
@@ -1860,7 +2324,182 @@ mod tests {
         let capturing = p.render(&c, &d);
         assert_ne!(idle, capturing);
         let r = find(&p, &c, &d, Id::Key { player: 0, act: Act::Up }).rect;
-        let o = (((r.y + 2) * 960 + r.x + r.w - 6) * 4) as usize;
-        assert_eq!(&capturing[o..o + 4], &CAPTURE, "重綁中的欄位用琥珀色底");
+        let at = |buf: &[u8], x: i32, y: i32| {
+            let o = ((y * 960 + x) * 4) as usize;
+            [buf[o], buf[o + 1], buf[o + 2]]
+        };
+        // 欄位左側靠近邊緣、字之前的位置。
+        let (px, py) = (r.x + 5, r.y + r.h / 2);
+        let (a, b) = (at(&idle, px, py), at(&capturing, px, py));
+        assert!(b[0] > b[2] + 8, "重綁中的欄位偏琥珀色：{b:?}");
+        assert!(a[2] >= a[0], "閒置的欄位是藍灰色：{a:?}");
+        // 鍵盤焦點畫主色外框：閒置時焦點在第一個欄位，上緣外一圈是主色；沒有焦點的欄位沒有。
+        let up = find(&p, &c, &d, Id::Key { player: 0, act: Act::Up });
+        assert!(up.focused);
+        let ring = at(&idle, up.rect.x + up.rect.w / 2, up.rect.y - 1);
+        assert!(ring[2] > 200 && ring[2] > ring[0] + 80, "焦點外框是主色：{ring:?}");
+        let down = find(&p, &c, &d, Id::Key { player: 0, act: Act::Down });
+        assert!(!down.focused);
+        let plain = at(&idle, down.rect.x + down.rect.w / 2, down.rect.y - 1);
+        assert!(plain[2] < 150, "沒有焦點的欄位沒有外框：{plain:?}");
+    }
+
+    #[test]
+    fn controls_are_switches_and_segments_not_on_off_words() {
+        let (c, d) = (ctl(), Devices::new());
+        let p = Panel::new(Page::Game, 960, 1600, false, 1.0);
+        let lay = p.layout(&c, &d);
+        let cell = |id: Id| lay.cells.iter().find(|x| x.id == Some(id)).unwrap();
+        for (i, o) in OPTIONS.iter().enumerate() {
+            let w = p.widget_of(cell(Id::Opt(i)), &c);
+            match o.kind {
+                Kind::Toggle => assert!(matches!(w, Widget::Switch(_)), "{} 布林選項畫成開關", o.id),
+                Kind::Size => assert!(matches!(&w, Widget::Seg { labels, .. } if labels.len() == 3), "{} 戰場大小是三段", o.id),
+                Kind::Feel => assert!(matches!(&w, Widget::Seg { labels, sel: Some(1) } if labels == &["原版時序", "新"]), "{w:?} 手感預設是新"),
+            }
+        }
+        let dp = Panel::new(Page::Display, 960, 600, false, 1.0);
+        let lay = dp.layout(&c, &d);
+        let cell = |id: Id| lay.cells.iter().find(|x| x.id == Some(id)).unwrap();
+        assert_eq!(dp.widget_of(cell(Id::Tween), &c), Widget::Switch(true));
+        assert_eq!(dp.widget_of(cell(Id::Counter), &c), Widget::Switch(false));
+        assert_eq!(dp.widget_of(cell(Id::Toolbar), &c), Widget::Switch(true));
+        match dp.widget_of(cell(Id::Scale), &c) {
+            Widget::Seg { labels, sel } => {
+                assert_eq!(labels, vec!["2 倍", "3 倍", "4 倍", "5 倍"]);
+                assert_eq!(sel, Some(1), "預設 3 倍");
+            }
+            w => panic!("倍率應該是分段按鈕：{w:?}"),
+        }
+    }
+
+    #[test]
+    fn clicking_a_segment_picks_it_directly_and_a_switch_just_toggles() {
+        let (mut c, mut d) = (ctl(), Devices::new());
+        let mut p = panel(Page::Display);
+        let r = find(&p, &c, &d, Id::Scale).rect;
+        let refs = ["2 倍", "3 倍", "4 倍", "5 倍"];
+        let pm_ = pm(&p.geom);
+        let widths = style::seg_widths(&refs, pm_.fh, seg_pad(&pm_));
+        let segs = style::seg_rects(Panel::control_rect(&Widget::Seg { labels: vec![], sel: None }, r, &pm_), &widths, 2);
+        // 點最右邊的 5 倍：直接到 5，不經過 4。
+        let (x, y) = (segs[3].x + segs[3].w / 2, r.y + r.h / 2);
+        let out = p.click(x, y, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert_eq!(c.settings.scale, 5);
+        assert!(out.eff.save && out.eff.resize == crate::controls::Resize::Scale);
+        // 點最左邊的 2 倍。
+        let (x, y) = (segs[0].x + 3, r.y + r.h / 2);
+        p.click(x, y, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert_eq!(c.settings.scale, 2);
+        // 再點一次已選的段：換到下一個值（行為同一般點擊）。
+        p.click(x, y, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert_eq!(c.settings.scale, 3);
+        // 開關：點任何位置都切換。
+        let t = find(&p, &c, &d, Id::Counter).rect;
+        p.click(t.x + 2, t.y + t.h / 2, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert!(c.settings.counter);
+    }
+
+    #[test]
+    fn hover_and_press_change_only_the_target_control() {
+        let (c, d) = (ctl(), devs2());
+        let mut p = Panel::new(Page::Game, 960, 1600, false, 1.0);
+        let id = Id::Opt(crate::options::INVINCIBLE_INDEX);
+        let r = find(&p, &c, &d, id).rect;
+        let idle = p.render(&c, &d);
+        let v0 = p.version();
+        p.hover_at(r.x + r.w / 2, r.y + r.h / 2, &c, &d);
+        assert!(p.hovering(id) && p.version() > v0);
+        let hover = p.render(&c, &d);
+        assert_ne!(idle, hover, "移過時變亮");
+        let v1 = p.version();
+        p.hover_at(r.x + r.w / 2 + 1, r.y + r.h / 2, &c, &d);
+        assert_eq!(p.version(), v1, "還在同一個目標上，不重畫");
+        p.press(r.x + 2, r.y + 2);
+        let down = p.render(&c, &d);
+        assert_ne!(hover, down, "按下時變深");
+        p.clear_hover();
+        assert!(!p.hovering(id));
+        // 移到沒有控制項的地方：沒有 hover。
+        p.hover_at(2, 2, &c, &d);
+        assert!(!p.hovering(id));
+    }
+
+    #[test]
+    fn tabs_use_the_primary_color_for_the_selected_page() {
+        let (c, d) = (ctl(), Devices::new());
+        let p = panel(Page::Keyboard);
+        let lay = p.layout(&c, &d);
+        let img = p.render(&c, &d);
+        let at = |x: i32, y: i32| {
+            let o = (((lay.card.y + y) * 960 + lay.card.x + x) * 4) as usize;
+            [img[o], img[o + 1], img[o + 2]]
+        };
+        let sel = lay.tabs.iter().find(|(pg, _)| *pg == Page::Keyboard).unwrap().1;
+        let other = lay.tabs.iter().find(|(pg, _)| *pg == Page::Pad).unwrap().1;
+        let s = at(sel.x + 4, sel.y + sel.h / 2);
+        let o = at(other.x + 4, other.y + other.h / 2);
+        assert!(s[2] > 200 && s[2] > o[2] + 100, "選中的頁籤是主色：{s:?} {o:?}");
+    }
+
+    /// 存圖（`RS2_SHOTS` 指定目錄才存）：滑鼠移過、按下、重綁等待與捲動的狀態，疊在假的遊戲畫面上。
+    #[test]
+    fn ui_shots_panel_states() {
+        let Some(dir) = std::env::var("RS2_SHOTS").ok().map(std::path::PathBuf::from) else { return };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (1280, 800);
+        // 假的遊戲畫面：橘紅的漸層加幾條亮線。
+        let backdrop = || {
+            let mut v = vec![0u8; (w * h * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let o = ((y * w + x) * 4) as usize;
+                    let t = y as f32 / h as f32;
+                    let stripe = if (x / 40 + y / 40) % 2 == 0 { 18.0 } else { 0.0 };
+                    v[o..o + 4].copy_from_slice(&[(230.0 - 120.0 * t + stripe) as u8, (110.0 - 70.0 * t) as u8, (30.0 + 20.0 * t) as u8, 255]);
+                }
+            }
+            v
+        };
+        let compose = |layer: &[u8]| {
+            let mut bg = backdrop();
+            for (d, s) in bg.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
+                style::over(d, [s[0], s[1], s[2], s[3]], 1.0);
+            }
+            bg
+        };
+        let (mut c, mut d) = (ctl(), devs2());
+        // 遊戲頁：滑鼠移到「無敵」的開關，再按下「手感」的分段按鈕。
+        let mut p = Panel::new(Page::Game, w, h, false, 1.0);
+        let inv = find(&p, &c, &d, Id::Opt(crate::options::INVINCIBLE_INDEX)).rect;
+        p.hover_at(inv.x + inv.w - 10, inv.y + inv.h / 2, &c, &d);
+        let a = compose(&p.render(&c, &d));
+        std::fs::write(dir.join("panel_game_hover_switch.png"), rs2_gfx::png::encode_rgba(w as usize, h as usize, &a)).unwrap();
+        let feel = find(&p, &c, &d, Id::Opt(FEEL_INDEX)).rect;
+        p.hover_at(feel.x + 8, feel.y + feel.h / 2, &c, &d);
+        p.press(feel.x + 8, feel.y + feel.h / 2);
+        c.settings.set_opt_value(crate::options::INVINCIBLE_INDEX, 1);
+        let a = compose(&p.render(&c, &d));
+        std::fs::write(dir.join("panel_game_press_segment_switch_on.png"), rs2_gfx::png::encode_rgba(w as usize, h as usize, &a)).unwrap();
+        // 鍵盤頁：重綁等待中、訊息列有字。
+        let mut k = Panel::new(Page::Keyboard, w, h, false, 1.0);
+        click_id(&mut k, &mut c, &mut d, Id::Key { player: 0, act: Act::Fire });
+        k.msg = "右 Shift 已綁定第 1 人開火，沒有覆寫。".into();
+        let a = compose(&k.render(&c, &d));
+        std::fs::write(dir.join("panel_keyboard_capturing.png"), rs2_gfx::png::encode_rgba(w as usize, h as usize, &a)).unwrap();
+        // 小視窗：鍵盤頁要捲動，捲到中間。
+        let mut s = Panel::new(Page::Keyboard, 640, 400, false, 1.0);
+        s.scroll = 90;
+        let small = {
+            let mut v = vec![40u8; 640 * 400 * 4];
+            for (dst, src) in v.chunks_exact_mut(4).zip(s.render(&c, &d).chunks_exact(4)) {
+                style::over(dst, [src[0], src[1], src[2], src[3]], 1.0);
+            }
+            v
+        };
+        std::fs::write(dir.join("panel_keyboard_small_window_scrolled.png"), rs2_gfx::png::encode_rgba(640, 400, &small)).unwrap();
+        // 淡入中途（60 毫秒）。
+        let half = compose(&Panel::new(Page::Display, w, h, false, 1.0).render_faded(&c, &d, fade_in(60)));
+        std::fs::write(dir.join("panel_fade_in_60ms.png"), rs2_gfx::png::encode_rgba(w as usize, h as usize, &half)).unwrap();
     }
 }

@@ -169,9 +169,23 @@ wait_log '\[window\]' 240
 sleep 5
 alive "第二次啟動"
 shot 11-second-launch
+# ANR 的處置要幾秒才輪到，等過這段再看程序還在不在。傾印存下來才查得到主執行緒卡在哪。
+sleep 15
 
 adb logcat -d > /out/logcat-full.txt
 adb logcat -d -s rs2:* SDL:* AndroidRuntime:* > /out/logcat.txt
+anr="$(grep -c 'ActivityManager: ANR in' /out/logcat-full.txt || true)"
+echo "ANR 紀錄：$anr 筆"
+if [ "$anr" != 0 ]; then
+  adb root >/dev/null 2>&1 || true
+  adb wait-for-device
+  sleep 3
+  rm -rf /out/anr
+  adb pull /data/anr /out/anr >/dev/null 2>&1 || echo "取不到 /data/anr"
+  grep -E 'ActivityManager: (Reason|Load)' /out/logcat-full.txt | cut -d: -f4- | cut -c1-150
+  fail "第二次啟動有 ANR"
+fi
+alive "第二次啟動（等過 ANR）"
 if grep -qE 'FATAL EXCEPTION|當掉|SIGSEGV|signal 11' /out/logcat-full.txt; then
   fail "logcat 有崩潰紀錄"
 fi

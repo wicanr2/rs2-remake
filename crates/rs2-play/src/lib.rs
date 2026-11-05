@@ -10,6 +10,7 @@ pub mod app;
 pub mod args;
 pub mod audio;
 pub mod controls;
+pub mod feedback;
 pub mod font;
 pub mod input;
 pub mod keymap;

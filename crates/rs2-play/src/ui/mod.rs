@@ -1,7 +1,10 @@
 //! 工具列與設定畫面共用的繪圖部件：中文點陣字型、字串表、RGBA 畫布。全部不依賴 SDL 子系統。
 
 pub mod font;
+pub mod hud;
+pub mod loading;
 pub mod panel;
+pub mod style;
 pub mod text;
 
 /// 整數矩形，視窗座標。
@@ -285,9 +288,13 @@ mod tests {
     #[test]
     fn e6_every_ui_character_has_a_bitmap() {
         // keymap.rs 與 settings.rs 的中文是設定檔載入警告（寫到 stderr），不是介面，所以不掃。介面用的標籤都在 text.rs。
-        let files: [(&str, &str); 7] = [
+        let files: [(&str, &str); 11] = [
             ("ui/text.rs", include_str!("text.rs")),
             ("ui/panel.rs", include_str!("panel.rs")),
+            ("ui/hud.rs", include_str!("hud.rs")),
+            ("ui/style.rs", include_str!("style.rs")),
+            ("ui/loading.rs", include_str!("loading.rs")),
+            ("feedback.rs", include_str!("../feedback.rs")),
             ("toolbar.rs", include_str!("../toolbar.rs")),
             ("touch.rs", include_str!("../touch.rs")),
             ("controls.rs", include_str!("../controls.rs")),

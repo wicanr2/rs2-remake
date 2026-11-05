@@ -549,6 +549,101 @@ fn blit_inv(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32, bg: [u8; 3]) {
     }
 }
 
+/// 圓角矩形（垂直漸層，邊緣反鋸齒）疊到顯示頁。範圍夾在遊戲區 `[0, 1280) x [0, 760)` 內。
+fn fill_round_grad(page: &mut Canvas, x0: i32, y0: i32, w: i32, h: i32, rad: f32, top: [u8; 3], bot: [u8; 3], edge: [u8; 3]) {
+    if page.is_empty() || w <= 0 || h <= 0 {
+        return;
+    }
+    let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
+    let rad = rad.min(hw).min(hh);
+    for iy in 0..h {
+        let y = y0 + iy;
+        if y < 0 || y >= GAME_ROWS {
+            continue;
+        }
+        for ix in 0..w {
+            let x = x0 + ix;
+            if x < 0 || x >= PW {
+                continue;
+            }
+            let (px, py) = (ix as f32 + 0.5 - hw, iy as f32 + 0.5 - hh);
+            let (qx, qy) = (px.abs() - (hw - rad), py.abs() - (hh - rad));
+            let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - rad;
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            if cov <= 0.0 {
+                continue;
+            }
+            let t = iy as f32 / (h - 1).max(1) as f32;
+            let mut c = [0u8; 3];
+            for k in 0..3 {
+                c[k] = (top[k] as f32 + (bot[k] as f32 - top[k] as f32) * t).round() as u8;
+            }
+            // 內側 1.5 像素內漸變成邊線色。
+            let e = (1.0 - (-d / 1.5).clamp(0.0, 1.0)) * 0.55;
+            for k in 0..3 {
+                c[k] = (c[k] as f32 + (edge[k] as f32 - c[k] as f32) * e).round() as u8;
+            }
+            let o = ((y * PW + x) as usize) * 4;
+            over(&mut page.px[o..o + 4], &[c[0], c[1], c[2], (cov * 255.0).round() as u8]);
+        }
+    }
+}
+
+/// 把圖「相對於它的底色」加亮疊在頁面上：選單字樣是不透明的圖，底色是左上角那個像素（近黑），字是銀灰色。
+/// 每個像素減掉底色後（負值當 0）加到頁面上，所以底色處露出後面的高亮條，字照樣是亮的，斜角的明暗也保留。
+fn add_over_bg(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32) {
+    if page.is_empty() || img.w == 0 || img.h == 0 {
+        return;
+    }
+    let bg = [img.rgba[0] as i32, img.rgba[1] as i32, img.rgba[2] as i32];
+    let xs = (-x0).max(0);
+    let xe = (img.w as i32).min(PW - x0);
+    if xs >= xe {
+        return;
+    }
+    for iy in 0..img.h as i32 {
+        let y = y0 + iy;
+        if y < 0 {
+            continue;
+        }
+        if y >= GAME_ROWS {
+            break;
+        }
+        let so = iy as usize * img.w;
+        let srow = &img.rgba[(so + xs as usize) * 4..(so + xe as usize) * 4];
+        let drow = &mut page.px[((y * PW + x0 + xs) as usize) * 4..((y * PW + x0 + xe) as usize) * 4];
+        for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
+            let a = s[3] as i32;
+            for k in 0..3 {
+                let delta = (s[k] as i32 - bg[k]).max(0) * a / 255;
+                d[k] = (d[k] as i32 + delta).min(255) as u8;
+            }
+            d[3] = 255;
+        }
+    }
+}
+
+/// 標題選單選中列（`S18C6E`）在 HD 介面的畫法（規格 005「HD 介面」）：不取反，字樣照常亮著（文字不反相），
+/// 後面墊一條圓角高亮條。高亮條正好是圖的矩形：選單不清畫面，沒選中的列用 `S18C0A` 覆寫自己的矩形，
+/// 條若超出矩形，選取移到別列時會留下殘影。
+pub fn menu_highlight(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: &BlitCmd) {
+    let x0 = sx(c.x) * 8 * S;
+    let y0 = sx(c.y) * S;
+    if mem.pages[pg(c)].is_empty() {
+        return;
+    }
+    if let Some(img) = hd.image(Lib::My, c.index, pal, assets) {
+        let page = &mut mem.pages[pg(c)];
+        // 先清成黑，再墊高亮條，最後疊字：和 `S18C0A` 一樣整個矩形都被寫到。
+        fill_round_grad(page, x0, y0, img.w as i32, img.h as i32, 0.0, [0, 0, 0], [0, 0, 0], [0, 0, 0]);
+        fill_round_grad(page, x0, y0, img.w as i32, img.h as i32, 12.0 * S as f32 / 4.0, [66, 140, 236], [40, 98, 190], [150, 200, 255]);
+        add_over_bg(page, &img, x0, y0);
+    }
+    if restores_map_mask(c.op) {
+        mem.map_mask = 0x0F;
+    }
+}
+
 /// `sub_18ACE`（`sub_196E5`）：MAP 圖塊寫進暫存區。原版固定 10 列、每列 1 位元組，也就是 8x10 邏輯像素，
 /// HD 圖塊是 32x40，原樣（含 alpha）寫入，不經過 `scratch_put` 的偶數位元組規則（那條規則會把寬度 1 的圖丟掉）。
 fn scratch_put_tile(sc: &mut Canvas, img: &HdImg, c: &BlitCmd) {
@@ -1055,5 +1150,53 @@ mod tests {
         assert_eq!(px(46 * 8 * S - 1, 209 * S + 3), 0);
         assert_eq!(px(46 * 8 * S, 209 * S), 9, "第 46 位元組之後保留");
         assert_eq!(px(0, 210 * S), 9);
+    }
+
+    #[test]
+    fn menu_highlight_bar_is_rounded_gradient_and_stays_inside_its_rect() {
+        let mut p = page();
+        fill_round_grad(&mut p, 100, 50, 80, 24, 8.0, [200, 0, 0], [0, 0, 200], [255, 255, 255]);
+        let top = at(&p, 140, 53);
+        let bottom = at(&p, 140, 70);
+        assert!(top[0] > top[2] && bottom[2] > bottom[0], "上紅下藍的漸層：{top:?} {bottom:?}");
+        assert_eq!(top[3], 255);
+        assert_eq!(at(&p, 100, 50), [0, 0, 0, 255], "圓角把角落切掉，矩形外與角落不動");
+        assert_eq!(at(&p, 99, 60), [0, 0, 0, 255]);
+        assert_eq!(at(&p, 180, 60), [0, 0, 0, 255]);
+        assert_eq!(at(&p, 140, 74), [0, 0, 0, 255]);
+        // 邊緣反鋸齒：圓角弧線上有中間色。
+        let mid = (100..110).flat_map(|x| (50..58).map(move |y| (x, y))).filter(|&(x, y)| {
+            let c = at(&p, x, y);
+            c[0] > 20 && c[0] < 180
+        });
+        assert!(mid.count() >= 4);
+        // 超出遊戲區（第 760 列起是 HUD）的部分不畫。
+        let mut q = page();
+        fill_round_grad(&mut q, 0, GAME_ROWS - 4, 40, 20, 4.0, [255, 255, 255], [255, 255, 255], [255, 255, 255]);
+        assert_eq!(at(&q, 20, GAME_ROWS - 1)[0], 255);
+        assert_eq!(at(&q, 20, GAME_ROWS), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn menu_text_is_added_over_the_bar_instead_of_inverted() {
+        let mut p = page();
+        fill_round_grad(&mut p, 10, 10, 8, 4, 0.0, [66, 140, 236], [66, 140, 236], [66, 140, 236]);
+        // 8x4 的不透明圖：底色 (1,1,1)，兩個銀灰色的字點。
+        let mut px = [[1u8, 1, 1, 255]; 32];
+        px[9] = [158, 166, 173, 255];
+        px[10] = [255, 255, 255, 255];
+        let im = img(8, 4, &px);
+        add_over_bg(&mut p, &im, 10, 10);
+        assert_eq!(at(&p, 10, 10), [66, 140, 236, 255], "底色處露出高亮條");
+        assert_eq!(at(&p, 11, 11), [223, 255, 255, 255], "字加亮並夾在 255，不取反");
+        assert_eq!(at(&p, 12, 11), [255, 255, 255, 255]);
+        assert_eq!(at(&p, 9, 10), [0, 0, 0, 255], "圖的矩形外不動");
+        // 部分透明的像素只加一部分。
+        let mut q = page();
+        let mut with_bg = vec![[0u8, 0, 0, 255]];
+        with_bg.push([201, 201, 201, 128]);
+        let two = img(2, 1, &with_bg);
+        add_over_bg(&mut q, &two, 0, 0);
+        assert_eq!(at(&q, 1, 0)[0], (201u32 * 128 / 255) as u8);
     }
 }

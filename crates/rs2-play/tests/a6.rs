@@ -269,6 +269,46 @@ fn a6_hd_group() {
     println!("A6 HD：{compared} 筆雜湊與原版圖相同");
 }
 
+/// 規格 005 E7：HD 介面（HUD、選單高亮、打擊回饋）的開關都不改每步雜湊。
+/// 有 HD 資料夾才跑。打擊回饋預設開，HUD 與回饋在 HD 輸出時自動生效；原版圖當基準。
+#[test]
+#[ignore]
+fn a6_hd_ui_hud_and_hit_feedback_do_not_change_the_hash() {
+    let Ok(hd) = std::env::var("RS2_HD") else {
+        println!("A6 HD 介面：沒有 RS2_HD，略過");
+        return;
+    };
+    let receipt = boss_receipt();
+    let rp = receipt.to_str().unwrap();
+    let steps = BOSS_STEPS.to_string();
+    let base = run("hdui-ref-orig", &["--start", "newgame", "--replay", rp, "--tween", "off", "--counter", "off", "--headless-steps", &steps]);
+    assert_eq!(base.hashes.len(), BOSS_STEPS);
+    let mut compared = 0;
+    for (feedback, counter) in [(true, false), (false, false), (true, true)] {
+        let tag = format!("hdui-feedback-{}-counter-{}", on(feedback), on(counter));
+        let r = run(&tag, &["--start", "newgame", "--replay", rp, "--hd", &hd, "--feedback", on(feedback), "--counter", on(counter), "--headless-steps", &steps]);
+        assert!(r.stderr.contains("HD true"), "{tag} 沒有啟用 HD：\n{}", r.stderr);
+        assert_full_path(&tag, &r, BOSS_STEPS);
+        assert_eq!(r.hashes, base.hashes, "{tag} 的 Dseg 雜湊與原版圖不同");
+        compared += r.hashes.len();
+    }
+    // 中途切換打擊回饋與 HD。
+    let r = run(
+        "hdui-toggles",
+        &["--start", "newgame", "--replay", rp, "--hd", &hd, "--headless-steps", &steps, "--toggle-at", "60:feedback", "--toggle-at", "300:hd", "--toggle-at", "500:feedback", "--toggle-at", "900:hd", "--toggle-at", "1000:feedback"],
+    );
+    assert_eq!(r.hashes, base.hashes, "打擊回饋與 HD 中途切換改變了 Dseg 雜湊");
+    compared += r.hashes.len();
+    // 標題選單高亮：從標題起跑（開場、示範、選單）。
+    let t = TITLE_STEPS.to_string();
+    let ref_title = run("hdui-title-ref", &["--tween", "off", "--headless-steps", &t]);
+    let hd_title = run("hdui-title-hd", &["--hd", &hd, "--headless-steps", &t]);
+    assert_eq!(hd_title.hashes, ref_title.hashes, "HD 的標題與選單改變了 Dseg 雜湊");
+    compared += hd_title.hashes.len();
+    assert!(compared > 0, "比對筆數為 0");
+    println!("A6 HD 介面：{compared} 筆雜湊與原版圖相同（HUD、打擊回饋開關、中途切換、標題選單）");
+}
+
 const TITLE_STEPS: usize = 1500;
 
 /// 規格 002 B7：用全流程收據的按鍵，`rs2-play` 從標題走完四關到片尾。

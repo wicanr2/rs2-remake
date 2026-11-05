@@ -3,6 +3,7 @@
 
 use crate::driver::{Driver, Mix};
 use crate::opl2::Opl2;
+use crate::sfx::{Sfx, SfxKind};
 use crate::speaker::{Speaker, SpkEv};
 
 /// 一個晶片取樣的 PIT 週期數。
@@ -23,6 +24,7 @@ pub struct Engine {
     opl: Opl2,
     acc: u32,
     spk: Speaker,
+    sfx: Sfx,
 }
 
 impl Engine {
@@ -35,6 +37,7 @@ impl Engine {
             opl: Opl2::new(),
             acc: 0,
             spk: Speaker::new(),
+            sfx: Sfx::new(),
         })
     }
 
@@ -96,13 +99,18 @@ impl Engine {
                 }
             }
         }
-        let v = self.opl.sample() as i32 + self.spk.sample(PIT_PER_SAMPLE);
+        let v = self.opl.sample() as i32 + self.spk.sample(PIT_PER_SAMPLE) + self.sfx.sample();
         v.clamp(-32768, 32767) as i16
     }
 
     /// 一段繪圖附帶音（`sub_192EA`），排在目前喇叭佇列之後。
     pub fn speaker(&mut self, ev: &[SpkEv]) {
         self.spk.push(ev);
+    }
+
+    /// 打擊回饋的音效（規格 005）。疊在音樂與喇叭之上，不碰驅動；沒觸發過時輸出和沒有這一層相同。
+    pub fn sfx(&mut self, kind: SfxKind) {
+        self.sfx.trigger(kind);
     }
 
     pub fn track(&self) -> Track {

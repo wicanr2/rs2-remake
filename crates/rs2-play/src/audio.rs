@@ -22,6 +22,7 @@ fn apply(e: &mut Engine, m: &AudioMsg) {
         AudioMsg::Play(f) => e.play(track(*f), &mut |_, _| {}),
         AudioMsg::Stop => e.stop(&mut |_, _| {}),
         AudioMsg::Speaker(ev) => e.speaker(ev),
+        AudioMsg::Sfx(k) => e.sfx(*k),
     }
 }
 

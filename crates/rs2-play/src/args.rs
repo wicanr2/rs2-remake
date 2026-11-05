@@ -37,11 +37,13 @@ pub const USAGE: &str = "\
   --shot-at N:FILE      第 N 步之後把畫面（含工具列）存成 PNG，可重複
   --tween on|off        覆寫補間開關的初值
   --feel on|off         覆寫玩家機預測與短按保留的初值（F5）
+  --feedback on|off     覆寫打擊回饋選項的初值（只在 HD 畫面生效）
+|off         覆寫玩家機預測與短按保留的初值（F5）
   --touch               畫觸控控制鈕並用手機版工具列（Android 預設，桌面版驗證用）
   --counter on|off      覆寫幀計數開關的初值
   --mode vga|ega|cga|mga
                         起始的顯示模式，覆寫設定檔（驗證與截圖用）。cga、mga 需要單色圖庫，缺檔時退回 vga
-  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd、feel 或 mode（mode 是換下一個顯示模式，測試用，可重複）
+  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd、feel、feedback 或 mode（mode 是換下一個顯示模式，測試用，可重複）
   --max-secs S          視窗模式跑 S 秒後自行結束（驗證用）
   --record FILE         視窗模式結束時寫出每步實際送進遊戲的掃描碼（JSONL，每步一行，可再用 --replay 重播）
   --open-panel 頁名      開設定畫面到指定頁（驗證用）：手把、手把按鍵、鍵盤、遊戲、顯示，或 pad、padkeys、keyboard、game、display；
@@ -70,6 +72,8 @@ pub enum ToggleName {
     Feel,
     /// 換下一個顯示模式（VGA、EGA、CGA、MGA 輪流）。
     Mode,
+    /// 打擊回饋選項（規格 005）。
+    Feedback,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +97,8 @@ pub struct Args {
     pub feel: Option<bool>,
     /// 起始的顯示模式，覆寫設定檔。
     pub mode: Option<DisplayMode>,
+    /// 覆寫打擊回饋選項的初值。
+    pub feedback: Option<bool>,
     /// 畫觸控控制鈕並用手機版工具列。Android 一律開著，桌面版給驗證用。
     pub touch: bool,
     pub counter: Option<bool>,
@@ -144,6 +150,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         tween: None,
         feel: None,
         mode: None,
+        feedback: None,
         touch: cfg!(target_os = "android"),
         counter: None,
         toggles: Vec::new(),
@@ -202,6 +209,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 let v = val!("--mode")?;
                 a.mode = Some(DisplayMode::from_code(v).ok_or_else(|| format!("--mode 要是 vga、ega、cga 或 mga，收到 {v}"))?);
             }
+            "--feedback" => a.feedback = Some(onoff("--feedback", val!("--feedback")?)?),
             "--touch" => a.touch = true,
             "--counter" => a.counter = Some(onoff("--counter", val!("--counter")?)?),
             "--toggle-at" => {
@@ -212,7 +220,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                     "hd" => ToggleName::Hd,
                     "feel" => ToggleName::Feel,
                     "mode" => ToggleName::Mode,
-                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter、hd、feel 或 mode，收到 {v}")),
+                    "feedback" => ToggleName::Feedback,
+                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter、hd、feel、feedback 或 mode，收到 {v}")),
                 };
                 a.toggles.push((n, t));
             }

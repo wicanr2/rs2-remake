@@ -9,7 +9,7 @@
 | 項目 | 內容 |
 |---|---|
 | 模式 | `DisplayMode`：VGA、EGA、CGA、MGA（Hercules）。原版 `byte_1CF74`（M）的 `E`、`C`、`H` 加 `byte_1CF75`（P）的 `Y`、`N`：VGA 是 M=`E`、P=`N`，EGA 是 M=`E`、P=`Y` |
-| 切換 | 工具列「顯示模式」按鈕與 F6（原版沒用 F6），循環 VGA、EGA、CGA、MGA。設定檔 `mode=vga\|ega\|cga\|mga`（原子寫入，壞值退回 VGA），命令列 `--mode` 覆蓋，`--toggle-at N:mode` 供 headless 驗證在第 N 步後換模式。遊戲中隨時可切 |
+| 切換 | 工具列「顯示模式」按鈕與 F6（原版沒用 F6），循環 VGA、EGA、CGA、MGA。設定畫面「顯示」頁的分段按鈕直接選。設定檔 `mode=vga\|ega\|cga\|mga`（原子寫入，壞值退回 VGA），命令列 `--mode` 覆蓋，`--toggle-at N:mode` 供 headless 驗證在第 N 步後換模式。遊戲中隨時可切 |
 | 不變 | 切換不改模擬：每步資料段雜湊相同。所有接收端永遠一起吃同一批繪製命令，切換只換顯示哪一個，所以切換當下的畫面一定正確 |
 | 繪製 | VGA 沿用 `VgaSink`。EGA 與 VGA 用同一份平面，只換色表。CGA、MGA 用 `MonoSink`，逐位元組重現原版顯示記憶體 |
 | 載入 | 單色圖庫 21 個檔，啟動時驗雜湊。缺檔或雜湊不符時 CGA、MGA 不可選，VGA、EGA 不受影響 |
@@ -206,5 +206,4 @@ dosgolem `rs2dyn` 補 `0008-rs2dyn-mono-vram.patch`：`waittrace` 在 M 為 `C` 
 - 單色 HD 沒有原版 oracle。推導圖與 SD 圖的相關係數中位數：`MY` 0.47、`SHT1～5` 0.49～0.68、`BH1`、`BH2`、`BH4` 0.28～0.43、`BEG1` 0.35，`MAP.BDB` 只有 0.046（第三關地形圖塊的細節與 SD 不像）。操作語意以「HD 圖換成 SD 最近鄰放大」的嚴格比對驗證（14,884 筆相同），圖本身的品質由使用者決定要不要重畫。
 - 手感與畫面觀感沒有真人驗證。
 - Android 資料包要含 21 個單色圖庫檔，否則 CGA、MGA 在那邊不可選。
-- 設定畫面「顯示」頁沒有顯示模式那一列，只有工具列與 F6。
 - 狀態列的 `ST_MONO_MISSING` 字樣受內附點陣字型的字集限制，要更清楚的措辭需重烘 `ui-font.bin`。

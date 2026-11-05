@@ -4,7 +4,7 @@
 //! 但畫成灰色並標「開發中」，不能切換，也不會影響遊戲。實作完一項就把那一列的 `implemented` 改成 `true`，
 //! 不用動設定畫面與設定檔。
 //!
-//! 現在已實作：`invincible`（無敵）與 `feel`（手感，值存在 `Settings::feel`）。
+//! 現在已實作：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）與 `hit_feedback`（打擊回饋，只在 HD 畫面生效）。
 
 use crate::ui::text;
 
@@ -148,7 +148,7 @@ pub const OPTIONS: [OptDef; 12] = [
     opt!("wave_charge", Group::Shoot, text::OPT_WAVE_CHARGE, Kind::Toggle, 0, true, false),
     opt!("auto_fire", Group::Shoot, text::OPT_AUTO_FIRE, Kind::Toggle, 0, true, false),
     opt!("force_pod", Group::Shoot, text::OPT_FORCE_POD, Kind::Toggle, 0, true, false),
-    opt!("hit_feedback", Group::Shoot, text::OPT_HIT_FEEDBACK, Kind::Toggle, 1, false, false),
+    opt!("hit_feedback", Group::Shoot, text::OPT_HIT_FEEDBACK, Kind::Toggle, 1, false, true),
     opt!("invincible", Group::Practice, text::OPT_INVINCIBLE, Kind::Toggle, 0, true, true),
     opt!("feel", Group::Control, text::OPT_FEEL, Kind::Feel, 1, false, true),
     opt!("fine_step", Group::Control, text::OPT_FINE_STEP, Kind::Toggle, 0, true, false),
@@ -160,6 +160,7 @@ pub const OPTIONS: [OptDef; 12] = [
 
 pub const FEEL_INDEX: usize = 6;
 pub const INVINCIBLE_INDEX: usize = 5;
+pub const HIT_FEEDBACK_INDEX: usize = 4;
 
 pub fn index_of(id: &str) -> Option<usize> {
     OPTIONS.iter().position(|o| o.id == id)
@@ -213,13 +214,14 @@ mod tests {
         assert_eq!(OPTIONS[index_of("hit_feedback").unwrap()].default, 1, "只影響顯示與聲音的選項預設開啟");
         assert_eq!(OPTIONS[FEEL_INDEX].id, "feel");
         assert_eq!(OPTIONS[INVINCIBLE_INDEX].id, "invincible");
+        assert_eq!(OPTIONS[HIT_FEEDBACK_INDEX].id, "hit_feedback");
         assert_eq!(OPTIONS[FEEL_INDEX].default, 1, "手感預設是新");
     }
 
     #[test]
-    fn only_invincible_and_feel_are_implemented_this_round() {
+    fn only_invincible_feel_and_hit_feedback_are_implemented_this_round() {
         let done: Vec<&str> = OPTIONS.iter().filter(|o| o.implemented).map(|o| o.id).collect();
-        assert_eq!(done, vec!["invincible", "feel"]);
+        assert_eq!(done, vec!["hit_feedback", "invincible", "feel"]);
     }
 
     #[test]

@@ -41,6 +41,21 @@ pub const ST_MONO_MISSING: &str = "CGA、MGA 不能選：畫面沒有取到";
 /// 狀態列各段之間的間隔（全形空白）。
 pub const ST_SEP: &str = "　";
 
+// ---------------------------------------------------------------------------
+// HD 介面的 HUD 與載入畫面（規格 005「HD 介面」）
+// ---------------------------------------------------------------------------
+
+pub const HUD_P1: &str = "1P";
+pub const HUD_P2: &str = "2P";
+/// 改變規則的選項開著時，HUD 右端的小標籤。
+pub const HUD_RULES: &str = "強化";
+pub const HUD_GOD: &str = "無敵";
+
+pub const LOAD_TITLE: &str = "載入中";
+pub const LOAD_HD: &str = "正在準備 HD 素材";
+pub const LOAD_INSTALL_TITLE: &str = "首次啟動";
+pub const LOAD_INSTALL: &str = "正在解開遊戲資料";
+
 pub fn pad_added(name: &str) -> String {
     format!("偵測到手把：{name}，請到控制設定指派。")
 }
@@ -239,6 +254,7 @@ pub const GAME_NOTE2: &str = "改變規則的選項開著時，狀態列顯示�
 // 顯示頁
 // ---------------------------------------------------------------------------
 
+pub const DISP_MODE: &str = "顯示模式";
 pub const DISP_TWEEN: &str = "補間";
 pub const DISP_COUNTER: &str = "幀計數";
 pub const DISP_SCALE: &str = "倍率";
