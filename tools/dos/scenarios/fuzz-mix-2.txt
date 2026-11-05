@@ -1,0 +1,73 @@
+# 差分模糊測試 profile=mix seed=2 frames=1262。tools/dos/gen_fuzz.py 產生，不要手改。
+# 第一關從追蹤第 0 筆開始，先跑 5 筆不送輸入，之後 poke 與 play now 交錯；對應的 poke 記在 tools/dos/fuzz/mix-2.pokes。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+trace fz full
+dsdump 40
+untiltrace 5 400_000_000
+pokew 0x1E6B2 0x0
+pokew 0x1E6B4 0x2
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+pokew 0x273A5 0x59
+pokew 0x1DAA9 0x4B
+play now 1A 0A 1A 0A 3A 0A 1A 0A 19 09*2 19 09*2 19 09*2 19 09 10*2 1A*23 3A
+pokew 0x1DAA9 0x42
+down end
+play now 1A*2 10 00 10 00 10 00 10 00 10 00 11 01*2 11 01 21 10*9 30 10*9 1A*5 10*18 30 10*5 00 10 00 10 00 10 20 10
+pokew 0x1DAA9 0x4E
+play now 00 10 15 05 15 05 15 05 15 05 19*10 39 19
+pokew 0x1DAA9 0x4C
+up end
+play now 19*6 11*7 12*11 15*20
+pokew 0x1DAA9 0x4E
+play now 15*5 35 10 00*2 10 00*2 14*5 1A 0A*2 1A 0A*2 3A 0A*2 1A 0A 10 00
+pokew 0x1DAA9 0x4C
+down pgup
+play now 00 10 00*2 10 00 1C*4 3C 1C*5 10*6 30 10*15 30 10*6
+pokew 0x1DAA9 0x4B
+play now 10*5 15 25 15 05 15 05 15 14 04 14 04 14 04 34 10*4 30 10*3 12 02*2 32 02*2 12 02*2 12 02*2 1A 3A 1A*7 10*2 30 10 18*8 08*2 18 08*2 18 08*2 18 08*2 18 08 28 18
+pokew 0x1DAA9 0x4C
+play now 08*2 1F*2 10*6 12*7 1F*6
+pokew 0x1DAA9 0x4C
+play now 1F*5 10 00*2 10 00*2 10 00*2 10 00*2 10 00*2
+pokew 0x1DAA9 0x53
+play now 10 00*2 30 00*2 10 00*2 10 20 00 10 00*2 10 00*2 30 00 20 10 00*2 10 11 31 11*2 31 11*3 3A 1A
+pokew 0x1DAA9 0x4E
+play now 1A*2 10 30 10*11 19*2 10 00 20 10
+pokew 0x1DAA9 0x4B
+play now 00 10*11 00 10 00 10 1A 3A*2 1A*5 16 06 16 06 16 06 16 06 16 06 16 06 36 06 16 06 16 06 16 26
+pokew 0x1DAA9 0x4E
+play now 16 06 16 06 36 06 36 06 16 06 16 06 16 1C 0C 12*5 18*5
+pokew 0x1DAA9 0x4E
+play now 18*5 10*11 30 10*10 30 10*8 30 10*9 30 10*5 30 10*3 30 10*3 1F 0F 2F 1F 0F 14 04*2 14 04 24 14 18*2
+pokew 0x1DAA9 0x4B
+up pgup
+play now 1F 0F*2 1F 0F*2 1F 0F*2 1F 0F*2 11 01*2 11 01*2 31 01*2 11 01 15 05 15 05 10 20 00 10 20 00 10 20 00 10
+pokew 0x1DAA9 0x4C
+play now 00*2 16*17 10 30 10*15 11 01 10*20 18*11 11 01 14 04*2
+pokew 0x1DAA9 0x46
+play now 14 04 24 14 04*2 14 19*6 39 19 1C 0C 1C 0C 1C 0C 1C 0C 10 30 10*4
+pokew 0x1DAA9 0x4E
+play now 30 10*13 30 10*7 30 10*4 30 10 18*7 38 18*22 14 04*2 14*2 24 04 14 04*2 14 04*2 14 04 10 00 10 00 10 00
+pokew 0x1DAA9 0x4C
+play now 10 00 30 20 10 1A 0A 12*7 10 00*2 10 00*2 10 00 20 10 00*2 10 00*2 10 20 00 10 00*2 10 00 12 02 12 02 12 02 12 02 12 02 12*5 32 12*8 32 12 16*12 19
+pokew 0x1DAA9 0x46
+play now 09 1A 0A*2 1A 0A*2 1A 0A*2 1A 38 08 18 28 18 28 18 08 35 05 15 05 15 11 01 21 11 01 15 05*2 15 05*2 15 05*2 33 23 03 13 03*2
+pokew 0x1DAA9 0x42
+down pgdn
+play now 13 03*2 13 16 06*2 16 06*2 36 06*2 16 06 26 10*7 11 21 01 11 01*2 11 01 10*2 30 10*2 30 10*3
+pokew 0x1DAA9 0x4B
+play now 10 15*2 1F 0F 1F 0F 3F 0F 1F 0F 1F 0F 1F 0F 1C*12 14 34 14 34 14*4
+pokew 0x1DAA9 0x53
+up pgdn
+play now 14*4 18 08 18 08 18 08 18 08 18 08 18 1A*8 3A 1A*7
+pokew 0x1DAA9 0x42
+play now 1A*6 3A 1A*2 12*5 32 12*5 32 12*4 32 12*10 32 12*9 32*3 12 32 12*6 18*3 14*2 34 10*16
+pokew 0x1DAA9 0x46
+play now 19*4 10*5 12*8 10*2 14*8 12 02*2 12 02*2 14 34 19 09*2 19 09
+pokew 0x1DAA9 0x53
+play now 09 19 09*2 18 08*2 18 28 08 10 00*2 10 00*2 10 00 38 18*9 12 02 32 1A 0A 1A 2A 1A 0A 1A 0A 1A 0A 1A 1C 0C 1C 0C 1C 0C 1C 0C 1C 2C 1C 0C 1C 0C 1C 0C 1C 0C 1C 0C 1C 0C 1C 0C 1C 0C 3A 1A*5
+pokew 0x1DAA9 0x4E
+play now 1A*3 10 00 10 00 10 00 10 3C 1C*2 18 08 38 08 18 08 18 08 18 08 18 1C*9 14*9 10 00 10 00
+settle
+trace off

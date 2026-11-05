@@ -1,0 +1,10 @@
+# A0：標題按空白進第一關（不經選單，難度字 0、0），第一幀前的資料段與平面。
+include /tools-dos/scenarios/prefix-to-j1.txt
+tap space 0.3 0
+untilopen B.MIX 1
+untilvec8
+untilpc 0x10D29 200_000_000
+peekw frame_at_entry 0x1CFE2
+dumpds newgame_entry
+dumpplanes newgame_entry
+shot newgame_entry

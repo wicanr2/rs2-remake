@@ -1,0 +1,27 @@
+# 缺陷候選 armor_cell_index：第四關頭目（模板 8441h，形狀 20x8，下 5 列是 FEh 裝甲格）。
+# 秘技加兩座砲座與雷射武器（poke），轉向朝右（/ 鍵），每幀開火。記錄傷害函式 sub_16946（16946h）讀到的格值、
+# 取到的實體指標與要寫入的位址，以及資料段開頭 100h 位元組的寫入。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 4
+include /tools-dos/scenarios/next-stage.txt
+include /tools-dos/scenarios/cheat-god.txt
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+pokew 0x1DAA9 0x4C
+peekw weapon 0x1DAA9
+peek pods 0x1DA8D 2
+peekw frame_start 0x1CFE2
+trace s4 full
+tracepc 0x1694D 3000
+tracepc 0x1695C 3000
+tracepc 0x16974 3000
+watchw lowdseg 0x1CBC0 0x100 3000
+play 0 30 10*1199
+peekw frame_end 0x1CFE2
+trace off
+shot a_end

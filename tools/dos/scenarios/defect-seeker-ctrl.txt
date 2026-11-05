@@ -1,0 +1,30 @@
+# 缺陷候選 seeker_count_leak（對照組）：與洩漏組相同，但開火兩幀後等 30 幀讓追蹤彈全部消失，再按 Ctrl+C 換關。
+# word_1F1A8 應回到 0，第二關 B 武器正常。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+pokew 0x1DAA9 0x42
+peekw seek_init 0x1F1A8
+peekw weapon_s1 0x1DAA9
+trace s1 full
+play 0 30 10*2 00*30
+peekw seek_after_fire_s1 0x1F1A8
+chord ctrl+c 0.4 0.1
+peekw seek_after_ctrlc_s1 0x1F1A8
+untilopen J2.GO 1
+peekw seek_at_j2_open 0x1F1A8
+secs 3
+shot j2_screen
+tap space 0.3 0
+untilopen SHT2.GO 1
+untilvec8
+until16 0x1CFE2 5 400_000_000
+peekw seek_s2_start 0x1F1A8
+peekw weapon_s2 0x1DAA9
+peek pods_s2 0x1DA8D 2
+play now 10*30
+peekw seek_s2_after_fire 0x1F1A8
+trace off
+shot s2_end

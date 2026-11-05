@@ -1,0 +1,317 @@
+diff --git a/cmd/rs2dyn/play.go b/cmd/rs2dyn/play.go
+index 68816ee..f46fbff 100644
+--- a/cmd/rs2dyn/play.go
++++ b/cmd/rs2dyn/play.go
+@@ -10,15 +10,28 @@ import (
+ //
+ //	01 上  02 下  04 右  08 左  10 開火（右 Shift 按下再放開一次）  20 轉向（/ 鍵按下再放開一次）
+ //
++// 另有兩個只屬於 play 的位元（DMn.LCK 與 in1 沒有，低 6 位的行為與時序不受影響）：
++//
++//	40 右 Shift 持續按住（只在位元改變時送按下／放開），模擬按住不放
++//	80 這一幀多送一個右 Shift 的按下碼，模擬鍵盤自動重複（硬體在按住期間每隔一段時間重送）
++//
+ // 第 i 個位元組是第 F0+i 筆追蹤（n = F0+i）那一幀要讀到的輸入：在 n = F0+i−1 的取樣之後立刻送鍵，
+ // 所以需要完整追蹤已開（trace NAME full）。TOKEN 是兩位十六進位，或 HH*N 表示重複 N 次。
+ // TOKEN 也可以是 @NAME：在該位置（上一幀的取樣寫出之後、下一個位元組的鍵送出之前）存畫面 NAME.png。
+-// 方向鍵是持續按住，只在位元改變時送按下／放開；開火與轉向每幀按放一次。
+-// 結束時放開仍按住的方向鍵。送鍵的時刻只由追蹤筆數決定，與牆鐘無關，所以可重播。
++// 方向鍵與 40 是持續按住，只在位元改變時送按下／放開；開火與轉向每幀按放一次。
++// 結束時放開仍按住的方向鍵與右 Shift。送鍵的時刻只由追蹤筆數決定，與牆鐘無關，所以可重播。
++//
++// 主迴圈中途離開（玩家死亡、過關連爆結束等，10D59h 執行過），之後不會再有取樣，play 在那裡停下並記一行
++// "play exit"，不再等不會來的筆數。離開前已送出的鍵照常留在 sc 裡。
+ func (r *rt) play(f0 uint64, toks []string) error {
+ 	if r.tf == nil {
+ 		return fmt.Errorf("play 需要完整追蹤（trace NAME full）")
+ 	}
++	if r.tf.exited {
++		// 最近一次取樣之後主迴圈已經離開，不會再有筆數可等。
++		r.logf("play", "skipped f0=%d: 主迴圈已離開 code=%c rows=%d", f0, rune(byte(r.tf.exitDX)), r.tf.n)
++		return nil
++	}
+ 	var seq []byte
+ 	marks := map[int][]string{}
+ 	for _, t := range toks {
+@@ -56,15 +69,23 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 		r.up(sc)
+ 		return gap()
+ 	}
++	rshift, _ := keyScan("rshift")
+ 	var held byte
++	var shiftHeld, exited bool
+ 	for i, b := range seq {
+ 		target := f0 + uint64(i)
+ 		if r.tf.n > target {
+ 			return fmt.Errorf("play 位元組 %d 要送給 n=%d，但追蹤已寫到 %d 筆", i, target, r.tf.n)
+ 		}
+-		if err := r.untilTraceRows(target, 1_500_000_000); err != nil {
++		ex, err := r.untilRowOrExit(target, 1_500_000_000)
++		if err != nil {
+ 			return err
+ 		}
++		if ex {
++			exited = true
++			r.logf("play", "exit code=%c at byte=%d rows=%d", rune(byte(r.tf.exitDX)), i, r.tf.n)
++			break
++		}
+ 		for _, nm := range marks[i] {
+ 			if err := r.shot(nm); err != nil {
+ 				return err
+@@ -86,6 +107,23 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 			}
+ 		}
+ 		held = b & 0x0F
++		if want := b&0x40 != 0; want != shiftHeld {
++			if want {
++				r.down(rshift)
++			} else {
++				r.up(rshift)
++			}
++			shiftHeld = want
++			if err := gap(); err != nil {
++				return err
++			}
++		}
++		if b&0x80 != 0 {
++			r.down(rshift)
++			if err := gap(); err != nil {
++				return err
++			}
++		}
+ 		if b&0x10 != 0 {
+ 			if err := tap("rshift"); err != nil {
+ 				return err
+@@ -97,13 +135,22 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 			}
+ 		}
+ 	}
+-	if err := r.untilTraceRows(f0+uint64(len(seq)), 1_500_000_000); err != nil {
+-		return err
+-	}
+-	for _, nm := range marks[len(seq)] {
+-		if err := r.shot(nm); err != nil {
++	if !exited {
++		ex, err := r.untilRowOrExit(f0+uint64(len(seq)), 1_500_000_000)
++		if err != nil {
+ 			return err
+ 		}
++		if ex {
++			exited = true
++			r.logf("play", "exit code=%c at byte=%d rows=%d", rune(byte(r.tf.exitDX)), len(seq), r.tf.n)
++		}
++	}
++	if !exited {
++		for _, nm := range marks[len(seq)] {
++			if err := r.shot(nm); err != nil {
++				return err
++			}
++		}
+ 	}
+ 	for _, d := range dirs {
+ 		if held&d.bit != 0 {
+@@ -114,6 +161,12 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 			}
+ 		}
+ 	}
++	if shiftHeld {
++		r.up(rshift)
++		if err := gap(); err != nil {
++			return err
++		}
++	}
+ 	r.logf("play", "f0=%d frames=%d", f0, len(seq))
+ 	return nil
+ }
+diff --git a/cmd/rs2dyn/script.go b/cmd/rs2dyn/script.go
+index 4df29ff..a384bdf 100644
+--- a/cmd/rs2dyn/script.go
++++ b/cmd/rs2dyn/script.go
+@@ -44,8 +44,10 @@ import (
+ //	trace NAME full        逐幀完整狀態到 trace-NAME.jsonl（固定取樣點 10F98h／10FE3h，格式見 docs/re/10）
+ //	untiltrace N [budget]  跑到完整追蹤已寫出 N 筆
+ //	play now HH...         同上，從目前的追蹤筆數接著送
+-//	play F0 HH|HH*N...        依逐幀輸入位元組送鍵（01 上、02 下、04 右、08 左、10 開火、20 轉向），第 i 個位元組給 n=F0+i 那一幀
++//	play F0 HH|HH*N...        依逐幀輸入位元組送鍵（01 上、02 下、04 右、08 左、10 開火、20 轉向、40 右 Shift 按住、80 多送一個右 Shift 按下碼），第 i 個位元組給 n=F0+i 那一幀
+ //	tracerows K            再跑 K 個追蹤筆數
++//	settle                 讓最近一次取樣所在的半步走完，寫 trace-NAME.end（rows=N exit=none|E|Q|C），供逐幀比對判斷離開
++//	dsdump EVERY           完整追蹤開著時，筆數是 EVERY 倍數的取樣點另存整個資料段 ds-NAME-n.ds（0 關閉）
+ //	tracepc IDA [max]      執行到該 IDA 位址就記暫存器與幀計數
+ //	watchw NAME IDA LEN [max]  寫入該範圍就記位址、舊新值、寫入者位址與幀計數
+ //	until8 IDA VAL [budget]  跑到 IDA 位址的 byte 等於 VAL
+@@ -215,6 +217,21 @@ func (r *rt) exec(f []string) error {
+ 			return fmt.Errorf("完整追蹤還沒開（trace NAME full）")
+ 		}
+ 		return r.untilTraceRows(r.tf.n+v, 1_500_000_000)
++	case "settle":
++		return r.settle()
++	case "dsdump":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		if r.tf == nil {
++			return fmt.Errorf("完整追蹤還沒開（trace NAME full）")
++		}
++		r.tf.dsEvery = v
++		return nil
+ 	case "tracepc":
+ 		if err := need(1); err != nil {
+ 			return err
+diff --git a/cmd/rs2dyn/trace_full.go b/cmd/rs2dyn/trace_full.go
+index 123f9cd..9f4ba15 100644
+--- a/cmd/rs2dyn/trace_full.go
++++ b/cmd/rs2dyn/trace_full.go
+@@ -6,6 +6,8 @@ import (
+ 	"os"
+ 	"path/filepath"
+ 	"strconv"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
+ )
+ 
+ // 逐幀完整狀態收據（JSON Lines）。格式與取樣點定義見 docs/re/10-dynamic-receipts.md「逐幀收據」。
+@@ -48,15 +50,43 @@ const (
+ 	ptHi = 0x13F42
+ )
+ 
++// 主迴圈 sub_10CD0 的幀尾標記（play 與 settle 用，不影響取樣）：
++//
++//	10D32h  第一個 call sub_10EEA 返回之後的 call sub_19A88，一個迴圈的前半步結束
++//	10D29h  迴圈頭 call sub_19A37，後半步的結束判斷（sub_10D8D 與 10D41h 起的比較）已過、沒有離開
++//	10D59h  離開迴圈的 mov byte_2739A, 4Eh，此時 DX 是離開碼（45h E、51h Q、43h C）
++const (
++	loopHalf = 0x10D32
++	loopHead = 0x10D29
++	loopExit = 0x10D59
++)
++
++var (
++	sigLoopCall = []byte{0xE8}                         // call near
++	sigLoopExit = []byte{0xC6, 0x06, 0xDA, 0xA7, 0x4E} // mov byte ptr ds:0A7DAh, 4Eh（byte_2739A）
++)
++
+ // fullTracer 是 trace NAME full 的狀態。
+ type fullTracer struct {
+ 	f    *os.File
+ 	w    *bufio.Writer
++	name string
+ 	n    uint64  // 已寫出的筆數
+ 	incs uint64  // 追蹤開始後執行過的 inc word_1CFE2 次數（各處合計）
+ 	tbl  []uint8 // 索引 = IDA 位址 − ptLo；0 無、1 取樣、2 計數、3 兩者
+ 	lo   uint32  // ptLo 的執行期線性位址
+ 	buf  []byte
++
++	// 幀尾觀測。stepDone：最近一次取樣所在的那半步已經走完（遇到 loopHalf 或 loopHead）。
++	// exited：執行過 loopExit，exitDX 是當時的 DX。這兩個旗標不寫進任何收據欄位。
++	mlo      uint32 // loopHead 的執行期線性位址
++	stepDone bool
++	exited   bool
++	exitDX   uint16
++
++	// dsEvery > 0：筆數 n 是它的倍數的取樣點（寫完該筆之後、這一幀剩下的程式碼之前）另存整個資料段 ds-NAME-n.ds，
++	// 供逐幀比對時再核對 JSONL 沒有涵蓋的變數。重製核心在同一個取樣點（on_sample 回呼）讀自己的資料段。
++	dsEvery uint64
+ }
+ 
+ func (r *rt) traceFullStart(name string) error {
+@@ -71,12 +101,23 @@ func (r *rt) traceFullStart(name string) error {
+ 			}
+ 		}
+ 	}
++	for _, p := range []struct {
++		ida uint32
++		sig []byte
++	}{{loopHalf, sigLoopCall}, {loopHead, sigLoopCall}, {loopExit, sigLoopExit}} {
++		a := r.base + p.ida - idaBase
++		for i, b := range p.sig {
++			if got := r.m.Read8(a + uint32(i)); got != b {
++				return fmt.Errorf("幀尾標記 %05X 的機器碼不符（第 %d 位元組 %02X，預期 %02X），拒絕追蹤", p.ida, i, got, b)
++			}
++		}
++	}
+ 	f, err := os.Create(filepath.Join(r.out, "trace-"+name+".jsonl"))
+ 	if err != nil {
+ 		return err
+ 	}
+-	t := &fullTracer{f: f, w: bufio.NewWriterSize(f, 1<<20), buf: make([]byte, 0, 16384),
+-		tbl: make([]uint8, ptHi-ptLo+1), lo: r.base + ptLo - idaBase}
++	t := &fullTracer{f: f, name: name, w: bufio.NewWriterSize(f, 1<<20), buf: make([]byte, 0, 16384),
++		tbl: make([]uint8, ptHi-ptLo+1), lo: r.base + ptLo - idaBase, mlo: r.base + loopHead - idaBase}
+ 	for _, p := range tracePoints {
+ 		var v uint8
+ 		if p.sample {
+@@ -110,6 +151,16 @@ func (r *rt) traceFullTick() {
+ 	t := r.tf
+ 	cs, ip := r.m.Insn()
+ 	lin := uint32(cs)<<4 + uint32(ip)
++	if d := lin - t.mlo; d <= loopExit-loopHead {
++		switch d + loopHead {
++		case loopHalf, loopHead:
++			t.stepDone = true
++		case loopExit:
++			t.exited = true
++			t.exitDX = r.m.CPU.R[cpu.DX]
++		}
++		return
++	}
+ 	if lin < t.lo || lin-t.lo >= uint32(len(t.tbl)) {
+ 		return
+ 	}
+@@ -331,6 +382,13 @@ func (r *rt) sampleFull(pt uint32) {
+ 	t.w.Write(b)
+ 	t.buf = b
+ 	t.n++
++	t.stepDone = false
++	t.exited = false // 離開之後又有取樣，表示新的迴圈開始了（例如換關）
++	if t.dsEvery > 0 && (t.n-1)%t.dsEvery == 0 {
++		if err := r.dumpDS(fmt.Sprintf("ds-%s-%d", t.name, t.n-1)); err != nil {
++			r.logf("error", "dsdump：%v", err)
++		}
++	}
+ }
+ 
+ // untilTraceRows 跑到完整追蹤已寫出 n 筆。
+@@ -340,3 +398,39 @@ func (r *rt) untilTraceRows(n, budget uint64) error {
+ 	}
+ 	return r.runUntil(fmt.Sprintf("追蹤筆數 >= %d", n), func() bool { return r.tf.n >= n }, budget)
+ }
++
++// untilRowOrExit 跑到完整追蹤已寫出 n 筆，或主迴圈已離開（loopExit）。回傳 true 表示是因為離開而停，
++// 此時筆數不足 n，後面不會再有取樣。
++func (r *rt) untilRowOrExit(n, budget uint64) (bool, error) {
++	t := r.tf
++	if t == nil {
++		return false, fmt.Errorf("完整追蹤還沒開（trace NAME full）")
++	}
++	err := r.runUntil(fmt.Sprintf("追蹤筆數 >= %d 或主迴圈離開", n), func() bool { return t.n >= n || t.exited }, budget)
++	return err == nil && t.n < n && t.exited, err
++}
++
++// settle 讓最近一次取樣所在的那半步走完（到 10D32h 或 10D29h），或確認主迴圈已在這之前離開，
++// 然後寫 trace-NAME.end。收據的最後一筆因此帶著原版自己的結論：之後這個迴圈是否離開、離開碼是什麼。
++// 沒有它，play 一送完最後一筆就停在取樣點上，離開判斷（sub_10D8D 與 10D41h 起的比較）還沒執行。
++//
++// 檔案內容一行：rows=N exit=none，或 rows=N exit=E|Q|C。exit 以 10D59h 執行時的 DX 低位元組為準。
++func (r *rt) settle() error {
++	t := r.tf
++	if t == nil {
++		return fmt.Errorf("完整追蹤還沒開（trace NAME full）")
++	}
++	if t.n == 0 {
++		return fmt.Errorf("settle 需要至少一筆取樣")
++	}
++	if err := r.runUntil("取樣所在的半步走完", func() bool { return t.stepDone || t.exited }, 50_000_000); err != nil {
++		return err
++	}
++	code := "none"
++	if t.exited {
++		code = string(rune(byte(t.exitDX)))
++	}
++	line := fmt.Sprintf("rows=%d exit=%s\n", t.n, code)
++	r.logf("settle", "%s %s", t.name, line[:len(line)-1])
++	return os.WriteFile(filepath.Join(r.out, "trace-"+t.name+".end"), []byte(line), 0o644)
++}

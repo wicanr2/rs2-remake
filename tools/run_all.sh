@@ -31,6 +31,8 @@ run python /tools/export_entities.py /w/unpacked/S.unpacked.bin /w/extracted/ent
 run python /tools/export_sfx.py /w/unpacked/S.unpacked.bin /original/rs-2 /w/extracted/sfx
 run python /tools/extract_intro.py /w/unpacked/S.layer1.bin /w/extracted/intro
 run python /tools/extract_textmode.py /w/unpacked/S.unpacked.bin /w/extracted/textmode
+mkdir -p "$ROOT/workspace/rs2"
+run python /tools/export_pixel_hashes.py /original/rs-2 /w/rs2/pixel-hashes.tsv
 # 用途表要讀 IDA 匯出，先跑過 tools/ida_export.sh 才有
 if test -f "$ROOT/workspace/ida/s_disasm.txt"; then
   run python /tools/export_sprite_usage.py /w /w/extracted/sprite-usage.json

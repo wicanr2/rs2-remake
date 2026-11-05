@@ -1,0 +1,13 @@
+[package]
+name = "rs2-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rs2-formats = { path = "../rs2-formats" }
+
+[lints]
+workspace = true

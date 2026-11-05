@@ -1,0 +1,748 @@
+diff --git a/cmd/rs2dyn/play.go b/cmd/rs2dyn/play.go
+new file mode 100644
+index 0000000..68816ee
+--- /dev/null
++++ b/cmd/rs2dyn/play.go
+@@ -0,0 +1,119 @@
++package main
++
++import (
++	"fmt"
++	"strconv"
++	"strings"
++)
++
++// play F0 TOKEN...：依逐幀輸入位元組送鍵。位元定義與 DMn.LCK、trace 的 in1 相同：
++//
++//	01 上  02 下  04 右  08 左  10 開火（右 Shift 按下再放開一次）  20 轉向（/ 鍵按下再放開一次）
++//
++// 第 i 個位元組是第 F0+i 筆追蹤（n = F0+i）那一幀要讀到的輸入：在 n = F0+i−1 的取樣之後立刻送鍵，
++// 所以需要完整追蹤已開（trace NAME full）。TOKEN 是兩位十六進位，或 HH*N 表示重複 N 次。
++// TOKEN 也可以是 @NAME：在該位置（上一幀的取樣寫出之後、下一個位元組的鍵送出之前）存畫面 NAME.png。
++// 方向鍵是持續按住，只在位元改變時送按下／放開；開火與轉向每幀按放一次。
++// 結束時放開仍按住的方向鍵。送鍵的時刻只由追蹤筆數決定，與牆鐘無關，所以可重播。
++func (r *rt) play(f0 uint64, toks []string) error {
++	if r.tf == nil {
++		return fmt.Errorf("play 需要完整追蹤（trace NAME full）")
++	}
++	var seq []byte
++	marks := map[int][]string{}
++	for _, t := range toks {
++		if strings.HasPrefix(t, "@") {
++			marks[len(seq)] = append(marks[len(seq)], t[1:])
++			continue
++		}
++		n := uint64(1)
++		if i := strings.IndexByte(t, '*'); i >= 0 {
++			v, err := strconv.ParseUint(t[i+1:], 10, 32)
++			if err != nil {
++				return fmt.Errorf("重複次數 %q：%w", t, err)
++			}
++			n, t = v, t[:i]
++		}
++		b, err := strconv.ParseUint(t, 16, 8)
++		if err != nil {
++			return fmt.Errorf("輸入位元組 %q：%w", t, err)
++		}
++		for ; n > 0; n-- {
++			seq = append(seq, byte(b))
++		}
++	}
++	dirs := [4]struct {
++		bit  byte
++		name string
++	}{{0x01, "up"}, {0x02, "down"}, {0x04, "right"}, {0x08, "left"}}
++	gap := func() error { return r.runTo(r.m.Steps + r.m.KeyEvery + 1) }
++	tap := func(name string) error {
++		sc, _ := keyScan(name)
++		r.down(sc)
++		if err := gap(); err != nil {
++			return err
++		}
++		r.up(sc)
++		return gap()
++	}
++	var held byte
++	for i, b := range seq {
++		target := f0 + uint64(i)
++		if r.tf.n > target {
++			return fmt.Errorf("play 位元組 %d 要送給 n=%d，但追蹤已寫到 %d 筆", i, target, r.tf.n)
++		}
++		if err := r.untilTraceRows(target, 1_500_000_000); err != nil {
++			return err
++		}
++		for _, nm := range marks[i] {
++			if err := r.shot(nm); err != nil {
++				return err
++			}
++		}
++		for _, d := range dirs {
++			want, had := b&d.bit != 0, held&d.bit != 0
++			if want == had {
++				continue
++			}
++			sc, _ := keyScan(d.name)
++			if want {
++				r.down(sc)
++			} else {
++				r.up(sc)
++			}
++			if err := gap(); err != nil {
++				return err
++			}
++		}
++		held = b & 0x0F
++		if b&0x10 != 0 {
++			if err := tap("rshift"); err != nil {
++				return err
++			}
++		}
++		if b&0x20 != 0 {
++			if err := tap("/"); err != nil {
++				return err
++			}
++		}
++	}
++	if err := r.untilTraceRows(f0+uint64(len(seq)), 1_500_000_000); err != nil {
++		return err
++	}
++	for _, nm := range marks[len(seq)] {
++		if err := r.shot(nm); err != nil {
++			return err
++		}
++	}
++	for _, d := range dirs {
++		if held&d.bit != 0 {
++			sc, _ := keyScan(d.name)
++			r.up(sc)
++			if err := gap(); err != nil {
++				return err
++			}
++		}
++	}
++	r.logf("play", "f0=%d frames=%d", f0, len(seq))
++	return nil
++}
+diff --git a/cmd/rs2dyn/rt.go b/cmd/rs2dyn/rt.go
+index bfe0bff..d04c504 100644
+--- a/cmd/rs2dyn/rt.go
++++ b/cmd/rs2dyn/rt.go
+@@ -76,6 +76,8 @@ type rt struct {
+ 	simSec         float64
+ 	openCount      map[string]int
+ 	tr             *tracer
++	tf             *fullTracer
++	keyLog         []uint8 // 上次完整追蹤取樣之後送出的掃描碼（放開碼加 80h）
+ 	palKey         string
+ 	palWatch       bool
+ 	palShots       bool
+@@ -184,6 +186,9 @@ func (r *rt) step() error {
+ 	if r.tr != nil {
+ 		r.traceTick()
+ 	}
++	if r.tf != nil {
++		r.traceFullTick()
++	}
+ 	if r.traps != nil {
+ 		r.trapCheck()
+ 	}
+@@ -291,10 +296,16 @@ func keyScan(name string) (uint8, error) {
+ }
+ 
+ func (r *rt) down(sc uint8) {
++	if r.tf != nil {
++		r.keyLog = append(r.keyLog, sc)
++	}
+ 	r.m.ScheduleKey(r.m.Steps, sc, false)
+ 	r.logf("key", "down %02X", sc)
+ }
+ func (r *rt) up(sc uint8) {
++	if r.tf != nil {
++		r.keyLog = append(r.keyLog, sc|0x80)
++	}
+ 	r.m.ScheduleKey(r.m.Steps, sc, true)
+ 	r.logf("key", "up %02X", sc)
+ }
+@@ -634,6 +645,7 @@ func (r *rt) traceStart(name string) error {
+ }
+ 
+ func (r *rt) traceStop() {
++	r.traceFullStop()
+ 	if r.tr == nil {
+ 		return
+ 	}
+@@ -748,7 +760,12 @@ func (r *rt) trapCheck() {
+ 	if t, ok := r.traps[lin]; ok {
+ 		t.n++
+ 		if t.n <= t.max {
+-			r.logf("trapped", "%s #%d AX=%04X BX=%04X CX=%04X DX=%04X ES=%04X DI=%04X DS=%04X SI=%04X", t.name, t.n,
++			fr := ""
++			if strings.HasPrefix(t.name, "ida") {
++				v, _ := r.rd16(idaFrame)
++				fr = fmt.Sprintf(" frame=%d", v)
++			}
++			r.logf("trapped", "%s #%d%s AX=%04X BX=%04X CX=%04X DX=%04X ES=%04X DI=%04X DS=%04X SI=%04X", t.name, t.n, fr,
+ 				c.R[cpu.AX], c.R[cpu.BX], c.R[cpu.CX], c.R[cpu.DX], c.Seg[cpu.ES], c.R[cpu.DI], c.Seg[cpu.DS], c.R[cpu.SI])
+ 		}
+ 	}
+diff --git a/cmd/rs2dyn/script.go b/cmd/rs2dyn/script.go
+index 7705623..4bc2c16 100644
+--- a/cmd/rs2dyn/script.go
++++ b/cmd/rs2dyn/script.go
+@@ -7,9 +7,10 @@ import (
+ 	"io"
+ 	"os"
+ 	"strconv"
++	"strings"
+ 
+ 	"github.com/wicanr2/dosgolem/internal/cpu"
+-	"strings"
++	"github.com/wicanr2/dosgolem/internal/state"
+ )
+ 
+ // 腳本命令（一行一個，# 之後是註解；數字可用 _ 分隔，0x 開頭是十六進位）：
+@@ -39,7 +40,16 @@ import (
+ //	watchpc IDA            計數執行到這個 IDA 位址的次數（需映像基底）
+ //	watchtick              計數 word_273B9 的 +1（遊戲收到的 INT 8 tick）
+ //	watchwait              計數 sub_11097 等待迴圈的執行步數
+-//	trace NAME / trace off 逐幀記錄遊戲變數到 trace-NAME.tsv
++//	trace NAME / trace off 逐幀記錄遊戲變數到 trace-NAME.tsv（舊格式，幀計數一變就記）
++//	trace NAME full        逐幀完整狀態到 trace-NAME.jsonl（固定取樣點 10F98h／10FE3h，格式見 docs/re/10）
++//	untiltrace N [budget]  跑到完整追蹤已寫出 N 筆
++//	play now HH...         同上，從目前的追蹤筆數接著送
++//	play F0 HH|HH*N...        依逐幀輸入位元組送鍵（01 上、02 下、04 右、08 左、10 開火、20 轉向），第 i 個位元組給 n=F0+i 那一幀
++//	tracerows K            再跑 K 個追蹤筆數
++//	tracepc IDA [max]      執行到該 IDA 位址就記暫存器與幀計數
++//	watchw NAME IDA LEN [max]  寫入該範圍就記位址、舊新值、寫入者位址與幀計數
++//	until8 IDA VAL [budget]  跑到 IDA 位址的 byte 等於 VAL
++//	savestate PATH / loadstate PATH  存／還原整台機器與 DOS（實驗加速用，收據仍以冷啟動完整重跑為準）
+ //	trapint N [max]        記錄進入 INT N 向量所指處理常式時的暫存器
+ //	where [NAME]           記錄目前 CS:IP、暫存器與接下來 8 位元組
+ //	palwatch on|off       顯示調色盤一變就記一行（含幀計數與具名比對）
+@@ -146,6 +156,117 @@ func (r *rt) exec(f []string) error {
+ 			x, e := r.rd16(uint32(a))
+ 			return e == nil && uint64(x) == v
+ 		}, b)
++	case "until8":
++		if err := need(2); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		v, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 3, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.runUntil(fmt.Sprintf("byte %X == %X", a, v), func() bool {
++			la, e := r.gaddr(uint32(a))
++			return e == nil && uint64(r.m.Read8(la)) == v
++		}, b)
++	case "untiltrace":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 2, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.untilTraceRows(v, b)
++	case "play":
++		if err := need(2); err != nil {
++			return err
++		}
++		var v uint64
++		if f[1] == "now" && r.tf != nil {
++			v = r.tf.n
++		} else {
++			var err error
++			if v, err = num(f[1]); err != nil {
++				return err
++			}
++		}
++		return r.play(v, f[2:])
++	case "tracerows":
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		if r.tf == nil {
++			return fmt.Errorf("完整追蹤還沒開（trace NAME full）")
++		}
++		return r.untilTraceRows(r.tf.n+v, 1_500_000_000)
++	case "tracepc":
++		if err := need(1); err != nil {
++			return err
++		}
++		a, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		mx, err := argNum(f, 2, 50)
++		if err != nil {
++			return err
++		}
++		return r.tracePC(uint32(a), int(mx))
++	case "watchw":
++		if err := need(3); err != nil {
++			return err
++		}
++		a, err := num(f[2])
++		if err != nil {
++			return err
++		}
++		l, err := num(f[3])
++		if err != nil {
++			return err
++		}
++		mx, err := argNum(f, 4, 50)
++		if err != nil {
++			return err
++		}
++		return r.watchWrite(f[1], uint32(a), uint32(l), int(mx))
++	case "savestate":
++		if err := need(1); err != nil {
++			return err
++		}
++		if err := state.Save(f[1], r.m, r.d); err != nil {
++			return err
++		}
++		r.logf("state", "save %s steps=%d", f[1], r.m.Steps)
++		return nil
++	case "loadstate":
++		if err := need(1); err != nil {
++			return err
++		}
++		if err := state.Load(f[1], r.m, r.d); err != nil {
++			return err
++		}
++		r.base = 0
++		r.lastDiv = r.m.PITDivisor()
++		r.lastTicks = r.m.Ticks
++		r.lastMiss, r.lastExecN = len(r.d.Missing), len(r.d.ExecLog)
++		r.logf("state", "load %s steps=%d", f[1], r.m.Steps)
++		return nil
+ 	case "untilframe":
+ 		if err := need(1); err != nil {
+ 			return err
+@@ -417,6 +538,9 @@ func (r *rt) exec(f []string) error {
+ 			r.traceStop()
+ 			return nil
+ 		}
++		if len(f) > 2 && f[2] == "full" {
++			return r.traceFullStart(f[1])
++		}
+ 		return r.traceStart(f[1])
+ 	case "trapint":
+ 		// trapint N [max]：記錄每次進入 INT N 向量所指處理常式時的暫存器
+diff --git a/cmd/rs2dyn/trace_full.go b/cmd/rs2dyn/trace_full.go
+new file mode 100644
+index 0000000..123f9cd
+--- /dev/null
++++ b/cmd/rs2dyn/trace_full.go
+@@ -0,0 +1,342 @@
++package main
++
++import (
++	"bufio"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strconv"
++)
++
++// 逐幀完整狀態收據（JSON Lines）。格式與取樣點定義見 docs/re/10-dynamic-receipts.md「逐幀收據」。
++//
++// 取樣在「某個固定位址的指令剛執行完」的那一刻進行（m.Insn() 是剛執行完的指令）。
++// 每個邏輯幀恰好走過其中一個取樣點一次：
++//
++//	第一關 sub_10F41 結尾 10F98h（mov cx, 2，緊接 call sub_11097）；頭目段 sub_10F9F 的 10FE3h。
++//	  sub_10EEA 每次呼叫恰好走進這兩個函式之一。幀計數的 inc 在取樣點之前，取樣值是遞增後的值。
++//	第二至四關每個幀函式把 inc word_1CFE2 放在 call sub_11097 之後，取樣點取 inc 剛執行完：
++//	  1333Ch／13390h（sub_132EB／sub_13344）、13B5Fh／13BBBh（sub_13B0A／sub_13B75）、
++//	  13EF4h／13F42h（sub_13EAB／sub_13EF9）。取樣值同樣是遞增後的值。
++//
++// 位址是 IDA 線性位址，執行期換算用 rt.base（INT 8 向量定出的映像基底）。
++const dsBias = 0x1CBC0 // dseg:0 的 IDA 線性位址
++
++var (
++	sigMovCx2 = []byte{0xB9, 0x02, 0x00, 0xE8} // mov cx, 2 ; call sub_11097
++	sigIncFr  = []byte{0xFF, 0x06, 0x22, 0x04} // inc word ptr ds:422h（word_1CFE2）
++)
++
++// tracePoint 是一個取樣或計數位址。sample 為真時取樣；inc 為真時計入幀計數遞增次數。
++type tracePoint struct {
++	ida    uint32
++	sample bool
++	inc    bool
++	sig    []byte
++}
++
++var tracePoints = []tracePoint{
++	{0x10F98, true, false, sigMovCx2}, {0x10FE3, true, false, sigMovCx2},
++	{0x10F6E, false, true, sigIncFr}, {0x10FD3, false, true, sigIncFr},
++	{0x1333C, true, true, sigIncFr}, {0x13390, true, true, sigIncFr},
++	{0x13B5F, true, true, sigIncFr}, {0x13BBB, true, true, sigIncFr},
++	{0x13EF4, true, true, sigIncFr}, {0x13F42, true, true, sigIncFr},
++}
++
++const (
++	ptLo = 0x10F6E
++	ptHi = 0x13F42
++)
++
++// fullTracer 是 trace NAME full 的狀態。
++type fullTracer struct {
++	f    *os.File
++	w    *bufio.Writer
++	n    uint64  // 已寫出的筆數
++	incs uint64  // 追蹤開始後執行過的 inc word_1CFE2 次數（各處合計）
++	tbl  []uint8 // 索引 = IDA 位址 − ptLo；0 無、1 取樣、2 計數、3 兩者
++	lo   uint32  // ptLo 的執行期線性位址
++	buf  []byte
++}
++
++func (r *rt) traceFullStart(name string) error {
++	if _, err := r.gaddr(idaBase); err != nil {
++		return err
++	}
++	for _, p := range tracePoints {
++		a := r.base + p.ida - idaBase
++		for i, b := range p.sig {
++			if got := r.m.Read8(a + uint32(i)); got != b {
++				return fmt.Errorf("取樣點 %05X 的機器碼不符（第 %d 位元組 %02X，預期 %02X），拒絕追蹤", p.ida, i, got, b)
++			}
++		}
++	}
++	f, err := os.Create(filepath.Join(r.out, "trace-"+name+".jsonl"))
++	if err != nil {
++		return err
++	}
++	t := &fullTracer{f: f, w: bufio.NewWriterSize(f, 1<<20), buf: make([]byte, 0, 16384),
++		tbl: make([]uint8, ptHi-ptLo+1), lo: r.base + ptLo - idaBase}
++	for _, p := range tracePoints {
++		var v uint8
++		if p.sample {
++			v |= 1
++		}
++		if p.inc {
++			v |= 2
++		}
++		t.tbl[p.ida-ptLo] = v
++	}
++	r.keyLog = r.keyLog[:0]
++	r.tf = t
++	r.logf("trace", "start %s full (JSONL) base=%05X points=%d", name, r.base, len(tracePoints))
++	return nil
++}
++
++func (r *rt) traceFullStop() {
++	t := r.tf
++	if t == nil {
++		return
++	}
++	t.w.Flush()
++	t.f.Close()
++	r.logf("trace", "stop full rows=%d incs=%d", t.n, t.incs)
++	r.tf = nil
++}
++
++// traceFullTick 在每道指令之後呼叫。m.Insn() 是剛執行完的那道指令的位址；
++// 中斷處理常式的指令位址不同，所以中斷插入不會造成重複或漏取。
++func (r *rt) traceFullTick() {
++	t := r.tf
++	cs, ip := r.m.Insn()
++	lin := uint32(cs)<<4 + uint32(ip)
++	if lin < t.lo || lin-t.lo >= uint32(len(t.tbl)) {
++		return
++	}
++	v := t.tbl[lin-t.lo]
++	if v == 0 {
++		return
++	}
++	if v&2 != 0 {
++		t.incs++
++	}
++	if v&1 != 0 {
++		r.sampleFull(lin - r.base + idaBase)
++	}
++}
++
++func (r *rt) dsw(off uint32) uint16 { return r.m.Read16(r.base + dsBias - idaBase + off) }
++
++// 以 IDA 線性位址讀（word_1CFE2 之類的名稱用）。
++func (r *rt) iw(ida uint32) uint16 { return r.m.Read16(r.base + ida - idaBase) }
++func (r *rt) ib(ida uint32) uint8  { return r.m.Read8(r.base + ida - idaBase) }
++
++func putKV(b []byte, k string, v uint32) []byte {
++	b = append(b, '"')
++	b = append(b, k...)
++	b = append(b, '"', ':')
++	return strconv.AppendUint(b, uint64(v), 10)
++}
++
++func (r *rt) wordArr(b []byte, ida uint32, n int) []byte {
++	b = append(b, '[')
++	for i := 0; i < n; i++ {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(r.iw(ida+uint32(i)*2)), 10)
++	}
++	return append(b, ']')
++}
++
++// player 一位玩家的欄位：每個值是 IDA 位址與寬度，位址由 docs/re/11 第 9.2 節列出並以機器碼核對。
++type playerFld struct {
++	key  string
++	ida  uint32
++	word bool
++}
++
++var player1 = []playerFld{
++	{"col", 0x1DACB, true}, {"row", 0x1DAC9, true}, {"x", 0x1DAC7, true}, {"y", 0x1DAC5, true},
++	{"img", 0x1DABD, true}, {"hit", 0x1DAC0, false}, {"inv", 0x1DAC1, false}, {"die", 0x1DAC3, false},
++	{"hp", 0x1CFDE, true}, {"wpn", 0x1DAA9, true}, {"pod1", 0x1DA8D, false}, {"pod2", 0x1DA8E, false},
++	{"face", 0x1DA8F, true}, {"chg", 0x1DA8B, true},
++}
++
++var player2 = []playerFld{
++	{"col", 0x1DB39, true}, {"row", 0x1DB37, true}, {"x", 0x1DB21, true}, {"y", 0x1DB1F, true},
++	{"img", 0x1DB17, true}, {"hit", 0x1DB1A, false}, {"inv", 0x1DB1B, false}, {"die", 0x1DB1D, false},
++	{"hp", 0x1CFE0, true}, {"wpn", 0x1DB0B, true}, {"pod1", 0x1DAEF, false}, {"pod2", 0x1DAF0, false},
++	{"face", 0x1DAF1, true}, {"chg", 0x1DAED, true},
++}
++
++func (r *rt) playerObj(b []byte, fl []playerFld) []byte {
++	b = append(b, '{')
++	for i, f := range fl {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		if f.word {
++			b = putKV(b, f.key, uint32(r.iw(f.ida)))
++		} else {
++			b = putKV(b, f.key, uint32(r.ib(f.ida)))
++		}
++	}
++	return append(b, '}')
++}
++
++// pool 輸出指標表與每個非 0 指標指向的記錄原始字組。指標是 dseg 位移。
++func (r *rt) pool(b []byte, tkey, rkey string, tblOff uint32, slots, words int) []byte {
++	b = append(b, '"')
++	b = append(b, tkey...)
++	b = append(b, '"', ':', '[')
++	ptrs := make([]uint16, slots)
++	for i := 0; i < slots; i++ {
++		ptrs[i] = r.dsw(tblOff + uint32(i)*2)
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(ptrs[i]), 10)
++	}
++	b = append(b, ']', ',', '"')
++	b = append(b, rkey...)
++	b = append(b, '"', ':', '[')
++	first := true
++	for i, p := range ptrs {
++		if p == 0 {
++			continue
++		}
++		if !first {
++			b = append(b, ',')
++		}
++		first = false
++		b = append(b, '{')
++		b = putKV(b, "s", uint32(i))
++		b = append(b, ',', '"', 'w', '"', ':', '[')
++		for k := 0; k < words; k++ {
++			if k > 0 {
++				b = append(b, ',')
++			}
++			b = strconv.AppendUint(b, uint64(r.dsw(uint32(p)+uint32(k)*2)), 10)
++		}
++		b = append(b, ']', '}')
++	}
++	return append(b, ']')
++}
++
++func (r *rt) dsArr(b []byte, key string, off uint32, n int) []byte {
++	b = append(b, '"')
++	b = append(b, key...)
++	b = append(b, '"', ':', '[')
++	for i := 0; i < n; i++ {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(r.dsw(off+uint32(i)*2)), 10)
++	}
++	return append(b, ']')
++}
++
++func (r *rt) sampleFull(pt uint32) {
++	t := r.tf
++	m := r.m
++	b := t.buf[:0]
++	b = append(b, '{')
++	b = putKV(b, "n", uint32(t.n))
++	b = append(b, ',')
++	b = putKV(b, "frame", uint32(r.iw(0x1CFE2)))
++	b = append(b, `,"pt":"`...)
++	b = strconv.AppendUint(b, uint64(pt), 16)
++	b = append(b, `",`...)
++	b = putKV(b, "page", uint32(r.iw(0x26872)))
++	b = append(b, ',')
++	b = putKV(b, "in1", uint32(r.ib(0x1DAA4)))
++	b = append(b, ',')
++	b = putKV(b, "in2", uint32(r.ib(0x1DB06)))
++	b = append(b, ',')
++	b = append(b, `"sc":[`...)
++	for i, k := range r.keyLog {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(k), 10)
++	}
++	r.keyLog = r.keyLog[:0]
++	b = append(b, `],`...)
++	b = putKV(b, "alive", uint32(r.ib(0x1CFDD)))
++	b = append(b, ',')
++	b = putKV(b, "clear", uint32(r.ib(0x1CFAD)))
++	b = append(b, ',', '"', 'p', '1', '"', ':')
++	b = r.playerObj(b, player1)
++	b = append(b, ',', '"', 'p', '2', '"', ':')
++	b = r.playerObj(b, player2)
++	b = append(b, ',', '"', 'b', 'g', '"', ':')
++	b = append(b, '[')
++	for i, a := range []uint32{0x1E6B8, 0x1E6BA, 0x1E6BC, 0x1E6BE} {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(r.iw(a)), 10)
++	}
++	b = append(b, ']', ',')
++	b = r.pool(b, "ent_t", "ent", 0x2294, 15, 24)
++	b = append(b, ',')
++	b = r.pool(b, "pb_t", "pb", 0x2607, 20, 16)
++	b = append(b, ',')
++	b = r.pool(b, "eb_t", "eb", 0x32B3, 20, 15)
++	b = append(b, ',')
++	b = r.dsArr(b, "fx_x", 0x3FC2, 30)
++	b = append(b, ',')
++	b = r.dsArr(b, "fx_y", 0x3FFE, 30)
++	b = append(b, ',')
++	b = r.dsArr(b, "fx_a", 0x403A, 30)
++	b = append(b, ',')
++	b = r.dsArr(b, "g_st", 0x19C8, 10)
++	b = append(b, ',')
++	b = r.dsArr(b, "g_x", 0x19A0, 10)
++	b = append(b, ',')
++	b = r.dsArr(b, "g_y", 0x19B4, 10)
++	b = append(b, ',')
++	b = r.dsArr(b, "g_dx", 0x198C, 10)
++	b = append(b, ',', '"', 'm', 'i', 's', 'c', '"', ':', '{')
++	b = putKV(b, "seek", uint32(r.iw(0x1F1A8)))
++	b = append(b, ',')
++	b = putKV(b, "dhp", uint32(r.iw(0x1E6B2)))
++	b = append(b, ',')
++	b = putKV(b, "dfire", uint32(r.iw(0x1E6B4)))
++	b = append(b, ',')
++	b = putKV(b, "boom", uint32(r.ib(0x1CFAE)))
++	b = append(b, ',')
++	b = putKV(b, "demo", uint32(r.ib(0x1CFDC)))
++	b = append(b, ',')
++	b = putKV(b, "stage", uint32(r.ib(0x1CFDB)))
++	b = append(b, ',')
++	b = putKV(b, "nodmg", uint32(r.iw(0x273A5)))
++	b = append(b, ',')
++	b = putKV(b, "fx0", uint32(r.iw(0x20B7A)))
++	b = append(b, ',')
++	b = putKV(b, "fx1", uint32(r.iw(0x20B7C)))
++	b = append(b, ',')
++	b = putKV(b, "fx2", uint32(r.iw(0x20B7E)))
++	b = append(b, '}', ',', '"', 'e', 'm', 'u', '"', ':', '{')
++	b = append(b, '"', 's', 't', 'e', 'p', '"', ':')
++	b = strconv.AppendUint(b, m.Steps, 10)
++	b = append(b, ',')
++	b = append(b, '"', 't', 'i', 'c', 'k', 's', '"', ':')
++	b = strconv.AppendUint(b, m.Ticks, 10)
++	b = append(b, ',')
++	b = append(b, '"', 'i', 'n', 'c', 's', '"', ':')
++	b = strconv.AppendUint(b, t.incs, 10)
++	b = append(b, '}', '}', '\n')
++	t.w.Write(b)
++	t.buf = b
++	t.n++
++}
++
++// untilTraceRows 跑到完整追蹤已寫出 n 筆。
++func (r *rt) untilTraceRows(n, budget uint64) error {
++	if r.tf == nil {
++		return fmt.Errorf("完整追蹤還沒開（trace NAME full）")
++	}
++	return r.runUntil(fmt.Sprintf("追蹤筆數 >= %d", n), func() bool { return r.tf.n >= n }, budget)
++}
+diff --git a/cmd/rs2dyn/watch.go b/cmd/rs2dyn/watch.go
+new file mode 100644
+index 0000000..652e66a
+--- /dev/null
++++ b/cmd/rs2dyn/watch.go
+@@ -0,0 +1,45 @@
++package main
++
++import (
++	"fmt"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
++	"github.com/wicanr2/dosgolem/internal/machine"
++)
++
++// tracepc IDA [max]：執行到這個 IDA 位址就記一行暫存器與目前幀計數（最多 max 次，預設 50）。
++func (r *rt) tracePC(ida uint32, max int) error {
++	la, err := r.gaddr(ida)
++	if err != nil {
++		return err
++	}
++	if r.traps == nil {
++		r.traps = map[uint32]*trapInfo{}
++	}
++	r.traps[la] = &trapInfo{name: fmt.Sprintf("ida%05X", ida), max: max}
++	r.logf("trap", "%s lin=%05X max=%d", r.traps[la].name, la, max)
++	return nil
++}
++
++// watchw NAME IDA LEN [max]：寫入 [IDA, IDA+LEN) 時記一行：寫入位址、舊新值、寫入者的 IDA 指令位址、幀計數。
++func (r *rt) watchWrite(name string, ida, n uint32, max int) error {
++	la, err := r.gaddr(ida)
++	if err != nil {
++		return err
++	}
++	cnt := 0
++	r.m.WatchWrite(la, la+n-1, func(m *machine.Machine, a uint32, old, nw uint8) {
++		if old == nw || cnt >= max {
++			return
++		}
++		cnt++
++		cs, ip := m.Insn()
++		wl := uint32(cs)<<4 + uint32(ip)
++		fr, _ := r.rd16(idaFrame)
++		r.logf("watchw", "%s write ida=%05X %02X->%02X by ida=%05X frame=%d AX=%04X BX=%04X SI=%04X DI=%04X DS=%04X", name,
++			a-r.base+idaBase, old, nw, wl-r.base+idaBase, fr,
++			m.CPU.R[cpu.AX], m.CPU.R[cpu.BX], m.CPU.R[cpu.SI], m.CPU.R[cpu.DI], m.CPU.Seg[cpu.DS])
++	})
++	r.logf("watchw", "%s armed ida=%05X len=%d lin=%05X max=%d", name, ida, n, la, max)
++	return nil
++}

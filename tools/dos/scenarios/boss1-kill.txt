@@ -1,0 +1,38 @@
+# 第一關頭目擊殺：開發者秘技（不減血）加固定輸入，打倒核心（模板 47AAh），走完過關連爆，進入 J2 過場。
+# 追蹤從第一關第 1 幀開始（含秘技的按鍵）。秘技之後每幀開火（輸入位元組 10h），位置不動（欄 5、列 10），不用 Ctrl+C。
+# play 的 @NAME 在「上一幀取樣寫出之後」存畫面，位置以 play 開始後的筆數計。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+trace s1 full
+untiltrace 5 400_000_000
+shot b00_s1_start
+include /tools-dos/scenarios/cheat-god.txt
+palwatch on
+watchpc 0x10F36
+watchpc 0x10D62
+play now 10*300 @b01_stage_mid 10*288 @b02_f621_pre_boss 10*2 @b03_f623_composite 10*10 @b04_f633 10*100 @b05_boss_mid 10*200 @b06_boss_late 10*201 @b07_core_in_line 10*8 @b08_hits_8 10*9 @b09_hits_16 10*1 @b10_core_dead
+peekw frame_core_dead 0x1CFE2
+peek clear_core_dead 0x1CFAD 1
+peek boom_core_dead 0x1CFAE 1
+until8 0x1CFAE 1 100_000_000
+tracerows 2
+shot b11_boom_01
+until8 0x1CFAE 5 100_000_000
+tracerows 2
+shot b12_boom_05
+until8 0x1CFAE 10 100_000_000
+tracerows 2
+shot b13_boom_10
+until8 0x1CFAE 15 100_000_000
+tracerows 2
+shot b14_boom_15
+until8 0x1CFAE 20 100_000_000
+tracerows 2
+shot b15_boom_20
+untilopen J2.GO 1 100_000_000
+peekw frame_at_j2_open 0x1CFE2
+peek clear_at_j2_open 0x1CFAD 1
+peek boom_at_j2_open 0x1CFAE 1
+peek stage_at_j2_open 0x1CFDB 1
+secs 2
+shot b16_j2_screen
+trace off

@@ -1,0 +1,18 @@
+# 逐幀完整收據：展示模式 DM1 的 640 個邏輯幀（取樣點 10F98h／10FE3h）。
+# 冷啟動 → 密碼 → 開場 → 標題無按鍵 → DM1 開始，從第一幀記到第 640 筆。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen DM1.LCK 2
+untilvec8
+peekw demo_flag 0x1CFDC
+trace dm1 full
+untiltrace 640 1_200_000_000
+peekw frame 0x1CFE2
+trace off
+shot dm1_end

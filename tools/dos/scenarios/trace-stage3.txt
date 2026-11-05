@@ -1,0 +1,12 @@
+# 第三關完整逐幀追蹤（秘技、不送輸入）：第一、二關以 Ctrl+C 跳過。追蹤到第 1900 筆。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+trace s3 full
+include /tools-dos/scenarios/cheat-god.txt
+untiltrace 1900 4_000_000_000
+trace off
+shot s3_end

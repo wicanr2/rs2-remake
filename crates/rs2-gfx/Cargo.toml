@@ -1,0 +1,14 @@
+[package]
+name = "rs2-gfx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rs2-formats = { path = "../rs2-formats" }
+rs2-core = { path = "../rs2-core" }
+
+[lints]
+workspace = true

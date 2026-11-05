@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 重跑 docs/re/10-dynamic-receipts.md 引用的全部收據，輸出到 workspace/dosrun/<輸出名>/。
 #   tools/dos/rerun_all.sh build          建置 workspace/dosgolem 的 rs2dyn（要先套 tools/dosgolem-patches）
-#   tools/dos/rerun_all.sh g1|g2|g3|g4|g5  每組最多 4 個容器並行（每個 1 核、2 GB），組內前景等待
+#   tools/dos/rerun_all.sh g1|g2|g3|g4|g5|g6|g7|g8|g9  每組最多 4 個容器並行（每個 1 核、2 GB），組內前景等待
 # 腳本、配置（A/B/C，見 run_scenario.sh）與逾時依下表。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -24,5 +24,13 @@ case "${1:-}" in
     ;;
   g5) # 展示模式、S 鍵與喇叭
     "$R" demo demo A 590 & "$R" sound-toggle sound_toggle A 200 & wait ;;
-  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5" >&2; exit 1 ;;
+  g6) # 逐幀完整收據：DM1 640 幀與第一關頭目擊殺，各在兩個獨立容器跑（trace_dm1 對 trace_dm1_run2、boss1_kill 對 boss1_kill_run2）
+    "$R" trace-dm1 trace_dm1 A 590 & "$R" trace-dm1 trace_dm1_run2 A 590 & "$R" boss1-kill boss1_kill A 590 & "$R" boss1-kill boss1_kill_run2 A 590 & wait ;;
+  g7) # 四關完整追蹤（秘技、不送輸入，敵彈槽使用量）
+    "$R" trace-stage1 trace_stage1 A 590 & "$R" trace-stage2 trace_stage2 A 590 & "$R" trace-stage3 trace_stage3 A 590 & "$R" trace-stage4 trace_stage4 A 590 & wait ;;
+  g8) # 缺陷候選：裝甲格、追蹤彈計數（洩漏組與對照組）、敵彈槽進位
+    "$R" defect-armor defect_armor A 590 & "$R" defect-seeker-leak defect_seeker_leak A 590 & "$R" defect-seeker-ctrl defect_seeker_ctrl A 590 & "$R" defect-slot-carry defect_slot_carry A 590 & wait ;;
+  g9) # 重製對拍用：兩個入口的第一幀傾印、頭目擊殺的平面傾印
+    "$R" a0-demo a0_demo A 590 & "$R" a0-newgame a0_newgame A 590 & "$R" a5-boss a5_boss A 590 & wait ;;
+  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5|g6|g7|g8|g9" >&2; exit 1 ;;
 esac

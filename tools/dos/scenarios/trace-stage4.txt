@@ -1,0 +1,14 @@
+# 第四關完整逐幀追蹤（秘技、不送輸入）：第一到第三關以 Ctrl+C 跳過。追蹤到第 2200 筆（頭目出現在幀 1075 前後）。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 4
+include /tools-dos/scenarios/next-stage.txt
+trace s4 full
+include /tools-dos/scenarios/cheat-god.txt
+untiltrace 2200 5_000_000_000
+trace off
+shot s4_end

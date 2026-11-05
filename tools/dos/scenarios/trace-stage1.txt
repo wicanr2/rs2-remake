@@ -1,0 +1,8 @@
+# 第一關完整逐幀追蹤（秘技、不送輸入）：統計敵彈槽使用量。追蹤到頭目腳本結束、過關連爆走完、開 J2.GO 為止。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+trace s1 full
+include /tools-dos/scenarios/cheat-god.txt
+untilopen J2.GO 1 3_000_000_000
+trace off
+shot s1_end

@@ -1,0 +1,10 @@
+# 第二關完整逐幀追蹤（秘技、不送輸入）：第一關以 Ctrl+C 跳過。追蹤到頭目腳本結束、過關連爆走完、開 J3.GO 為止。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+trace s2 full
+include /tools-dos/scenarios/cheat-god.txt
+untilopen J3.GO 1 3_000_000_000
+trace off
+shot s2_end

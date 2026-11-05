@@ -1,0 +1,41 @@
+# A0、A5：展示模式第一幀前的資料段與平面，加固定幀的平面傾印。
+# 冷啟動 → 密碼 → 開場 → 標題無按鍵 → DM1。untilpc 停在 sub_10CD0 的主迴圈頭。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen DM1.LCK 2
+untilvec8
+untilpc 0x10D29 100_000_000
+peekw frame_at_entry 0x1CFE2
+dumpds demo_entry
+dumpplanes demo_entry
+shot demo_entry
+trace dm1 full
+untiltrace 1 200_000_000
+dumpplanes demo_n0
+shot demo_n0
+untiltrace 2 200_000_000
+dumpplanes demo_n1
+shot demo_n1
+untiltrace 100 400_000_000
+dumpplanes demo_n99
+shot demo_n99
+untiltrace 300 800_000_000
+dumpplanes demo_n299
+shot demo_n299
+untiltrace 621 1_200_000_000
+dumpplanes demo_n620
+shot demo_n620
+untiltrace 623 200_000_000
+dumpplanes demo_n622
+shot demo_n622
+untiltrace 640 200_000_000
+dumpplanes demo_n639
+shot demo_n639
+dumpds demo_n639
+trace off

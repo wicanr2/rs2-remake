@@ -1,0 +1,24 @@
+[package]
+name = "rs2-play"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "LicenseRef-RRSAL-1.0"
+publish = false
+
+# 獨立的 workspace：sdl2 是 rs2-core、rs2-gfx 等 crate 唯一的外部相依，不讓它進根 workspace 的 Cargo.lock。
+# 建置與測試走 tools/rust.sh play-build、play-test。
+[workspace]
+
+[dependencies]
+sdl2 = "=0.38.0"
+rs2-core = { path = "../rs2-core" }
+rs2-formats = { path = "../rs2-formats" }
+rs2-gfx = { path = "../rs2-gfx" }
+rs2-trace = { path = "../rs2-trace" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+overflow-checks = true

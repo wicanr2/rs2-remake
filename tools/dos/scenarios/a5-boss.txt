@@ -1,0 +1,45 @@
+# A5：第一關頭目擊殺的固定幀平面傾印。輸入與 boss1-kill 相同，play 切段才能插 dumpplanes。
+# 傾印時點是「第 N 筆取樣寫出之後」，對應 Rust 的第 N−1 步。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+trace s1 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+watchpc 0x10F36
+watchpc 0x10D62
+play now 10*300
+dumpplanes boss_333
+shot boss_333
+play now 10*288
+dumpplanes boss_621
+shot boss_621
+play now 10*2
+dumpplanes boss_623
+shot boss_623
+play now 10*10
+dumpplanes boss_633
+shot boss_633
+play now 10*100
+dumpplanes boss_733
+shot boss_733
+play now 10*200
+dumpplanes boss_933
+shot boss_933
+play now 10*201
+dumpplanes boss_1134
+shot boss_1134
+play now 10*8
+dumpplanes boss_1142
+shot boss_1142
+play now 10*9
+dumpplanes boss_1151
+shot boss_1151
+play now 10*1
+dumpplanes boss_1152
+shot boss_1152
+untiltrace 1170 100_000_000
+dumpplanes boss_1170
+shot boss_1170
+untiltrace 1192 100_000_000
+dumpplanes boss_1192
+shot boss_1192
+trace off

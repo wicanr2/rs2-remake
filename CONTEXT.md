@@ -12,7 +12,7 @@
 | 靜態邏輯 | 主流程、實體、移動腳本、碰撞、武器、敵彈、難度、亂數、四關流程、頭目、過場完成，未解項見 `WORKLIST.md` |
 | 動態驗證 | dosgolem 跑通冷啟動、四關、片尾、熱鍵、展示錄影、影格速率。第一關頭目已實際擊殺，有逐幀收據。第二至四關頭目未擊殺，單色模式只驗開檔 |
 | HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出，全批目視完成。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。尚未接入遊戲驗證 |
-| remake | 實作中，技術棧 Rust。規格 [001](docs/spec/001-rust-first-stage.md) 是 READY。第一關核心通過 A0～A4、A2b、A8，畫面通過 A5、A5b，前端通過 A6。只差使用者試玩（A7），通過才標 CONFORMED。啟動：`tools/rust.sh play-build && tools/rust.sh play` |
+| remake | 第一關完成，規格 [001](docs/spec/001-rust-first-stage.md) 是 CONFORMED。模擬與原版逐幀相同，原版圖畫面逐位元組相同。其餘流程、關卡與音訊未開始 |
 | 版控 | 私人 repo `wicanr2/rs2-remake`，推送前跑 `tools/leak_check.py`。`docs/images/` 有含原版美術的對照圖，公開前要清歷史 |
 | LICENSE | RRSAL-1.0 |
 
@@ -23,6 +23,7 @@
 - 2026-11-04 使用者從試稿選定 HD 畫風 A：1990 年代日台動畫與機甲插畫的賽璐璐加噴槍。風格檔 `tools/hd-styles/a-cel-airbrush.txt`，對照圖 `workspace/hd/pilot-compare/`。輸出是邏輯尺寸 4 倍。
 
 - 2026-11-05 使用者決定：README 的原版與 HD 對照圖進版控，直接進 `main`。範圍只有 `docs/images/`，其他抽出的 PNG 與單張 HD 成品仍只留本機。repo 維持私人，公開前要先問使用者並清掉歷史。
+- 2026-11-05 使用者決定：不做真人試玩（規格 001 A7），之後由代理繼續，使用者只看結果。
 
 - 2026-11-04 使用者決定：建立私人 repo；remake 用 Rust；署名圖等美術工程姓名確認後再決定是否重繪；單色版不送 Codex 重繪，保留目前的推導結果。
 

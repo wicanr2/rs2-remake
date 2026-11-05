@@ -1,0 +1,19 @@
+# 缺陷候選 bullet_slot_carry：第四關（秘技、不送輸入），與 trace-stage4 相同的輸入加上暫存器記錄。
+# sub_14D54（14D54h）收到敵彈格值，算出要清的指標表項：and al, 0Fh；dec al；bx = al x 2；[bx+32B3h] = 0。
+# 14D62h 是清除的那一道寫入。32B3h 起的敵彈池指標表只有 20 項，槽號 15 以上的格值會算出表外的索引。
+include /tools-dos/scenarios/prefix-to-stage1.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 3
+include /tools-dos/scenarios/next-stage.txt
+set NEXT 4
+include /tools-dos/scenarios/next-stage.txt
+trace s4 full
+tracepc 0x14D54 5000
+tracepc 0x14D62 5000
+watchw slot15_w10 0x20071 2 20000
+include /tools-dos/scenarios/cheat-god.txt
+untiltrace 2200 5_000_000_000
+trace off
+shot c_end

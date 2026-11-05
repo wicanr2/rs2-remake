@@ -5,7 +5,10 @@
   range 起 迄               印線性位址範圍，十六進位不帶 h
   grep 正規式 [最多筆]      對去註解後的反組譯做 regex，每筆標所屬函式
   callers NAME              列 call/jmp 到 NAME 的位置
-  refs 符號                 列所有提到該符號的行
+  refs 符號                 列所有提到該符號的行。符號是 word_1F1A8 這類線性位址名稱時，
+                            也列 ds:25E8h 這種偏移形式，兩者是同一個變數
+  dsrefs 偏移 [長度]        列提到 dseg:偏移（到偏移+長度）的行，含名稱與 ds: 兩種形式。
+                            [bx+偏移] 這類表格存取抓不到，「沒有寫入」的結論要另外確認
   bytes 線性位址 長度       印解包映像的原始位元組
   ds 偏移 長度              印 dseg:偏移 的位元組（線性 = 1CBC0h + 偏移）
   dw 偏移 字組數            以 u16 印 dseg:偏移
@@ -75,8 +78,21 @@ elif c == "callers":
         s = clean(l)
         if r.search(s):
             print(f"[{owner[i]}] {s}")
-elif c == "refs":
-    r = re.compile(r"\b" + re.escape(a[0]) + r"\b")
+elif c in ("refs", "dsrefs"):
+    if c == "refs":
+        m = re.fullmatch(r"[a-z]+_([0-9A-F]{5})", a[0])
+        off = int(m.group(1), 16) - DS if m else -1
+        names = [a[0]]
+        offs = [off] if 0 <= off < 0x10000 else []
+    else:
+        off = int(a[0], 16)
+        offs = list(range(off, off + (int(a[1], 0) if len(a) > 1 else 1)))
+        names = []
+    alts = [re.escape(n) for n in names]
+    for o in offs:
+        alts.append(r"[a-z]+_%05X" % (DS + o))
+        alts.append(r"ds:0?%Xh" % o)
+    r = re.compile(r"\b(?:" + "|".join(alts) + r")\b")
     for i, l in enumerate(L):
         s = clean(l)
         if r.search(s):

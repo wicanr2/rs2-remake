@@ -18,7 +18,7 @@ if [[ -n "${RS2_EXTRA_MOUNT:-}" ]]; then
   test -e "${RS2_EXTRA_MOUNT%%:*}" || { echo "dd.sh：掛載來源不存在" >&2; exit 1; }
   EXTRA+=(-v "$RS2_EXTRA_MOUNT")
 fi
-exec timeout "$TMO" docker run --rm --init --name "rs2-dyn-${PURPOSE}-$$" --network none \
+exec timeout "$TMO" docker run --rm --init --name "${RS2_CNAME:-rs2-dyn}-${PURPOSE}-$$" --network none \
   -u "$(id -u):$(id -g)" --memory "${RS2_MEM:-4g}" --cpus "${RS2_CPUS:-4}" --pids-limit 256 \
   --log-opt max-size=10m --log-opt max-file=3 \
   -v "$ORIG:/orig:ro" -v "$ROOT/tools/dos:/tools-dos:ro" -v "$OUT:/out" -v "$ROOT/workspace/dosgolem/workplace/bin:/bin-dyn:ro" \
