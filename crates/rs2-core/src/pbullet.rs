@@ -35,6 +35,7 @@ use crate::entity::ARMOR_CELL;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
 use crate::mirror::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end, pb_record_link};
+use crate::video::MyCopy;
 
 /// 池的槽數。
 pub(crate) const POOL_SIZE: usize = 20;
@@ -588,8 +589,8 @@ impl Core {
     /// 畫子彈、寫 G3、對 G1 與 G4 做碰撞、結算命中（原版 `sub_1691A`）。回傳是否因碰撞消失。
     fn draw_and_collide(&mut self, bullet: &PlayerBullet) -> bool {
         self.set_blit_params(bullet.blit_x, bullet.blit_y, bullet.image);
-        self.s18e73();
-        self.s18eb6();
+        self.cut_my(MyCopy::PlayerShot);
+        self.overlay_my(MyCopy::PlayerShot);
         // 形狀寬同時寫進繪製的每列位元組殘值，三段碰撞碼寫的是同一個值，只寫一次（見 `Core::stamp_shape`）。
         self.stamp_shape(bullet.shape, bullet.col, bullet.row);
         let mut impact = self.collide_entities(bullet);
@@ -675,7 +676,7 @@ impl Core {
         let mut x = bullet.blit_x;
         for _ in 0..loop_count(length) {
             self.set_blit_params(x, bullet.blit_y, image);
-            self.s18c0a();
+            self.overwrite_my();
             (x, bullet.col) = match facing {
                 Facing::Right => (x.wrapping_add(1), bullet.col.wrapping_add(1)),
                 Facing::Left => (x.wrapping_sub(1), bullet.col.wrapping_sub(1)),

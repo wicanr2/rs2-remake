@@ -90,7 +90,7 @@ impl Core {
     /// 本體對 G1（原版 `sub_14B1E`、`sub_1564C`）：任何非 0 且非 FFh 的格都算受擊，不分哪個實體。
     pub(super) fn body_touches_entities(&mut self, who: usize) {
         let shape = self.player_footprint(who, PlayerShape::Body);
-        self.set_stride_reg(shape.width);
+        self.set_shape_width(shape.width);
         let p = self.pl.ship[who];
         let mut touched = false;
         self.scan_footprint(ScanGrid::Entities, p.row, p.col, shape, |_, _, cell| {
@@ -109,7 +109,7 @@ impl Core {
             return;
         }
         let shape = self.player_footprint(who, PlayerShape::Flame);
-        self.set_stride_reg(shape.width);
+        self.set_shape_width(shape.width);
         let p = self.pl.ship[who];
         let mut at = self.grid4_cell_addr(p.row, p.col);
         for _ in 0..loop_count(shape.width) {
@@ -124,7 +124,7 @@ impl Core {
     /// 再依格值判定（[`Core::touch_bullet_cell`]）。掃完依撿到的道具升級（[`Core::upgrade`]）。
     pub(super) fn body_touches_bullets(&mut self, who: usize) {
         let shape = self.player_footprint(who, PlayerShape::Body);
-        self.set_stride_reg(shape.width);
+        self.set_shape_width(shape.width);
         let p = self.pl.ship[who];
         let mut picked = None;
         self.scan_footprint(ScanGrid::Bullets, p.row.wrapping_add(1), p.col, shape, |core, addr, cell| {
@@ -171,7 +171,7 @@ impl Core {
     /// (`col`, `row`) 是砲座要掃的位置：第一座在砲座位置，第二座在下方 [`super::PodStyle::gap_rows`] 列。
     pub(super) fn pod_touches_entities(&mut self, who: usize, col: u16, row: u16) {
         let shape = self.player_footprint(who, PlayerShape::Pod);
-        self.set_stride_reg(shape.width);
+        self.set_shape_width(shape.width);
         let mut contact = 0;
         self.scan_footprint(ScanGrid::Entities, row, col, shape, |_, _, cell| {
             if cell != 0 && cell != INERT_CELL {
@@ -190,7 +190,7 @@ impl Core {
     /// 道具球不吃。
     pub(super) fn pod_shields_bullets(&mut self, who: usize, col: u16, row: u16) {
         let shape = self.player_footprint(who, PlayerShape::Body);
-        self.set_stride_reg(shape.width);
+        self.set_shape_width(shape.width);
         self.scan_footprint(ScanGrid::Bullets, row, col, shape, |core, addr, cell| {
             if cell != 0 && cell & ITEM_BITS == 0 { core.remove_hit_bullet(cell, addr) } else { None }
         });

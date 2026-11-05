@@ -100,8 +100,8 @@ impl Core {
             self.sc.props[slot].x = next;
         }
         self.set_blit_params(x, y, image);
-        self.s18f1a();
-        self.s18f5d();
+        self.cut_stage();
+        self.overlay_stage();
     }
 }
 

@@ -15,9 +15,10 @@
 //! 之後只有它自己的步驟函式讀寫。這裡改成每張卡一個小結構，每一步回傳要畫的字，不碰資料段。
 //! 結構不依賴 `Core`，終點座標可以對文件做單元測試。
 
+use crate::draw::BegGroup;
 use crate::game::Core;
-use crate::mirror::SCRATCH_B;
-use crate::scene::{Glyph, Page, Palette, Placement, SCREEN_ROWS, ScratchView};
+use crate::scene::{Glyph, Palette, Placement, SCREEN_ROWS, ScratchView};
+use crate::video::{Page, RowCopy, SCRATCH_B};
 
 /// 遊戲的四關。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,7 +301,7 @@ impl Core {
                     self.draw_act(p.glyph, p.x, p.y);
                 }
                 self.await_timer_ticks(1).await;
-                self.mirror_scan_lines();
+                self.end_of_frame_copy();
             }
         }
     }
@@ -310,12 +311,12 @@ impl Core {
     /// 示範模式（`byte_1CFDC` 不是 `N`）只清暫存區 B 並換回 `title_d`，不畫。
     async fn show_picture(&mut self, stage: CampaignStage) {
         if self.in_demo_mode() {
-            self.clear_scratch();
+            self.clear_scratch_b();
             self.load_palette(Palette::TitleD);
             return;
         }
         self.load_picture(stage);
-        self.mirror_scan_lines();
+        self.end_of_frame_copy();
         self.show_page(Page::Zero);
         self.draw_on(Page::Zero);
         self.restore_background();
@@ -326,13 +327,13 @@ impl Core {
     /// 第三關另外用 200 次整頁複製，圖由下往上滑入。
     fn load_picture(&mut self, stage: CampaignStage) {
         match stage {
-            CampaignStage::One => self.s1b008(),   // J1.GO
-            CampaignStage::Two => self.s1b01d(),   // J2.GO
-            CampaignStage::Three => self.s1b032(), // J3.GO
-            CampaignStage::Four => self.s1b047(),  // J4.GO
+            CampaignStage::One => self.load_beg_bank(BegGroup::J1),   // J1.GO
+            CampaignStage::Two => self.load_beg_bank(BegGroup::J2),   // J2.GO
+            CampaignStage::Three => self.load_beg_bank(BegGroup::J3), // J3.GO
+            CampaignStage::Four => self.load_beg_bank(BegGroup::J4),  // J4.GO
         }
         self.select_scratch(SCRATCH_B);
-        self.clear_scratch();
+        self.clear_scratch_b();
         let (palette, image) = stage.picture();
         self.load_palette(palette);
         self.draw_beg_to_scratch(Placement::at(0, 0, image));
@@ -348,7 +349,7 @@ impl Core {
         self.show_page(Page::One);
         self.draw_on(Page::One);
         for _ in 0..SCREEN_ROWS {
-            self.copy_rows_to_page_shifted(SCREEN_ROWS);
+            self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
             view.y = view.y.wrapping_sub(1);
             self.set_scratch_view(view);
         }

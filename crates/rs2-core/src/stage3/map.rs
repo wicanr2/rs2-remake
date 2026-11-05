@@ -8,9 +8,10 @@
 //! 同時有兩份格網跟著捲動：碰撞用的 G4（每格是該處圖塊的索引，非 0 就擋玩家彈與玩家）和髒格 G3。它們仍在資料段，
 //! 由 `mirror.rs` 的格網一節擁有，這裡經 `scroll_terrain_grids` 等具名函式操作。
 
-use crate::draw::{Op, Pool};
+use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::{GRID_COLS, SCRATCH_A, SCRATCH_B};
+use crate::mirror::GRID_COLS;
+use crate::video::{SCRATCH_A, SCRATCH_B, ScrollOp};
 
 /// 地圖每列的欄數。戰場加大（規格 005）時地圖欄數與畫面欄數（`GRID_COLS`）、新欄生成位置要一起改。
 const MAP_COLUMNS: u16 = 0x258;
@@ -106,28 +107,28 @@ impl Core {
         self.select_scratch(SCRATCH_A);
         for plane in [1, 2, 4, 8] {
             self.select_plane(plane);
-            self.emit_scroll_op(Op::S17EBA);
-            self.emit_scroll_op(Op::S17EEA);
+            self.scroll_op(ScrollOp::RotateCopy);
+            self.scroll_op(ScrollOp::ShiftLeft4);
         }
         self.select_all_planes();
     }
 
     /// 暫存區 A 從視窗左緣起的 40 欄 × 190 列，以寫入模式 1 複製到目前的顯示頁（原版 `sub_17FA0`）。
     fn show_scratch_a(&mut self) {
-        self.show_scratch_window(SCRATCH_A, Op::S17FA0);
+        self.show_scratch_window(SCRATCH_A, ScrollOp::ShowA);
     }
 
     /// 暫存區 B（A 左移 4 像素）的同一份顯示（原版 `sub_18031`）。結束時暫存區選擇留在 B，呼叫端再選回 A。
     fn show_scratch_b(&mut self) {
-        self.show_scratch_window(SCRATCH_B, Op::S18031);
+        self.show_scratch_window(SCRATCH_B, ScrollOp::ShowB);
     }
 
-    fn show_scratch_window(&mut self, scratch: u16, op: Op) {
+    fn show_scratch_window(&mut self, scratch: u16, op: ScrollOp) {
         let window = self.scenes.map.window;
         self.set_blit_x(window);
         self.select_scratch(scratch);
         self.set_obj(Pool::Background, 0);
-        self.emit_scroll_op(op);
+        self.scroll_op(op);
         self.clear_obj();
         self.set_blit_x(0);
     }
@@ -141,7 +142,7 @@ impl Core {
         self.scenes.map.window = 0;
         self.set_blit_x(0);
         self.select_scratch(SCRATCH_A);
-        self.emit_scroll_op(Op::S180C6);
+        self.scroll_op(ScrollOp::ShiftBothLeft);
     }
 
     /// 第二頁（`word_26872` 非 0）的捲動步（原版 `sub_182CD`）：推進視窗，地圖左緣加 1，G4 與 G3 左移一格；
@@ -172,8 +173,8 @@ impl Core {
         self.select_scratch(SCRATCH_A);
         for plane in [1, 2, 4, 8] {
             self.select_plane(plane);
-            self.emit_scroll_op(Op::S17F26);
-            self.emit_scroll_op(Op::S17F5D);
+            self.scroll_op(ScrollOp::RotateColumn);
+            self.scroll_op(ScrollOp::MergeSeam);
         }
         self.select_all_planes();
         self.show_scratch_b();
@@ -184,6 +185,7 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::draw::Op;
     use crate::game::{Fixes, Start};
     use crate::mirror::{GRID3_START, GRID4_START, TERRAIN_ROW_BYTES};
 

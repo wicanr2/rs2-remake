@@ -8,7 +8,8 @@
 
 use crate::game::Core;
 use crate::mirror::{Key, PLAYER1_ACTIVE, PLAYER2_ACTIVE};
-use crate::scene::{Page, Palette, Placement};
+use crate::scene::{Palette, Placement};
+use crate::video::Page;
 
 /// 選單的三個欄位，照原版的字組寬度保存（`mirror.rs` 的 `Title` 對應表）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -110,7 +111,7 @@ impl Core {
     /// Enter 或空白鍵離開，並清掉最近一個鍵。原版的等待迴圈不讓出時間，重製每圈過一個 tick。
     pub(crate) async fn run_menu(&mut self) {
         self.load_palette(Palette::Menu);
-        self.clear_pages();
+        self.clear_both_pages();
         self.show_page(Page::Zero);
         self.draw_on(Page::Zero);
         loop {

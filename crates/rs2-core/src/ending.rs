@@ -10,12 +10,14 @@
 //! 片尾和第四關共用敵人池，第四關結束時還有活著的實體會帶進片尾（文件第 4.6 節）。
 //!
 //! 不移植：`sub_142BB`、`sub_143A8` 的 DOS 記憶體配置與釋放（寫入檔名工作區與 `1CF5Ch` 至 `1CF6Eh` 的段落，
-//! 都在 `A0_EXEMPT`）、`sub_1117F`（E 模式為空，單色模式由 `mirror_scan_lines` 的接收端處理）、CGA、MGA、純 EGA 分支。
+//! 都在 `A0_EXEMPT`）、`sub_1117F`（E 模式為空，單色模式由 `end_of_frame_copy` 的接收端處理）、CGA、MGA、純 EGA 分支。
 
+use crate::draw::ShtGroup;
 use crate::entity::Timetable;
 use crate::game::Core;
-use crate::mirror::{Key, SCRATCH_B};
-use crate::scene::{Page, Palette, Placement};
+use crate::mirror::Key;
+use crate::scene::Palette;
+use crate::video::{Page, SCRATCH_B};
 
 /// `SHT5` 圖庫項：片尾的兩張背景。
 const LANDSCAPE: u16 = 3;
@@ -45,16 +47,16 @@ impl Core {
     /// 載入 `SHT5`，`ending_a` 調色盤下顯示第 3 項並等任意鍵，再換 `ending_b` 顯示第 4 項並等任意鍵
     /// （原版 `sub_141FC`）。兩張都先畫進暫存區 B，再整頁複製到頁 1，翻過去。
     async fn show_ending_pictures(&mut self) {
-        self.load_ending_images();
+        self.load_sht_bank(ShtGroup::Sht5);
         self.select_scratch(SCRATCH_B);
-        self.clear_scratch();
+        self.clear_scratch_b();
         self.show_ending_picture(Palette::EndingA, LANDSCAPE).await;
         self.show_ending_picture(Palette::EndingB, PEOPLE_AND_PLANET).await;
     }
 
     async fn show_ending_picture(&mut self, palette: Palette, image: u16) {
         self.load_palette(palette);
-        self.draw_sht_to_scratch(Placement::at(0, 0, image));
+        self.draw_tile_to_scratch(0, 0, image);
         self.show_page(Page::One);
         self.draw_on(Page::One);
         self.restore_background();
@@ -69,7 +71,7 @@ impl Core {
         self.draw_enemies();
         self.draw_enemy_overlays();
         self.advance_stage_frame();
-        self.mirror_scan_lines();
+        self.end_of_frame_copy();
         self.await_timer_ticks(1).await;
     }
 }

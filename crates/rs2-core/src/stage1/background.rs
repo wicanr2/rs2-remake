@@ -4,7 +4,8 @@
 use crate::boss_scroll::SCRIPT_END;
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::{BossScript, SCRATCH_A, SCRATCH_B};
+use crate::mirror::BossScript;
+use crate::video::{Page, RowCopy, SCRATCH_A, SCRATCH_B};
 
 /// 計數超過這個值，背景整體開始下移，並在天空下方補色。
 const DROP_START_FRAME: u16 = 0xFA;
@@ -57,7 +58,7 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(b.sky_drop);
         self.set_blit_shift(0);
-        self.copy_rows_to_page(0x59);
+        self.copy_scratch_rows(RowCopy::Replace, 0x59);
         self.fill_below_sky(frame);
         // 波浪。
         self.set_obj(Pool::Background, 1);
@@ -65,7 +66,7 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(b.drop.wrapping_add(0x95));
         self.set_blit_shift(b.wave_phase);
-        self.copy_rows_to_page(0x29);
+        self.copy_scratch_rows(RowCopy::Replace, 0x29);
         self.scenes.stage1.wave_phase = Backdrop::advance_phase(b.wave_phase, 2);
         // 倒懸岩。
         self.set_obj(Pool::Background, 2);
@@ -73,21 +74,21 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(b.drop.wrapping_add(0x52));
         self.set_blit_shift(b.rock_phase);
-        self.copy_rows_to_page(0x45);
+        self.copy_scratch_rows(RowCopy::Replace, 0x45);
         // 山影遮罩，AND 清出山形。
         self.set_obj(Pool::Background, 3);
         self.set_blit_source(0, 0xF3);
         self.set_blit_x(0);
         self.set_blit_y(b.drop.wrapping_add(0x28));
         self.set_blit_shift(b.rock_phase);
-        self.and_rows_to_page(0x2B);
+        self.copy_scratch_rows(RowCopy::And, 0x2B);
         // 山影圖，OR 補上山形。
         self.set_obj(Pool::Background, 4);
         self.set_blit_source(0, 0xC8);
         self.set_blit_x(0);
         self.set_blit_y(b.drop.wrapping_add(0x28));
         self.set_blit_shift(b.rock_phase);
-        self.or_rows_to_page(0x2B);
+        self.copy_scratch_rows(RowCopy::Or, 0x2B);
         self.clear_obj();
         self.scenes.stage1.rock_phase = Backdrop::advance_phase(b.rock_phase, 1);
         self.drop_the_backdrop(frame);
@@ -128,7 +129,7 @@ impl Core {
     /// 第 1 項（天空）十塊、第 3 項（山影圖）兩份、第 4 項（山影遮罩）兩份。
     pub(crate) fn compose_stage1_backdrop(&mut self) {
         self.select_scratch(SCRATCH_A);
-        self.draw_to_first_page();
+        self.draw_on(Page::Zero);
         for (x, y, index) in [(0, 0, 0), (0x28, 0, 0), (0, 0x28, 2), (0x28, 0x28, 2)] {
             self.draw_tile_to_scratch(x, y, index);
         }

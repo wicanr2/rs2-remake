@@ -37,7 +37,8 @@ use crate::draw::Pool;
 use crate::ebullet::{Heading, turn_toward};
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
-use crate::mirror::{ENEMY_DAMAGE_OFFSET, SCRATCH_B, enemy_record_link, enemy_record_slot};
+use crate::mirror::{ENEMY_DAMAGE_OFFSET, enemy_record_link, enemy_record_slot};
+use crate::video::SCRATCH_B;
 
 /// 池的槽數。
 pub(crate) const POOL_SIZE: usize = 15;
@@ -697,7 +698,7 @@ impl Core {
     fn for_each_footprint_cell(&mut self, enemy: &Enemy, mut visit: impl FnMut(&mut Core, u16, u16, u8)) {
         let width = self.table_word(enemy.shape);
         let mut height = self.table_word(enemy.shape.wrapping_add(2));
-        self.set_stride_reg(width);
+        self.set_shape_width(width);
         let mut src = enemy.shape.wrapping_add(4);
         let mut row = enemy.row;
         while (row as i16) < 0 {
@@ -770,7 +771,7 @@ impl Core {
         self.set_blit_params(x, y, image);
         self.select_scratch(SCRATCH_B);
         self.clear_obj();
-        self.s19adc();
+        self.draw_current_tile_to_scratch();
     }
 
     // ---- 繪製 ----
@@ -794,13 +795,13 @@ impl Core {
         if Kind::from_word(sprite.kind) != Kind::Normal {
             return;
         }
-        self.s18f1a();
+        self.cut_stage();
         if self.en.slots[slot].is_flashing() {
-            self.s19025();
+            self.flash_stage();
             return;
         }
         self.set_blit_params(sprite.x, sprite.y.wrapping_add(1), sprite.image);
-        self.s18f5d();
+        self.overlay_stage();
     }
 
     /// 畫第二輪（原版 `sub_164D7`）：只有 `Overlay` 型會畫，在玩家之上。
@@ -819,7 +820,7 @@ impl Core {
         let sprite = self.en.slots[slot].sprite;
         self.set_blit_params(sprite.x, sprite.y, sprite.image);
         if Kind::from_word(sprite.kind) == Kind::Overlay {
-            self.s18fc1();
+            self.overwrite_stage();
         }
     }
 
@@ -1488,7 +1489,7 @@ mod tests {
         e.row = 0x30;
         place(&mut c, 0, e);
         c.update_enemies();
-        c.s18c0a();
+        c.overwrite_my();
         let Some(DrawCmd::Blit(b)) = c.draws.last().copied() else { panic!("沒有繪製命令") };
         assert_eq!(b.stride_reg, Some(7), "形狀寬是下一個繪製命令看到的殘值，即使整個形狀都在畫面下方");
     }

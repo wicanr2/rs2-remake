@@ -2,7 +2,6 @@
 //! 規格：`docs/spec/001-rust-first-stage.md`。
 
 mod ai;
-mod blit;
 mod boss_scroll;
 mod cards;
 pub mod draw;
@@ -23,17 +22,15 @@ mod pbullet;
 mod player;
 mod scene;
 mod scenery;
+mod sound;
 mod stage1;
 mod stage2;
 mod stage3;
 mod stage4;
-mod stage_io;
 mod title;
-pub mod regs;
 mod video;
 
 pub use draw::{AudioCmd, BegGroup, BlitCmd, DrawCmd, MixFile, ObjId, Op, Pool, ShtGroup};
 pub use dseg::{Dseg, a};
 pub use game::{A0_EXEMPT, Core, DS_EXEMPT, Entry, Exit, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Rules, Start, boot_ds, boot_ds_with_dm1, ds_exempt};
 pub use player::{WAVE_CHARGE_FULL, WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
-pub use regs::Regs;

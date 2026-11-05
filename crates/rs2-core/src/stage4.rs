@@ -4,12 +4,12 @@
 //! 只移植 E 模式（`byte_1CF74` = `E`、`byte_1CF75` = `N`），顯示模式由 `rs2-gfx` 轉換。
 //! 緩衝區配置與釋放的簿記見 `mirror.rs` 的 `StageBuffers`。
 
-use crate::draw::Pool;
+use crate::draw::{MixFile, Pool, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_4};
 use crate::game::{Core, Exit, sample};
-use crate::mirror::{Palette, SCRATCH_A, StageBuffers};
-use crate::stage_io::StageMusic;
+use crate::mirror::{Palette, StageBuffers};
+use crate::video::{Page, RowCopy, SCRATCH_A};
 
 /// 計數不超過這個值走普通段，之後走頭目段。
 const NORMAL_LAST_FRAME: u16 = 0x3E8;
@@ -72,23 +72,23 @@ impl Core {
     pub(crate) async fn play_stage4(&mut self) -> Exit {
         self.dos_allocate_buffers(StageBuffers::Stage4);
         self.dos_free_buffers(StageBuffers::Stage4);
-        self.show_second_page();
-        self.draw_to_second_page();
+        self.show_page(Page::One);
+        self.draw_on(Page::One);
         self.clear_scratch_b();
         self.clear_both_pages();
         self.compose_stage4_backdrop();
         self.load_palette(Palette::Stage4);
         self.scenes.tunnel.restart();
-        self.show_second_page();
+        self.show_page(Page::One);
         self.reset_stage();
         self.set_stage_frame(1);
         self.flow.stage = STAGE_4;
-        self.load_stage_music(StageMusic::Stage4);
+        self.load_mix(MixFile::B);
         self.start_stage_music();
         let exit = loop {
-            self.show_first_page();
+            self.show_page(Page::Zero);
             self.stage4_frame().await;
-            self.show_second_page();
+            self.show_page(Page::One);
             self.stage4_frame().await;
             let exit = self.poll_hotkeys();
             self.clear_when_arena_is_empty();
@@ -107,12 +107,12 @@ impl Core {
 
     /// 通道壁寫進暫存區 A 兩份，再載入 `SHT4`（原版 `sub_13D70`）：`BH4` 第 0 項，x = 0 與 28h。
     fn compose_stage4_backdrop(&mut self) {
-        self.load_backdrop_sheet_4();
+        self.load_sht_bank(ShtGroup::Bh4);
         self.clear_scratch_a();
         self.select_scratch(SCRATCH_A);
         self.draw_tile_to_scratch(0, 0, 0);
         self.draw_tile_to_scratch(0x28, 0, 0);
-        self.load_sprite_sheet_4();
+        self.load_sht_bank(ShtGroup::Sht4);
     }
 
     /// 依幀計數選普通段或頭目段（原版 `sub_13E74`）。
@@ -176,13 +176,13 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(FLOOR_ROW.wrapping_add(t.offset));
         self.set_blit_shift(t.floor_phase);
-        self.copy_rows_to_page(WALL_ROWS);
+        self.copy_scratch_rows(RowCopy::Replace, WALL_ROWS);
         self.set_obj(Pool::Background, 2);
         self.set_blit_source(0, 0);
         self.set_blit_x(0);
         self.set_blit_y(CEILING_ROW.wrapping_add(t.offset));
         self.set_blit_shift(t.ceiling_phase);
-        self.copy_rows_to_page_mirrored(WALL_ROWS);
+        self.copy_scratch_rows(RowCopy::ReplaceMirrored, WALL_ROWS);
         self.clear_obj();
         let t = &mut self.scenes.tunnel;
         t.floor_phase = Tunnel::advance_phase(t.floor_phase);
@@ -204,7 +204,7 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(0);
         self.set_blit_shift(0);
-        self.copy_rows_to_page(BOSS_BACKDROP_ROWS);
+        self.copy_scratch_rows(RowCopy::Replace, BOSS_BACKDROP_ROWS);
         self.clear_obj();
     }
 }

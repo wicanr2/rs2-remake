@@ -7,12 +7,13 @@ mod background;
 
 pub(crate) use background::Backdrop;
 
-use crate::draw::ShtGroup;
+use crate::draw::{MixFile, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, FRAME_TICKS, STAGE_1, STAGE_RUNNING};
 use crate::game::{Core, Exit, Req, sample};
+use crate::loader::DemoFile;
 use crate::mirror::Palette;
-use crate::stage_io::StageMusic;
+use crate::video::Page;
 
 /// 計數 1：換成第一關的調色盤。
 const MAIN_PALETTE_FRAME: u16 = 1;
@@ -34,12 +35,12 @@ const SPEAKER_FLAGS: u8 = 4;
 impl Core {
     /// 第一關的初始化，不含檔案載入（原版 `10CD0h` 至 `10D11h`）。`Core::new`、`Game::restart` 用。
     pub(crate) fn init_stage1(&mut self) {
-        self.draw_to_first_page();
-        self.draw_to_second_page();
-        self.sht_group = ShtGroup::Bh1;
+        self.draw_on(Page::Zero);
+        self.draw_on(Page::One);
+        self.banks.sht = ShtGroup::Bh1;
         self.compose_stage1_backdrop();
-        self.draw_to_second_page();
-        self.sht_group = ShtGroup::Sht1;
+        self.draw_on(Page::One);
+        self.banks.sht = ShtGroup::Sht1;
         self.flow.stage = STAGE_1;
         self.load_palette(Palette::Loader);
         self.reset_stage();
@@ -49,15 +50,15 @@ impl Core {
 
     /// 第一關完整入口，含載入（原版 `sub_10CD0`）。
     pub(crate) async fn play_stage1(&mut self) -> Exit {
-        self.show_first_page();
-        self.draw_to_first_page();
-        self.show_second_page();
-        self.draw_to_second_page();
-        self.load_backdrop_sheet_1();
+        self.show_page(Page::Zero);
+        self.draw_on(Page::Zero);
+        self.show_page(Page::One);
+        self.draw_on(Page::One);
+        self.load_sht_bank(ShtGroup::Bh1);
         self.compose_stage1_backdrop();
-        self.draw_to_second_page();
-        self.load_sprite_sheet_1();
-        self.load_demo_1();
+        self.draw_on(Page::One);
+        self.load_sht_bank(ShtGroup::Sht1);
+        self.load_demo(DemoFile::Dm1);
         self.flow.stage = STAGE_1;
         self.clear_both_pages();
         self.load_palette(Palette::Loader);
@@ -65,7 +66,7 @@ impl Core {
         self.flow.clear = STAGE_RUNNING;
         self.fx.reset_chain();
         if self.started_from_title() {
-            self.load_stage_music(StageMusic::Stage1);
+            self.load_mix(MixFile::B);
             self.start_stage_music();
         }
         self.run_stage1_rounds().await
@@ -74,10 +75,10 @@ impl Core {
     /// 每一輪畫兩頁（`10D29h` 至 `10D8Bh`），每頁一幀。輪尾檢查暫停、熱鍵、過關連爆。
     pub(crate) async fn run_stage1_rounds(&mut self) -> Exit {
         loop {
-            self.show_first_page();
+            self.show_page(Page::Zero);
             self.count_down_tamper_timer();
             self.stage1_frame().await;
-            self.show_second_page();
+            self.show_page(Page::One);
             self.port.borrow_mut().at_round_end = true;
             self.stage1_frame().await;
             self.port.borrow_mut().at_round_end = false;
@@ -175,6 +176,6 @@ impl Core {
         let (x, y, index) = BANNER;
         self.set_blit_params(x, y, index);
         self.clear_obj();
-        self.draw_my_image_overwrite();
+        self.overwrite_my();
     }
 }

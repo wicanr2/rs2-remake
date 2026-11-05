@@ -321,3 +321,12 @@ Android 煙霧測試第二次啟動的失敗：
 新量到的事實：原版有畫面外還活著的敵彈（畫面下方生成又只橫向移動的彈不檢查列，只直走的不檢查欄，反彈球出界那一幀不釋放）。頭目分件在選項全關時最遠跑到欄 -301。
 
 執行邊界：兩個代理各在主機跑過一次 `python3 --version`。各用過一次 heredoc `cat >>` 附加測試。各自的測試卡住時，用 `docker stop` 停了自己啟動的容器。
+
+### 繪製與載入領域（2026-11-06）
+
+- `video.rs`、`loader.rs` 重寫，`blit.rs`、`stage_io.rs`、`regs.rs` 刪除，新增 `sound.rs`。`rs2-core` 內沒有以位址命名的函式，也沒有暫存器。`Op` 變體仍用位址命名，它是 `rs2-gfx` 與 `rs2-trace` 的介面。
+- 繪製參數進 `DrawParams`，音效進 `Sound`，`Dseg` 只剩 `game.rs` 與 `mirror.rs` 在碰。`STRIDE_UNTOUCHED` 改成 `Option`，`FFFFh` 只在 `Mirror`。
+- `BlitCmd.cx`、`dx`：接收端不讀的欄位原本帶暫存器殘值，現在帶 0。驗證：靜態逐檔讀過接收端；poison 帶亂值全部測試過；20 份收據 40,654 步，把不讀的欄位遮掉後命令串雜湊全部相同。
+- `verify`、`play-test` exit 0，變異測試 7 項都分歧，`DS_EXEMPT` 沒有新增。
+
+執行邊界：繪製代理在主機跑過一次 `python3 --version` 與一次空的 `python3 -`。

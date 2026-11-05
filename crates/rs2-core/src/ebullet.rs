@@ -27,6 +27,7 @@
 use crate::draw::Pool;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
+use crate::video::MyCopy;
 
 /// 池的槽數。
 pub(crate) const POOL_SIZE: usize = 20;
@@ -760,22 +761,22 @@ impl Core {
         let index = self.table_word(bullet.frames.wrapping_add(2 * frame));
         if bullet.library == MY_LIBRARY {
             self.set_blit_params(bullet.blit_x, bullet.blit_y, index);
-            self.s18d46();
+            self.cut_my(MyCopy::General);
             self.set_blit_params(bullet.blit_x, bullet.blit_y.wrapping_add(1), index);
-            self.s18ce2();
+            self.overlay_my(MyCopy::General);
         } else {
             self.set_blit_params(bullet.blit_x, bullet.blit_y, index);
-            self.s18f1a();
-            self.s18f5d();
+            self.cut_stage();
+            self.overlay_stage();
         }
     }
 
-    /// 把形狀寫進 G3 與 G2。形狀寬同時寫進繪製的每列位元組殘值（`Core::set_stride_reg`），
+    /// 把形狀寫進 G3 與 G2。形狀寬同時寫進繪製的每列位元組殘值（`Core::set_shape_width`），
     /// 下一個繪製命令會記下它；寫兩次的值相同，所以只寫一次。
     fn stamp_grids(&mut self, bullet: &Bullet, slot: u8) {
         let width = self.table_word(bullet.shape);
         let height = self.table_word(bullet.shape.wrapping_add(2));
-        self.set_stride_reg(width);
+        self.set_shape_width(width);
         self.stamp_grid3(bullet, width, height);
         self.stamp_grid2(bullet, width, height, slot);
     }

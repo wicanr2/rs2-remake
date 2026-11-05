@@ -9,6 +9,7 @@
 use crate::draw::Pool;
 use crate::game::Core;
 use crate::mirror::BossScript;
+use crate::video::RowCopy;
 
 /// 腳本的結束位元組：讀到它不前進、不移動，每幀停在最後一個位置。
 pub(crate) const SCRIPT_END: u8 = 0x0F;
@@ -115,7 +116,7 @@ impl Core {
         self.set_blit_shift(0u16.wrapping_sub(l.x));
         self.set_blit_y(l.y);
         self.set_obj(Pool::Boss, slot);
-        self.copy_rows_to_page_shifted(rows);
+        self.copy_scratch_rows(RowCopy::ReplaceShifted, rows);
         self.clear_obj();
     }
 }

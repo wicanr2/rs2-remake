@@ -1,18 +1,20 @@
 //! 核心狀態與入口。規格見 `docs/spec/001-rust-first-stage.md`。
 
 use crate::ai::AiState;
-use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
+use crate::draw::{AudioCmd, DrawCmd, ObjId, Pool};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
 use crate::entity::Enemies;
 use crate::flow::{Flow, Scenes};
 use crate::fx::Effects;
+use crate::loader::{Banks, DemoFile};
 use crate::mirror::{demo_playing, stage_cleared};
 use crate::pbullet::PlayerBullets;
 use crate::player::{Enhanced, Players, ShootView};
-use crate::regs::Regs;
 use crate::scenery::Scenery;
+use crate::sound::Sound;
 use crate::title::Title;
+use crate::video::{DrawParams, Page};
 use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
@@ -295,7 +297,7 @@ pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
     }
     // 存活位元組（041Dh，原版 byte_1CFDD）在玩家領域的結構裡。
     core.set_players_present(base.r8(0x041D));
-    core.show_first_page();
+    core.show_page(Page::Zero);
     core.count_down_tamper_timer();
     core.ds.w8(0xA862, 0x0D);
     core.ds.w8(0xA8E7, 2);
@@ -380,7 +382,6 @@ pub struct Core {
     /// 還沒搬走的領域的狀態。已搬走的領域住在下面有型別的欄位，這裡對應的位元組只在
     /// `store_mirrors`（交回控制權）與 `load_mirrors`（載入、poke）時同步，見 `mirror.rs`。
     pub ds: Dseg,
-    pub r: Regs,
     pub fixes: Fixes,
     /// 特效池。
     pub(crate) fx: Effects,
@@ -402,16 +403,17 @@ pub struct Core {
     pub(crate) flow: Flow,
     /// 各關背景的狀態。
     pub(crate) scenes: Scenes,
+    /// 繪製參數：位置、來源、頁、暫存區選擇、形狀寬。下一個繪製命令帶走它們。
+    pub(crate) draw_params: DrawParams,
+    /// 音樂與靜音開關、喇叭參數。
+    pub(crate) sound: Sound,
     /// 完整性檢查（原版 `sub_11375`）通過後把自己改成 `retn`，之後不再檢查。
     pub(crate) integrity_checked: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
     pub(crate) display_start: Option<u16>,
-    /// 音樂緩衝區裡的曲目。
-    pub(crate) mix: MixFile,
     pub(crate) audio: Vec<AudioCmd>,
-    pub(crate) sht_group: ShtGroup,
-    pub(crate) mask_group: ShtGroup,
-    pub(crate) beg_group: BegGroup,
+    /// 目前載入的圖庫組與曲目。
+    pub(crate) banks: Banks,
     pub(crate) files: Rc<GameFiles>,
     /// 第三關地圖 `SHT.SCN` 解壓後的內容，對應原版遠段 `word_1CF6E`。`sub_13A51` 載入，之後唯讀。
     pub(crate) map_seg: Vec<u8>,
@@ -451,7 +453,6 @@ impl Core {
         };
         let mut g = Core {
             ds,
-            r: Regs::default(),
             fixes,
             fx: Effects::default(),
             eb: EnemyBullets::default(),
@@ -463,13 +464,12 @@ impl Core {
             title: Title::default(),
             flow: Flow::default(),
             scenes: Scenes::default(),
+            draw_params: DrawParams::default(),
+            sound: Sound::default(),
             integrity_checked: false,
             display_start: None,
-            mix: MixFile::A,
             audio: Vec::new(),
-            sht_group: ShtGroup::Bh1,
-            mask_group: ShtGroup::Sht1,
-            beg_group: BegGroup::Beg1,
+            banks: Banks::default(),
             files: Rc::new(GameFiles { dm1: dm1.to_vec(), ..GameFiles::default() }),
             map_seg: Vec::new(),
             draws: Vec::new(),
@@ -481,9 +481,7 @@ impl Core {
         };
         g.load_mirrors();
         // 兩個入口都載入展示錄影（10CF9h 的 sub_1BED5）。
-        for (i, &b) in dm1.iter().enumerate().take(3000) {
-            g.ds.w8(0xAAE2u16.wrapping_add(i as u16), b);
-        }
+        g.load_demo(DemoFile::Dm1);
         // 標題流程設定的值。
         let demo = matches!(start, Start::Demo);
         g.ds.w8(0x041C, if demo { b'Y' } else { b'N' });
@@ -608,7 +606,7 @@ fn stage1(mut core: Core) -> Pin<Box<dyn Future<Output = Exit>>> {
     Box::pin(async move { core.run_stage1_rounds().await })
 }
 
-/// 跑一個入口，回傳離開碼。關卡入口直接回傳離開碼；標題與片尾還在用暫存器，離開碼留在 `dx`。
+/// 跑一個入口，回傳離開碼。關卡入口直接回傳離開碼；標題與片尾回來就是程式結束，回傳 `Quit`。
 async fn run_entry(mut core: Core, entry: Entry) -> Exit {
     match entry {
         // 標題與片尾回來就是程式結束。

@@ -10,11 +10,12 @@ mod map;
 pub(crate) use map::MapScroll;
 
 use crate::boss_scroll::SCRIPT_END;
+use crate::draw::{MixFile, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_3, STAGE_3_BOSS, STAGE_RUNNING};
 use crate::game::{Core, Exit, Req, sample};
-use crate::mirror::{BossScript, Palette, SCRATCH_A, StageBuffers};
-use crate::stage_io::StageMusic;
+use crate::mirror::{BossScript, Palette, StageBuffers};
+use crate::video::{Page, SCRATCH_A};
 
 /// 計數超過這個值走頭目段。
 const BOSS_FRAME: u16 = 0x469;
@@ -29,30 +30,29 @@ const BOSS_START_X: u16 = 0x28;
 const BOSS_ART_ROWS: u16 = 0xC1;
 
 impl Core {
-    /// 第三關完整入口，含載入與主迴圈（原版 `sub_13A51`）。`SHT.SCN` 的解壓在 [`Core::load_map`]。
+    /// 第三關完整入口，含載入與主迴圈（原版 `sub_13A51`）。`MAP.GO`（`sub_1AFBC`）與 `SHT.SCN`（`sub_1BF71`）沒有
+    /// 載入狀態要記，`SHT.SCN` 的解壓在 [`Core::load_map`]，見 `loader.rs`。
     pub(crate) async fn play_stage3(&mut self) -> Exit {
         self.dos_allocate_buffers(StageBuffers::Stage3);
         self.dos_free_buffers(StageBuffers::Stage3);
-        self.show_second_page();
-        self.draw_to_second_page();
-        self.load_map_sheet();
-        self.load_sprite_sheet_3();
-        self.load_map_file();
+        self.show_page(Page::One);
+        self.draw_on(Page::One);
+        self.load_sht_bank(ShtGroup::Sht3);
         self.load_map();
         self.clear_both_pages();
         self.load_palette(Palette::Stage3);
-        self.show_second_page();
+        self.show_page(Page::One);
         self.flow.stage = STAGE_3;
         self.reset_stage();
         self.scenes.map.window = 0;
         self.flow.clear = STAGE_RUNNING;
         self.fx.reset_chain();
-        self.load_stage_music(StageMusic::Stage3);
+        self.load_mix(MixFile::B);
         self.start_stage_music();
         let exit = loop {
-            self.show_first_page();
+            self.show_page(Page::Zero);
             self.stage3_frame().await;
-            self.show_second_page();
+            self.show_page(Page::One);
             self.stage3_frame().await;
             if let Some(exit) = self.poll_hotkeys() {
                 break exit;

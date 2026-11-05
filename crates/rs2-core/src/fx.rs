@@ -7,6 +7,7 @@
 
 use crate::draw::Pool;
 use crate::game::Core;
+use crate::video::MyCopy;
 
 /// 特效池的槽數。
 pub(crate) const POOL_SIZE: usize = 30;
@@ -229,8 +230,8 @@ impl Core {
         self.fx.slots[slot].y = y;
         self.fx.cursor = (x, y);
         self.set_blit_params(x, y.wrapping_mul(ROW_PIXELS), frame.image);
-        self.s18e30();
-        self.s18dcc();
+        self.cut_my(MyCopy::Effect);
+        self.overlay_my(MyCopy::Effect);
         self.stamp_shape(frame.shape, x, y);
     }
 
@@ -241,7 +242,7 @@ impl Core {
     pub(crate) fn stamp_shape(&mut self, shape: u16, x: u16, y: u16) {
         let width = self.table_word(shape);
         let height = self.table_word(shape.wrapping_add(2));
-        self.set_stride_reg(width);
+        self.set_shape_width(width);
         let mut src = shape.wrapping_add(4);
         let mut row = y;
         for _ in 0..loop_count(height) {

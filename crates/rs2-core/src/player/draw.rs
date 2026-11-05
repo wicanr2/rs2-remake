@@ -9,6 +9,7 @@ use crate::draw::Pool;
 use crate::game::Core;
 use crate::mirror::PlayerShape;
 use crate::pbullet::Facing;
+use crate::video::MyCopy;
 
 /// 撿取光柱、發射閃光、砲座噴焰、尾焰的圖庫索引。
 const BEAM_IMAGE: u16 = 8;
@@ -39,17 +40,17 @@ impl Core {
         let p = self.pl.ship[who];
         self.set_blit_params(p.blit_x, p.blit_y, p.image);
         self.set_obj(Pool::Player, who as u8);
-        self.s18d46();
+        self.cut_my(MyCopy::General);
         if p.invincible != 0 {
             self.pl.ship[who].invincible = p.invincible.wrapping_sub(1);
             if self.draw_page() != 0 {
-                self.s18d89();
+                self.flash_my();
             }
             self.clear_obj();
             return;
         }
         self.set_blit_params(p.blit_x, p.blit_y.wrapping_add(BODY_PLANES_DY), p.image);
-        self.s18ce2();
+        self.overlay_my(MyCopy::General);
         // 發射閃光畫在「上一個畫的東西」的位置：沒有光柱時是四平面的位置，光柱在畫時是光柱的位置。
         let mut pen = (p.blit_x, p.blit_y.wrapping_add(BODY_PLANES_DY));
         if let Some(beam) = self.draw_pickup_beam(who) {
@@ -73,8 +74,8 @@ impl Core {
         p.beam_y = p.beam_y.wrapping_add(BEAM_STEP);
         let at = (p.blit_x, p.beam_y);
         self.set_blit_params(at.0, at.1, BEAM_IMAGE);
-        self.s18d46();
-        self.s18ce2();
+        self.cut_my(MyCopy::General);
+        self.overlay_my(MyCopy::General);
         Some(at)
     }
 
@@ -85,8 +86,8 @@ impl Core {
         }
         let muzzle = STYLES[who].muzzle;
         self.set_blit_params(pen.0.wrapping_add(muzzle.dx), pen.1.wrapping_add(muzzle.dy), muzzle.image);
-        self.s18d46();
-        self.s18ce2();
+        self.cut_my(MyCopy::General);
+        self.overlay_my(MyCopy::General);
     }
 
     /// 尾焰（原版 `14757h`、`15285h`）：畫在本體左上方，同時把尾焰的髒格疊進 G3。
@@ -94,8 +95,8 @@ impl Core {
         let p = self.pl.ship[who];
         let image = if self.draw_page() != 0 { FLAME_IMAGE_ODD_PAGE } else { FLAME_IMAGE };
         self.set_blit_params(p.blit_x.wrapping_sub(FLAME_DX), p.blit_y.wrapping_sub(FLAME_DY), image);
-        self.s18d46();
-        self.s18ce2();
+        self.cut_my(MyCopy::General);
+        self.overlay_my(MyCopy::General);
         self.mark_flame_cells(who);
     }
 
@@ -160,8 +161,8 @@ impl Core {
     fn draw_pod(&mut self, who: usize, which: u8, at: (u16, u16), image: u16) {
         self.set_blit_params(at.0, at.1, image);
         self.set_obj(Pool::Pod, (2 * who) as u8 + which);
-        self.s18d46();
-        self.s18ce2();
+        self.cut_my(MyCopy::General);
+        self.overlay_my(MyCopy::General);
         self.clear_obj();
     }
 

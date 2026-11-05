@@ -11,11 +11,13 @@
 mod boss;
 mod parallax;
 
+use crate::draw::{MixFile, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_2, STAGE_RUNNING};
 use crate::game::{Core, Exit, sample};
-use crate::mirror::{Palette, SCRATCH_A, SCRATCH_B, StageBuffers};
-use crate::stage_io::StageMusic;
+use crate::loader::DemoFile;
+use crate::mirror::{Palette, StageBuffers};
+use crate::video::{Page, SCRATCH_A, SCRATCH_B};
 
 /// 第一段的最後一幀（遞增前的計數）。這一幀同時把中頭目合成圖寫進暫存區 B。
 const OPENING_LAST_FRAME: u16 = 0x104;
@@ -83,25 +85,25 @@ impl Core {
         }
         self.dos_allocate_buffers(StageBuffers::Stage2);
         self.dos_free_buffers(StageBuffers::Stage2);
-        self.show_second_page();
-        self.draw_to_second_page();
+        self.show_page(Page::One);
+        self.draw_on(Page::One);
         self.clear_scratch_b();
         self.compose_stage2_backdrop();
-        self.load_demo_2();
+        self.load_demo(DemoFile::Dm2);
         self.reset_fade();
         self.clear_both_pages();
         self.load_palette(Palette::Stage2);
-        self.show_second_page();
+        self.show_page(Page::One);
         self.flow.stage = STAGE_2;
         self.reset_stage();
         self.flow.clear = STAGE_RUNNING;
         self.fx.reset_chain();
-        self.load_stage_music(StageMusic::Stage2);
+        self.load_mix(MixFile::B);
         self.start_stage_music();
         let exit = loop {
-            self.show_first_page();
+            self.show_page(Page::Zero);
             self.stage2_frame().await;
-            self.show_second_page();
+            self.show_page(Page::One);
             self.stage2_frame().await;
             if let Some(exit) = self.poll_hotkeys() {
                 break exit;
@@ -121,7 +123,7 @@ impl Core {
     /// 暫存區 A：`BH2` 第 0 至 3 項各兩份、第 4 項橫排 20 塊、第 5 至 12 項（8 個相位）、第 13 至 16 項（4 個相位）、
     /// 第 17、18 項（2 個相位）。暫存區 B：第 19 至 22 項（遮罩層的圖）、第 23 至 26 項（遮罩）、第 27 項（柱）。
     fn compose_stage2_backdrop(&mut self) {
-        self.load_backdrop_sheet_2();
+        self.load_sht_bank(ShtGroup::Bh2);
         self.select_scratch(SCRATCH_A);
         for (x, y, index) in [(0, 0, 0), (0x28, 0, 0), (0, 0x22, 1), (0x28, 0x22, 1), (0, 0x44, 2), (0x28, 0x44, 2), (0, 0x5A, 3), (0x28, 0x5A, 3)] {
             self.draw_tile_to_scratch(x, y, index);
@@ -138,7 +140,7 @@ impl Core {
         self.draw_tile_run(0, 0, 0x13, 4, true);
         self.draw_tile_run(8, 0, 0x17, 4, true);
         self.draw_tile_to_scratch(0x10, 0, 0x1B);
-        self.load_sprite_sheet_2();
+        self.load_sht_bank(ShtGroup::Sht2);
     }
 
     /// 同一列往右畫 `count` 張，每張佔 2 位元組；`next_index` 為真時圖庫索引逐張加 1（相位圖），否則同一張。
@@ -313,6 +315,6 @@ mod tests {
         let mut c = core();
         c.set_password_accepted(true);
         c.compose_stage2_backdrop();
-        assert_eq!(c.sht_group, ShtGroup::Sht2, "最後載入 SHT2");
+        assert_eq!(c.banks.sht, ShtGroup::Sht2, "最後載入 SHT2");
     }
 }

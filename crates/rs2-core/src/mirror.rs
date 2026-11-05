@@ -30,11 +30,13 @@ use crate::pbullet::{Facing, POOL_SIZE as PB_POOL_SIZE, PlayerBullet, PlayerBull
 use crate::player::{PLAYER_COUNT, Player, Players, Pods};
 use crate::menu::Menu;
 use crate::scenery::{POOL_SIZE as SC_POOL_SIZE, Prop, Scenery};
+use crate::sound::{Sound, SpeakerParams};
 use crate::title::Title;
 use crate::stage1::Backdrop as Stage1Backdrop;
 use crate::stage2::{Backdrop as Stage2Backdrop, Strip};
 use crate::stage3::MapScroll;
 use crate::stage4::Tunnel;
+use crate::video::DrawParams;
 
 /// 一個領域的狀態與資料段之間的對應。
 pub(crate) trait Mirror {
@@ -56,6 +58,8 @@ impl Core {
         self.title.load(&self.ds);
         self.flow.load(&self.ds);
         self.scenes.load(&self.ds);
+        self.draw_params.load(&self.ds);
+        self.sound.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
@@ -69,6 +73,8 @@ impl Core {
         self.title.store(&mut self.ds);
         self.flow.store(&mut self.ds);
         self.scenes.store(&mut self.ds);
+        self.draw_params.store(&mut self.ds);
+        self.sound.store(&mut self.ds);
     }
 }
 
@@ -1300,22 +1306,115 @@ impl Core {
     }
 }
 
+// ---- 繪製參數 ----
+
+/// 目的欄 `word_26880`、目的像素列 `word_26882`、圖庫索引 `word_26888`。
+const DRAW_X: u16 = a(0x26880);
+const DRAW_Y: u16 = a(0x26882);
+const DRAW_INDEX: u16 = a(0x26888);
+/// 繪製頁的偏移 `word_26872`、暫存區選擇 `word_2685C`。
+const DRAW_PAGE: u16 = a(0x26872);
+const DRAW_SCRATCH: u16 = a(0x2685C);
+/// 暫存區複製的來源欄 `word_26864`、來源列 `word_26866`、水平位移 `word_26868`。
+const DRAW_SOURCE_COL: u16 = a(0x26864);
+const DRAW_SOURCE_ROW: u16 = a(0x26866);
+const DRAW_SHIFT: u16 = a(0x26868);
+/// 數字的欄 `word_2688A` 與列 `word_2688E`。
+const DRAW_TEXT_COL: u16 = a(0x2688A);
+const DRAW_TEXT_ROW: u16 = a(0x2688E);
+/// 形狀寬 `word_2687E`。
+const DRAW_SHAPE_WIDTH: u16 = a(0x2687E);
+/// 形狀寬字組在「上一個繪製命令之後邏輯沒有寫過」時的值。形狀寬不會是這個值。
+/// 繪製對這個字的寫入在接收端，核心不會更新，留記號才分得出之後邏輯有沒有再寫（`DrawParams::shape_width`）。
+const SHAPE_WIDTH_UNTOUCHED: u16 = 0xFFFF;
+
+impl DrawParams {
+    /// 資料段上的形狀寬字組換成狀態。
+    pub(crate) fn shape_width_from_word(word: u16) -> Option<u16> {
+        (word != SHAPE_WIDTH_UNTOUCHED).then_some(word)
+    }
+}
+
+/// 全部繪製參數都是狀態：邏輯只改寫要變的幾個，其餘沿用上一次的值，被繪製命令帶走（`video.rs`）。
+/// 下面的位移在 `DS_EXEMPT` 的範圍內（`9CB0..9CB3` 頁、`9CBC..9CC8` 形狀寬與目的位置與索引的低位元組、
+/// `9CCA` 數字欄的低位元組），沒有豁免、逐位元組比對的是 `word_2685C`、`26864`、`26866`、`26868`、`2688E`
+/// 與 `26888`、`2688A` 的高位元組。
+impl Mirror for DrawParams {
+    fn load(&mut self, ds: &Dseg) {
+        *self = DrawParams {
+            x: ds.r16(DRAW_X),
+            y: ds.r16(DRAW_Y),
+            index: ds.r16(DRAW_INDEX),
+            page: ds.r16(DRAW_PAGE),
+            scratch: ds.r16(DRAW_SCRATCH),
+            source_col: ds.r16(DRAW_SOURCE_COL),
+            source_row: ds.r16(DRAW_SOURCE_ROW),
+            shift: ds.r16(DRAW_SHIFT),
+            text_col: ds.r16(DRAW_TEXT_COL),
+            text_row: ds.r16(DRAW_TEXT_ROW),
+            shape_width: DrawParams::shape_width_from_word(ds.r16(DRAW_SHAPE_WIDTH)),
+        };
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        ds.w16(DRAW_X, self.x);
+        ds.w16(DRAW_Y, self.y);
+        ds.w16(DRAW_INDEX, self.index);
+        ds.w16(DRAW_PAGE, self.page);
+        ds.w16(DRAW_SCRATCH, self.scratch);
+        ds.w16(DRAW_SOURCE_COL, self.source_col);
+        ds.w16(DRAW_SOURCE_ROW, self.source_row);
+        ds.w16(DRAW_SHIFT, self.shift);
+        ds.w16(DRAW_TEXT_COL, self.text_col);
+        ds.w16(DRAW_TEXT_ROW, self.text_row);
+        ds.w16(DRAW_SHAPE_WIDTH, self.shape_width.unwrap_or(SHAPE_WIDTH_UNTOUCHED));
+    }
+}
+
+// ---- 音效開關 ----
+
+/// 音樂可用 `byte_1CBCE`、靜音 `byte_2684E`、喇叭音效旗標 `byte_2684F`（皆 1 位元組）。
+const SOUND_MUSIC: u16 = a(0x1CBCE);
+const SOUND_MUTE: u16 = a(0x2684E);
+const SOUND_SPEAKER_FLAGS: u16 = a(0x2684F);
+/// 喇叭參數：`word_26850` duration、`26852` period、`26854` threshold、`26856` pitch、`26858` counter。
+const SPEAKER_DURATION: u16 = a(0x26850);
+const SPEAKER_PERIOD: u16 = a(0x26852);
+const SPEAKER_THRESHOLD: u16 = a(0x26854);
+const SPEAKER_PITCH: u16 = a(0x26856);
+const SPEAKER_COUNTER: u16 = a(0x26858);
+
+impl Mirror for Sound {
+    fn load(&mut self, ds: &Dseg) {
+        *self = Sound {
+            music: ds.r8(SOUND_MUSIC),
+            mute: ds.r8(SOUND_MUTE),
+            speaker_flags: ds.r8(SOUND_SPEAKER_FLAGS),
+            speaker: SpeakerParams {
+                duration: ds.r16(SPEAKER_DURATION),
+                period: ds.r16(SPEAKER_PERIOD),
+                threshold: ds.r16(SPEAKER_THRESHOLD),
+                pitch: ds.r16(SPEAKER_PITCH),
+                counter: ds.r16(SPEAKER_COUNTER),
+            },
+        };
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        ds.w8(SOUND_MUSIC, self.music);
+        ds.w8(SOUND_MUTE, self.mute);
+        ds.w8(SOUND_SPEAKER_FLAGS, self.speaker_flags);
+        ds.w16(SPEAKER_DURATION, self.speaker.duration);
+        ds.w16(SPEAKER_PERIOD, self.speaker.period);
+        ds.w16(SPEAKER_THRESHOLD, self.speaker.threshold);
+        ds.w16(SPEAKER_PITCH, self.speaker.pitch);
+        ds.w16(SPEAKER_COUNTER, self.speaker.counter);
+    }
+}
+
 // ---- 別的領域擁有的共用變數 ----
 
-/// `word_26872`：目前繪製頁的偏移，0 或 8000h。
-const DRAW_PAGE: u16 = a(0x26872);
-
 impl Core {
-    /// 目前繪製頁的偏移：奇偶幀交替，0 或 8000h。
-    pub(crate) fn draw_page(&self) -> u16 {
-        self.ds.r16(DRAW_PAGE)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_draw_page(&mut self, page: u16) {
-        self.ds.w16(DRAW_PAGE, page);
-    }
-
     /// 測試用：擺上原版的兩張列表（`列 × 28h`、`列 × 50h + 1`），不用原版檔的測試要它才能算格位址。
     #[cfg(test)]
     pub(crate) fn fill_row_tables(&mut self) {
@@ -1339,17 +1438,10 @@ const DEMO_RECORD: u16 = 0xAAE2;
 const STARTED_FROM_TITLE: u16 = a(0x1CFAB);
 /// `byte_2739A`：音效開關鍵（INT 9 的 `sub_1A891`）是否生效，`N` 不生效。標題期間 `N`，進關卡改 `Y`，離開改 `N`。
 const SOUND_KEY: u16 = a(0x2739A);
-/// `byte_2684E`：音效開關，位元 0 為 1 是靜音。INT 9 的 S 鍵切換，`sub_187C3` 讀。
-const SOUND_MUTE: u16 = a(0x2684E);
-/// `byte_2684F`：喇叭音效旗標，`sub_18672` 依位元選參數。
-const SPEAKER_FLAGS: u16 = a(0x2684F);
 /// `byte_1D3A2`：密碼檢查通過旗標，映像是 `N`，通過時寫 `Y`。第二關 `130AFh` 不是 `Y` 就停在無限迴圈。
 const PASSWORD_ACCEPTED: u16 = a(0x1D3A2);
 /// `word_1D3B0`：密碼檢查未通過的旗標。破解組補丁讓檢查恆通過，重製裡沒有人寫它，恆為 0。
 const PASSWORD_REJECTED: u16 = a(0x1D3B0);
-/// `byte_1CBCE`：音樂可用（`Y`）。
-#[cfg(test)]
-const MUSIC_ENABLED: u16 = a(0x1CBCE);
 /// 完整性檢查累加的資料段範圍：`7F4h` 起 400 個字組（`sub_12F95`），初值 64h。
 const INTEGRITY_TABLE: u16 = 0x07F4;
 const INTEGRITY_WORDS: u16 = 0x190;
@@ -1467,13 +1559,6 @@ pub(crate) fn demo_playing(ds: &Dseg) -> bool {
 /// 難度加成：`word_1E6B2` 加在敵人的耐久上，`word_1E6B4` 加在開火亂數上（文件第 9.1 節）。
 const DIFFICULTY_HP: u16 = a(0x1E6B2);
 const DIFFICULTY_FIRE: u16 = a(0x1E6B4);
-/// `word_2685C`：繪製的暫存區選擇，0 是 A，8000h 是 B。
-const SCRATCH_SELECT: u16 = a(0x2685C);
-/// 暫存區 A 的選擇值。
-pub(crate) const SCRATCH_A: u16 = 0;
-/// 暫存區 B 的選擇值。
-pub(crate) const SCRATCH_B: u16 = 0x8000;
-
 impl Core {
     /// 目前是不是第三關（有 G4 地形格）。頭目段關卡字母改成小寫 `c`，不算。
     pub(crate) fn on_terrain_stage(&self) -> bool {
@@ -1539,17 +1624,6 @@ impl Core {
     /// 音效開關鍵是否生效（原版 `byte_2739A`）：標題期間 `N`，進關卡 `Y`。
     pub(crate) fn set_sound_key_enabled(&mut self, on: bool) {
         self.ds.w8(SOUND_KEY, if on { b'Y' } else { b'N' });
-    }
-
-    /// 切換靜音（原版 `byte_2684E` 的位元 0，INT 9 的 `sub_1A891`）。
-    pub(crate) fn toggle_sound_mute(&mut self) {
-        let v = self.ds.r8(SOUND_MUTE) ^ 1;
-        self.ds.w8(SOUND_MUTE, v);
-    }
-
-    /// 喇叭音效旗標（原版 `byte_2684F`），接著呼叫 `sub_18672` 依位元選參數。
-    pub(crate) fn set_speaker_flags(&mut self, flags: u8) {
-        self.ds.w8(SPEAKER_FLAGS, flags);
     }
 
     /// 密碼檢查通過了（原版 `byte_1D3A2` 是 `Y`）。
@@ -1631,12 +1705,6 @@ impl Core {
         self.ds.r8(KEY_TABLE.wrapping_add(u16::from(scan)))
     }
 
-    /// 是不是靜音。
-    #[cfg(test)]
-    pub(crate) fn sound_muted(&self) -> bool {
-        self.ds.r8(SOUND_MUTE) & 1 != 0
-    }
-
     /// 展示錄影（`DM1.LCK`，`AAE2h` 起 3000 位元組）第 `index` 個位元組，位址 16 位元環繞。
     /// 每幀一個位元組，記錄玩家 1 的輸入位元（[`crate::player::InputBit`]）。
     pub(crate) fn demo_byte(&self, index: u16) -> u8 {
@@ -1689,11 +1757,6 @@ impl Core {
         self.ds.r16(DIFFICULTY_FIRE)
     }
 
-    /// 繪製的暫存區選擇（原版 `word_2685C`），之後的繪製命令都帶這個值，直到有人再設。
-    pub(crate) fn select_scratch(&mut self, select: u16) {
-        self.ds.w16(SCRATCH_SELECT, select);
-    }
-
     /// 表外的資料段字組：不屬於任何已搬走的領域，也不在唯讀表格內。實體傷害寫到指標 0 加 20h 的
     /// 原版行為（`dseg:0020h`，啟動時文字畫面的色彩屬性）用它。
     pub(crate) fn stray_word(&self, at: u16) -> u16 {
@@ -1734,23 +1797,11 @@ impl Core {
         self.ds.w16(INTEGRITY_TABLE.wrapping_add(2 * k), v);
     }
 
-    /// 測試用：音樂可用，`start_music` 才會送命令。
-    #[cfg(test)]
-    pub(crate) fn enable_music(&mut self) {
-        self.ds.w8(MUSIC_ENABLED, b'Y');
-    }
-
     /// 測試用：設難度加成。
     #[cfg(test)]
     pub(crate) fn set_difficulty(&mut self, hp: u16, fire: u16) {
         self.ds.w16(DIFFICULTY_HP, hp);
         self.ds.w16(DIFFICULTY_FIRE, fire);
-    }
-
-    /// 測試用：目前的暫存區選擇。
-    #[cfg(test)]
-    pub(crate) fn scratch_select(&self) -> u16 {
-        self.ds.r16(SCRATCH_SELECT)
     }
 }
 
@@ -2020,6 +2071,11 @@ impl Core {
         self.ds.copy16(GRID4_START, GRID4_START + 2, TERRAIN_WORDS);
         self.ds.copy16(GRID3_START, GRID3_START + 2, TERRAIN_WORDS);
         self.ds.w8(GRID3_START.wrapping_add(2 * TERRAIN_WORDS), 0);
+    }
+
+    /// 清第三關的地形格 G4（原版 `sub_18599`）：從 G4 起點起 320h 個字組。每個關卡進場都清。
+    pub(crate) fn clear_terrain_grid(&mut self) {
+        self.ds.fill16(GRID4_START, TERRAIN_WORDS, 0);
     }
 
     /// 新欄的第一格從游標 50h 起，也就是 G4 讀取格狀的（列 0，欄 39）（原版 `18306h`）。
@@ -3207,5 +3263,110 @@ mod tests {
         assert!((GRID2_START..GRID2_START + GRID2_BYTES).all(|a| c.ds.r8(a) == 0));
         assert_eq!(c.ds.r8(GRID2_START + GRID2_BYTES), 0x66, "G2 之後的一格不清");
         assert!(c.g2_slots.iter().all(|&s| s == 0));
+    }
+
+    #[test]
+    fn draw_params_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut params = DrawParams::default();
+        params.load(&ds);
+        let mut same = ds.clone();
+        params.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        params.store(&mut blank);
+        let mut back = DrawParams::default();
+        back.load(&blank);
+        assert_eq!(back, params);
+        assert_ne!(params, DrawParams::default(), "測試資料不該全 0");
+        assert!(params.shape_width.is_some());
+    }
+
+    #[test]
+    fn draw_param_fields_land_at_the_documented_offsets() {
+        let params = DrawParams {
+            x: 0x0101,
+            y: 0x0202,
+            index: 0x0303,
+            page: 0x0404,
+            scratch: 0x0505,
+            source_col: 0x0606,
+            source_row: 0x0707,
+            shift: 0x0808,
+            text_col: 0x0909,
+            text_row: 0x0A0A,
+            shape_width: Some(0x0B0B),
+        };
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        params.store(&mut ds);
+        // 位移 = 線性位址 - 1CBC0h：word_26880 = 9CC0h、26882 = 9CC2h、26888 = 9CC8h、26872 = 9CB2h、2685C = 9C9Ch、
+        // 26864 = 9CA4h、26866 = 9CA6h、26868 = 9CA8h、2688A = 9CCAh、2688E = 9CCEh、2687E = 9CBEh。
+        for (off, want) in [
+            (0x9CC0, 0x0101),
+            (0x9CC2, 0x0202),
+            (0x9CC8, 0x0303),
+            (0x9CB2, 0x0404),
+            (0x9C9C, 0x0505),
+            (0x9CA4, 0x0606),
+            (0x9CA6, 0x0707),
+            (0x9CA8, 0x0808),
+            (0x9CCA, 0x0909),
+            (0x9CCE, 0x0A0A),
+            (0x9CBE, 0x0B0B),
+        ] {
+            assert_eq!(ds.r16(off), want, "{off:04X}h");
+        }
+        let touched = ds.bytes().iter().filter(|&&b| b != 0).count();
+        assert_eq!(touched, 2 * 11, "11 個字組，沒有重疊也沒有多寫");
+    }
+
+    #[test]
+    fn the_untouched_shape_width_is_ffffh_on_the_data_segment() {
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        let mut p = DrawParams::default();
+        p.store(&mut ds);
+        assert_eq!(ds.r16(0x9CBE), 0xFFFF, "沒寫過");
+        p.load(&ds);
+        assert_eq!(p.shape_width, None);
+        p.shape_width = Some(0);
+        p.store(&mut ds);
+        assert_eq!(ds.r16(0x9CBE), 0, "形狀寬 0 是寫過的值");
+        p.shape_width = None;
+        p.load(&ds);
+        assert_eq!(p.shape_width, Some(0));
+    }
+
+    #[test]
+    fn sound_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut sound = Sound::default();
+        sound.load(&ds);
+        let mut same = ds.clone();
+        sound.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        sound.store(&mut blank);
+        let mut back = Sound::default();
+        back.load(&blank);
+        assert_eq!(back, sound);
+        assert_ne!(sound, Sound::default(), "測試資料不該全 0");
+    }
+
+    #[test]
+    fn sound_fields_land_at_the_documented_offsets() {
+        let sound = Sound {
+            music: 0x11,
+            mute: 0x22,
+            speaker_flags: 0x33,
+            speaker: SpeakerParams { duration: 0x4141, period: 0x4242, threshold: 0x4343, pitch: 0x4444, counter: 0x4545 },
+        };
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        sound.store(&mut ds);
+        // byte_1CBCE = 000Eh、byte_2684E = 9C8Eh、byte_2684F = 9C8Fh、word_26850 起五個字組 = 9C90h 起。
+        assert_eq!([ds.r8(0x000E), ds.r8(0x9C8E), ds.r8(0x9C8F)], [0x11, 0x22, 0x33]);
+        assert_eq!([ds.r16(0x9C90), ds.r16(0x9C92), ds.r16(0x9C94), ds.r16(0x9C96), ds.r16(0x9C98)], [0x4141, 0x4242, 0x4343, 0x4444, 0x4545]);
+        let touched = ds.bytes().iter().filter(|&&b| b != 0).count();
+        assert_eq!(touched, 3 + 10);
     }
 }

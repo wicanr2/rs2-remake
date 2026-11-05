@@ -7,7 +7,7 @@
 use super::{Backdrop, Strip};
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::{SCRATCH_A, SCRATCH_B};
+use crate::video::{RowCopy, SCRATCH_A, SCRATCH_B};
 
 /// 背景磚的來源列與高度，靜態複製到像素列 1Ah。
 const FLOOR_SOURCE_ROW: u16 = 0x70;
@@ -84,7 +84,7 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(FLOOR_TOP_ROW);
         self.set_blit_shift(0);
-        self.copy_rows_to_page(FLOOR_ROWS);
+        self.copy_scratch_rows(RowCopy::Replace, FLOOR_ROWS);
         self.clear_obj();
     }
 
@@ -142,7 +142,7 @@ impl Core {
     fn draw_strip_piece(&mut self, shape: &StripShape, phase: u16) {
         self.set_blit_shift(phase.wrapping_shl(1).wrapping_add(shape.shift_base));
         self.set_blit_source(0, STRIP_SOURCE_ROW);
-        self.latch_copy_pairs(shape.height);
+        self.copy_scratch_rows(RowCopy::LatchPairs, shape.height);
     }
 
     /// 遮罩層（原版 `sub_136CA`）：暫存區 B 的遮罩 AND 加圖 OR，各 37 列，水平位移 `2 × 近景條 B 的相位`。
@@ -152,11 +152,11 @@ impl Core {
         self.set_blit_shift(shift);
         self.set_blit_source(8, 0);
         self.select_scratch(SCRATCH_B);
-        self.and_pairs_to_page(MASK_LAYER_ROWS);
+        self.copy_scratch_rows(RowCopy::AndPairs, MASK_LAYER_ROWS);
         self.set_blit_shift(shift);
         self.set_blit_source(0, 0);
         self.select_scratch(SCRATCH_B);
-        self.or_pairs_to_page(MASK_LAYER_ROWS);
+        self.copy_scratch_rows(RowCopy::OrPairs, MASK_LAYER_ROWS);
         self.select_scratch(SCRATCH_A);
         self.clear_obj();
     }
@@ -171,7 +171,7 @@ impl Core {
         self.set_obj(Pool::Background, 5);
         for _ in 0..PILLAR_COPIES {
             self.select_scratch(SCRATCH_B);
-            self.latch_copy_pairs(PILLAR_ROWS);
+            self.copy_scratch_rows(RowCopy::LatchPairs, PILLAR_ROWS);
             self.select_scratch(SCRATCH_A);
             self.add_blit_x(PILLAR_GAP);
         }
@@ -228,16 +228,16 @@ impl Core {
         self.set_blit_x(0);
         self.set_blit_y(bottom);
         self.set_blit_shift(phase);
-        self.and_rows_to_page(FLAME_MASK_ROWS);
+        self.copy_scratch_rows(RowCopy::And, FLAME_MASK_ROWS);
         self.set_blit_y(top);
-        self.and_rows_to_page_mirrored(FLAME_MASK_ROWS);
+        self.copy_scratch_rows(RowCopy::AndMirrored, FLAME_MASK_ROWS);
         self.set_blit_source(0, image_row);
         self.set_blit_x(0);
         self.set_blit_y(bottom);
         self.set_blit_shift(phase);
-        self.or_rows_to_page(FLAME_IMAGE_ROWS);
+        self.copy_scratch_rows(RowCopy::Or, FLAME_IMAGE_ROWS);
         self.set_blit_y(top);
-        self.or_rows_to_page_mirrored(FLAME_IMAGE_ROWS);
+        self.copy_scratch_rows(RowCopy::OrMirrored, FLAME_IMAGE_ROWS);
         self.clear_obj();
         let s = &mut self.scenes.stage2;
         s.flame_phase = if s.flame_phase >= FLAME_PHASE_LAST { 0 } else { s.flame_phase + 1 };

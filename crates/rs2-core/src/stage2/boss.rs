@@ -5,7 +5,8 @@
 //! 頭目由第 34 項（272×161）與第 35 項（144×118）合成，幀 630 起。各層的腳本、起點與來源見下面三個函式。
 
 use crate::game::Core;
-use crate::mirror::{BossScript, SCRATCH_B};
+use crate::mirror::BossScript;
+use crate::video::SCRATCH_B;
 
 /// 中頭目第一層：幀計數不超過 107h 時每幀重設起點，到 19Ah 為止；來源是暫存區 B 的第 0 列起 95 列。
 const MID_A_RESET_UNTIL: u16 = 0x107;

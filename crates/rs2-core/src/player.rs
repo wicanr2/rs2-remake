@@ -711,7 +711,7 @@ pub(crate) mod test_support {
             p.flame = NO;
             p.beam_y = 2;
         }
-        c.forget_stride();
+        c.forget_shape_width();
         c.set_draw_page(0);
         c
     }
@@ -748,7 +748,7 @@ pub(crate) mod test_support {
 
     /// 邏輯寫過、還沒被繪製命令帶走的形狀寬；沒有則 `None`。
     pub(crate) fn stride(c: &Core) -> Option<u16> {
-        c.pending_stride()
+        c.pending_shape_width()
     }
 }
 

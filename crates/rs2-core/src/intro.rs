@@ -16,7 +16,8 @@
 //! 因為每個檢查點之後的等待和繪製長度都會出現在收據裡。
 
 use crate::game::Core;
-use crate::scene::{Page, Palette, Placement, SCREEN_ROWS, ScratchView};
+use crate::scene::{Palette, Placement, SCREEN_ROWS, ScratchView};
+use crate::video::{Page, RowCopy};
 
 /// 開場動畫怎麼結束的。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,22 +79,22 @@ impl Core {
         if self.key_pressed() {
             return IntroEnd::Interrupted;
         }
-        self.clear_scratch();
-        self.clear_pages();
+        self.clear_scratch_b();
+        self.clear_both_pages();
         self.arm_slides_in().await;
         if self.key_pressed() {
             return IntroEnd::Interrupted;
         }
-        self.clear_scratch();
+        self.clear_scratch_b();
         self.load_palette(Palette::TitleE);
-        self.clear_pages();
+        self.clear_both_pages();
         self.ship_front_zooms_in().await;
         if self.key_pressed() {
             return IntroEnd::Interrupted;
         }
-        self.clear_scratch();
+        self.clear_scratch_b();
         self.load_palette(Palette::TitleD);
-        self.clear_pages();
+        self.clear_both_pages();
         self.eye_scrolls_up();
         if self.key_pressed() {
             return IntroEnd::Interrupted;
@@ -114,7 +115,7 @@ impl Core {
     /// 滑完接太空船接近。
     async fn earth_slides_in(&mut self) {
         self.load_palette(Palette::Beg1A);
-        self.clear_scratch();
+        self.clear_scratch_b();
         self.draw_beg_to_scratch(Placement::at(8, 0, EARTH));
         let mut view = ScratchView { src_x: 0x28, ..ScratchView::ORIGIN };
         self.set_scratch_view(view);
@@ -124,20 +125,20 @@ impl Core {
             for page in [Page::Zero, Page::One] {
                 self.show_page(page);
                 self.clear_draw_page();
-                self.copy_rows_to_page_shifted(SCREEN_ROWS);
+                self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
                 view.src_x = view.src_x.wrapping_sub(1);
                 self.set_scratch_view(view);
-                self.mirror_scan_lines();
+                self.end_of_frame_copy();
             }
             if self.key_pressed() {
                 return;
             }
         }
         // 滑完再補畫一次最後的取景，翻到頁 0。
-        self.mirror_scan_lines();
+        self.end_of_frame_copy();
         self.clear_draw_page();
-        self.copy_rows_to_page_shifted(SCREEN_ROWS);
-        self.mirror_scan_lines();
+        self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
+        self.end_of_frame_copy();
         self.show_page(Page::Zero);
         self.await_timer_ticks(1).await;
         self.ship_approaches().await;
@@ -151,13 +152,13 @@ impl Core {
             for sprite in step.sprites {
                 self.draw_beg(*sprite);
             }
-            self.mirror_scan_lines();
+            self.end_of_frame_copy();
             self.await_timer_ticks(step.wait).await;
             self.show_page(if i % 2 == 0 { Page::One } else { Page::Zero });
         }
         // 只剩背景，閃光。
         self.redraw_earth();
-        self.mirror_scan_lines();
+        self.end_of_frame_copy();
         self.await_timer_ticks(4).await;
         self.load_palette(Palette::Beg1B);
         self.await_timer_ticks(0x14).await;
@@ -174,7 +175,7 @@ impl Core {
     fn redraw_earth(&mut self) {
         self.clear_draw_page();
         self.set_blit_position(0, 0);
-        self.copy_rows_to_page_shifted(SCREEN_ROWS);
+        self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
     }
 
     /// 段 2（`sub_1175B`）：`BEG1` 第 1 項（手臂，224x153）寫在暫存區 B 的 (1,0)，顯示在 y=40，
@@ -185,11 +186,11 @@ impl Core {
         self.set_scratch_view(view);
         self.show_page(Page::One);
         self.draw_on(Page::One);
-        self.copy_rows_to_page_shifted(SCREEN_ROWS);
+        self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
         self.await_timer_ticks(1).await;
         self.await_timer_ticks(0x0F).await;
         for _ in 0..33 {
-            self.copy_rows_to_page_shifted(SCREEN_ROWS);
+            self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
             view.shift = view.shift.wrapping_sub(1);
             self.set_scratch_view(view);
             if self.key_pressed() {
@@ -249,7 +250,7 @@ impl Core {
         self.show_page(Page::One);
         self.draw_on(Page::One);
         for _ in 0..40 {
-            self.copy_rows_to_page_shifted(SCREEN_ROWS);
+            self.copy_scratch_rows(RowCopy::ReplaceShifted, SCREEN_ROWS);
             view.y = view.y.wrapping_sub(5);
             self.set_scratch_view(view);
             if self.key_pressed() {

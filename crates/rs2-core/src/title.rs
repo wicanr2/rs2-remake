@@ -16,7 +16,7 @@
 //!
 //! 不移植的呼叫：
 //! - `sub_12B49`、`sub_12BCF`：DOS 記憶體配置與釋放，檔名工作區與配置段落的寫入都在 `A0_EXEMPT`。
-//! - `sub_1117F`：`byte_1CF74` 為 `E` 時直接 `retn`，只有 MGA 分支（`scene.rs` 的 `mirror_scan_lines`
+//! - `sub_1117F`：`byte_1CF74` 為 `E` 時直接 `retn`，只有 MGA 分支（`video.rs` 的 `end_of_frame_copy`
 //!   照原版順序呼叫，接收端依顯示模式處理）。
 //! - CGA、MGA、純 EGA 分支：`byte_1CF74` 固定 `E`、`byte_1CF75` 固定 `N`。
 //!
@@ -25,11 +25,12 @@
 //! 重製裡沒有人寫它，恆為 0。
 
 use crate::cards::CampaignStage;
+use crate::draw::{BegGroup, MixFile};
 use crate::game::{Core, Exit};
 use crate::intro::IntroEnd;
 use crate::menu::Menu;
-use crate::mirror::{PLAYER1_ACTIVE, SCRATCH_B};
-use crate::scene::Page;
+use crate::mirror::PLAYER1_ACTIVE;
+use crate::video::{Page, SCRATCH_B};
 
 /// 標題領域的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,17 +82,17 @@ impl Core {
         self.mark_title_entered();
         'title: loop {
             self.request_stage_music();
-            self.load_title_music();
+            self.load_mix(MixFile::A);
             self.start_music();
             self.show_page(Page::Zero);
             self.draw_on(Page::Zero);
             // 原版這裡是 DOS 記憶體配置與釋放，不移植。
             self.show_page(Page::Zero);
-            self.load_intro_images();
+            self.load_beg_bank(BegGroup::Beg1);
             'attract: loop {
                 self.clear_last_key();
-                self.clear_scratch();
-                self.clear_pages();
+                self.clear_scratch_b();
+                self.clear_both_pages();
                 self.select_scratch(SCRATCH_B);
                 if self.play_intro().await == IntroEnd::TimedOut {
                     self.set_demo_mode(true);
@@ -108,7 +109,7 @@ impl Core {
                     self.run_menu().await;
                     continue 'attract;
                 }
-                self.clear_pages();
+                self.clear_both_pages();
                 self.set_demo_mode(false);
                 self.apply_role();
                 if self.password_rejected() {
