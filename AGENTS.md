@@ -30,7 +30,7 @@
 | [tools/ida_export.sh](tools/ida_export.sh) | 用 IDA 匯出 `workspace/ida/s_export.json` 與 `s_disasm.txt` |
 | [tools/q.sh](tools/q.sh) | 查反組譯與資料段，用法見 `tools/q.py` |
 | [tools/dos/](tools/dos/) | 重跑動態收據。`tools/dosgolem-patches/` 是套在 `workspace/dosgolem` 上的修改 |
-| [crates/](crates/) | Rust 重製。`rs2-formats` 解碼、`rs2-core` 模擬、`rs2-gfx` 繪製、`rs2-audio` 音樂與喇叭、`rs2-trace` 對拍、`rs2-play` 視窗。建置與測試走 [tools/rust.sh](tools/rust.sh) |
+| [crates/](crates/) | Rust 重製。`rs2-formats` 解碼、`rs2-game` 遊戲本體、`rs2-gfx` 繪製、`rs2-audio` 音樂與喇叭、`rs2-trace` 對拍、`rs2-play` 視窗。建置與測試走 [tools/rust.sh](tools/rust.sh) |
 
 ## 硬規則
 

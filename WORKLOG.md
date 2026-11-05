@@ -330,3 +330,15 @@ Android 煙霧測試第二次啟動的失敗：
 - `verify`、`play-test` exit 0，變異測試 7 項都分歧，`DS_EXEMPT` 沒有新增。
 
 執行邊界：繪製代理在主機跑過一次 `python3 --version` 與一次空的 `python3 -`。
+
+### 移除平坦資料段，`rs2-core` 改名 `rs2-game`（2026-11-06）
+
+- 遊戲狀態是 `State`，表格由 `Tables::parse` 從 `S.EXE` 解析，雜湊不符拒絕，查表落在解析範圍外就 panic。`Mirror` 搬到 `rs2-trace`，`DS_EXEMPT` 49 項、`A0_EXEMPT` 21 項逐字相同，沒有新增豁免。
+- `Op` 43 個變體改依動作命名，`rs2-gfx`、`rs2-trace`、`rs2-play` 一起改。
+- 表外行為逐項寫成規則，收據碰到的次數另外量過。按鍵超出 ASCII 表、示範錄影超出 3000 位元組、格網配置之間的間隙，收據都沒碰到，只有單元測試，間隙取 0 是強推論。
+- 變異測試 5 項：表格位置加 1、拿掉 G1 之前讀列基底表尾端的規則、略過雜湊、`Mirror` 位移加 1 都被抓到；`stray_damage` 初值加 1 只被 `power_on` 測試抓到，因為 `0020h` 在 `A0_EXEMPT`。
+- `verify` 564 項、`play-test` 全過。
+
+和完成條件的差異寫在規格 004「現況」：`tables.rs`、`grid.rs` 留著原版位移，池的指標欄位仍以原版值當表格的鍵。
+
+執行邊界：代理在主機跑過一次 `python3 --version` 與一次 `python3 -c "print(1)"`，用過一次 `cat >>` 附加測試模組。

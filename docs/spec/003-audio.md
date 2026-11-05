@@ -18,7 +18,7 @@
 
 | 層 | 位置 | 內容 |
 |---|---|---|
-| 命令 | `rs2-core` 的 `Frame.audio` | `AudioCmd::Play(MixFile)`、`Stop`、`Speaker(bool)`，和繪製命令一樣在一步結束時交出 |
+| 命令 | `rs2-game` 的 `Frame.audio` | `AudioCmd::Play(MixFile)`、`Stop`、`Speaker(bool)`，和繪製命令一樣在一步結束時交出 |
 | 驅動 | `rs2-audio::driver` | `ASMDRV` 的合成層與事件層逐函式移植，輸出 OPL2 暫存器寫入 |
 | 合成 | `rs2-audio::opl2` | YM3812，整數運算，49716 Hz |
 | 喇叭事件 | `rs2-gfx::speaker` | `sub_192EA` 依圖庫資料產生的除數與閘門，事件間隔是機器碼的指令數 |
@@ -26,7 +26,7 @@
 | 接合 | `rs2-audio::engine` | 一個取樣是 24 個 PIT 週期，驅動 tick 落點是整數運算，不累積誤差 |
 | 裝置 | `rs2-play::audio` | SDL 音效裝置，或 `--wav-out` 依遊戲時間算出 WAV |
 
-模擬不等音訊，音訊也不回頭影響模擬。`Dseg` 裡的音樂相關位元組由 `rs2-core` 照原版維護，裝置開不開都一樣。
+模擬不等音訊，音訊也不回頭影響模擬。音樂相關狀態（`Sound`）由 `rs2-game` 照原版維護，裝置開不開都一樣。
 
 ## 驅動的行為
 
@@ -53,7 +53,7 @@
 | C2 | 開關時機 | 全流程收據裡每次播放與停止落在同一次等待，曲目相同（`rs2-trace/tests/audio.rs`） |
 | C3 | 喇叭 | 全流程收據裡每段繪圖附帶音的除數與閘門序列相同，事件之間的指令數相同（同上） |
 | C4 | 合成品質 | 與 Nuked OPL3 黑箱比對同一份暫存器序列：遮掉小鼓與踩鈸時相關係數大於 0.999；整首每 100 毫秒能量差小於 3 dB（`rs2-audio/tests/synth_ref.rs`） |
-| C5 | 前端 | 音效裝置不影響模擬：`--wav-out` 與否每步 `Dseg` 雜湊相同。`SDL_AUDIODRIVER=disk` 能輸出非靜音資料 |
+| C5 | 前端 | 音效裝置不影響模擬：`--wav-out` 與否每步資料段雜湊相同。`SDL_AUDIODRIVER=disk` 能輸出非靜音資料 |
 
 ## 驗收結果
 

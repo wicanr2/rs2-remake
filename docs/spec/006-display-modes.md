@@ -64,27 +64,27 @@
 
 | 命令 | 單色底層 | 行為 |
 |---|---|---|
-| `S18C0A`、`S18FC1`、`S19068` | `19892h` | 覆寫字組，x 乘 2（位元組，16 像素） |
-| `S18C6E` | `19840h` | 取反覆寫 |
-| `S18CE2`、`S18DCC`、`S18EB6`、`S18F5D` | `1979Fh` | OR |
-| `S18D89`、`S19025`、`S190CC` | `197EEh` | 取反 OR（受擊閃白、BEG 反相） |
-| `S18D46`、`S18E30`、`S18E73`、`S18F1A` | `1974Bh` | AND（遮罩） |
-| `S19ADC`、`S19B40` | `1A6CEh` | 圖庫項寫進暫存區（不裁切） |
-| `S18ACE` | `19706h` | MAP 圖塊 10 列，每列 1 個字組 |
-| `S19BA4`、`S19C4F`、`S19D08`、`S19DA8`、`S19F3B`、`S19E66`、`S19FF9`、`S1A09F`、`S1A144`、`S1A1E6` | `19C09h` 起 | 暫存區搬到顯示頁，各自的運算、列向、x 與來源指標公式見 `mono.rs` 函式註解 |
-| `S1A287`、`S1929F` | `1A51Fh`、`198E1h`／`19925h` | 填色（`dx` 為 1 或 0Bh 時 0AAAAh）、血條（寫兩頁） |
-| `S19CF9`、`S18894`、`S11504`、`S1152D`、`VramFill` | `1A332h`、`188CDh`／`188DEh`、`1151Ch`、`11545h`、`12932h` | 清目前頁、清兩頁、清暫存區、清頁 1 |
-| `S1890D` | `18A61h` | 幀計數，BIOS 字型，寫 `di` 與 `di - 8000h` |
-| `S1117F`（新） | `1117Fh` | 只有 H：目前頁 `0000h`～`1FFFh` 複製到 `2000h`～`3FFFh` |
-| `S17FA0`、`S18031`、`S180C6` | `17FF5h`、`18086h`、`1812Eh` | 第三關：暫存區 A 的 40 欄 190 列送顯示頁（`S18031` 多 1 位元組），視窗歸零時暫存區 A 左移 50h 位元組。`S17EBA`、`S17EEA`、`S17F26`、`S17F5D` 是 E 的暫存區 B 維護，單色沒有 |
+| `MyOverwrite`、`StageOverwrite`、`BegOverwrite` | `19892h` | 覆寫字組，x 乘 2（位元組，16 像素） |
+| `MyOverwriteInverted` | `19840h` | 取反覆寫 |
+| `MyOverlay`、`MyOverlayEffect`、`MyOverlayPlayerShot`、`StageOverlay` | `1979Fh` | OR |
+| `MyFlash`、`StageFlash`、`BegInverted` | `197EEh` | 取反 OR（受擊閃白、BEG 反相） |
+| `MyCut`、`MyCutEffect`、`MyCutPlayerShot`、`StageCut` | `1974Bh` | AND（遮罩） |
+| `StageToScratch`、`BegToScratch` | `1A6CEh` | 圖庫項寫進暫存區（不裁切） |
+| `MapToScratch` | `19706h` | MAP 圖塊 10 列，每列 1 個字組 |
+| `ScratchReplace`、`ScratchReplaceMirrored`、`ScratchReplaceShifted`、`ScratchOr`、`ScratchOrMirrored`、`ScratchOrPairs`、`ScratchLatchPairs`、`ScratchAnd`、`ScratchAndPairs`、`ScratchAndMirrored` | `19C09h` 起 | 暫存區搬到顯示頁，各自的運算、列向、x 與來源指標公式見 `mono.rs` 函式註解 |
+| `FillRows`、`BarCell` | `1A51Fh`、`198E1h`／`19925h` | 填色（`dx` 為 1 或 0Bh 時 0AAAAh）、血條（寫兩頁） |
+| `ClearDrawPage`、`ClearBothPages`、`ClearScratchA`、`ClearScratchB`、`VramFill` | `1A332h`、`188CDh`／`188DEh`、`1151Ch`、`11545h`、`12932h` | 清目前頁、清兩頁、清暫存區、清頁 1 |
+| `Number` | `18A61h` | 幀計數，BIOS 字型，寫 `di` 與 `di - 8000h` |
+| `EndOfFrameCopy`（新） | `1117Fh` | 只有 H：目前頁 `0000h`～`1FFFh` 複製到 `2000h`～`3FFFh` |
+| `ScrollShowA`、`ScrollShowB`、`ScrollShiftBothLeft` | `17FF5h`、`18086h`、`1812Eh` | 第三關：暫存區 A 的 40 欄 190 列送顯示頁（`ScrollShowB` 多 1 位元組），視窗歸零時暫存區 A 左移 50h 位元組。`ScrollRotateCopy`、`ScrollShiftLeft4`、`ScrollRotateColumn`、`ScrollMergeSeam` 是 E 的暫存區 B 維護，單色沒有 |
 
 要點（都已由收據證實）：
 
 - 單色 blit 以字組為單位：每列字組數是 `每列位元組數 >> 1`，字組位址超出列起點到列起點 + 4Fh、或列號超過 190（有號比較）就整個字組跳過，來源照樣前進 2 位元組。
 - 暫存區搬移的迴圈條件 `cmp bx, 0BDh; ja` 是無號比較，負的列號直接結束；`cx` 不大於 0（有號）時只畫一列。
 - `sub_1A1E6` 的單色分支不把 `word_26864` 乘 2，其他分支都乘 2，照原版。
-- 第三關進場：E 在 `sub_17DF9` 末尾呼叫 `S17FA0` 後接 `S17EBA`，單色的 `sub_185AA` 沒有這一步顯示。`MonoSink` 在 `S17FA0` 前記下頁內容，緊接 `S17EBA` 時還原。
-- `S1117F` 的原版呼叫端有 55 處（`sub_1117F` 的 call），`122C4h` 與 `1243Fh` 在 `retn` 之後，不可達。核心的呼叫位置依原版每個呼叫端對應，原始碼共 32 處（`title.rs` 23，其中 `two_page_loop!` 兩處展開成每個雙頁迴圈的兩個呼叫；`stage2～4.rs` 6；`flow.rs` 2；`ending.rs` 1）。正確性以 H 收據全過為證（動態已證實），沒有逐一對照每個位址的表。
+- 第三關進場：E 在 `sub_17DF9` 末尾呼叫 `ScrollShowA` 後接 `ScrollRotateCopy`，單色的 `sub_185AA` 沒有這一步顯示。`MonoSink` 在 `ScrollShowA` 前記下頁內容，緊接 `ScrollRotateCopy` 時還原。
+- `EndOfFrameCopy` 的原版呼叫端有 55 處（`sub_1117F` 的 call），`122C4h` 與 `1243Fh` 在 `retn` 之後，不可達。核心的呼叫位置依原版每個呼叫端對應，原始碼共 32 處（`title.rs` 23，其中 `two_page_loop!` 兩處展開成每個雙頁迴圈的兩個呼叫；`stage2～4.rs` 6；`flow.rs` 2；`ending.rs` 1）。正確性以 H 收據全過為證（動態已證實），沒有逐一對照每個位址的表。
 
 ### 第三關地形
 
@@ -130,7 +130,7 @@
 ### remake-owned
 
 - 所有接收端同時餵，切換不重建。
-- `DrawCmd::EgaAttr` 與 `Op::S1117F`：核心補記原版 E 沒有可見效果的動作，其他接收端忽略。
+- `DrawCmd::EgaAttr` 與 `Op::EndOfFrameCopy`：核心補記原版 E 沒有可見效果的動作，其他接收端忽略。
 - EGA 在補間或 HD 時的量化。
 - `Game::set_terrain_scr`。
 
@@ -138,7 +138,7 @@
 
 | 測試 | 內容 |
 |---|---|
-| `rs2-gfx` `mono::tests`（10 項） | 列位址表、頁換算、blit 運算與裁切、清除範圍、`S1117F`、暫存區搬移與視窗歸零、進場復原、呈現幾何 |
+| `rs2-gfx` `mono::tests`（10 項） | 列位址表、頁換算、blit 運算與裁切、清除範圍、`EndOfFrameCopy`、暫存區搬移與視窗歸零、進場復原、呈現幾何 |
 | `rs2-gfx` `tests/ega_units.rs` | 標準 16 色、`EgaAttr` 的接收 |
 | `rs2-gfx` `mono_hd::tests` | 合成圖庫的每種運算、對 `MonoSink` 的差分模糊測試（43 種 Op、負 y、超出列尾、CGA 與 MGA，14 組）、HD 圖尺寸稽核（`#[ignore]`，1,526 張） |
 | `rs2-trace` `tests/mono.rs`（`#[ignore]`） | `mono_replay`：14 份收據的每一筆；`ega_attribute_table_matches_the_original`：核心 `EgaAttr` 對 dosgolem EGA 收據的屬性暫存器；`mono_receipts_exist`：缺收據算失敗 |
@@ -156,7 +156,7 @@ dosgolem `rs2dyn` 補 `0008-rs2dyn-mono-vram.patch`：`waittrace` 在 M 為 `C` 
 | `title` | 標題入口，開場動畫、示範錄影 1 與 2，回到標題 | 1,290 |
 | `stage1`～`stage4` | 各關入口起，秘技（不減血），每幀開火，位置不動，打到關卡結束 | 1,192、1,066、1,406、1,851 |
 | `flow` | 標題進遊戲，四關各玩幾秒，Ctrl+C 過關，四段 J 過場，片尾，Q 離開 | 437 |
-| `menu` | 標題選單的 LEVEL、CTRL 走一輪，涵蓋選單反白（`S18C6E`） | 200 |
+| `menu` | 標題選單的 LEVEL、CTRL 走一輪，涵蓋選單反白（`MyOverwriteInverted`） | 200 |
 
 ## 驗收
 
@@ -174,7 +174,7 @@ dosgolem `rs2dyn` 補 `0008-rs2dyn-mono-vram.patch`：`waittrace` 在 M 為 `C` 
 
 | 編號 | 結果 |
 |---|---|
-| M1 | 14 份收據（C、H 各 7 份：標題、第一到第四關、全流程、選單）14,884/14,884 筆全部相同。涵蓋 46 種繪製命令，只剩不可達的 `S190CC`。 |
+| M1 | 14 份收據（C、H 各 7 份：標題、第一到第四關、全流程、選單）14,884/14,884 筆全部相同。涵蓋 46 種繪製命令，只剩不可達的 `BegInverted`。 |
 | M2 | `m1`：標題起跑，Ctrl+C 進關，四關加片尾 4,469 步，每步資料段雜湊相同。`m2`：第三關關內切換，進場 VGA 與進場 CGA 各 1,570 步，四種模式都在關內用過 |
 | M3 | `m4`：2 種場景 × 12 種兩兩切換 × 補間開關，48 組、3,936 張畫面逐位元組相同 |
 | M4 | `workspace/mode-shots/`：四種模式各一張原版圖與 HD（第一關重播第 50、120 步）。人工看過：VGA、EGA 色彩合理；CGA、MGA 是 4:3 的點陣畫面；MGA 右下角「大宇資訊 1990」在垂直 1.5 倍下顯得破碎（見下） |
@@ -193,7 +193,7 @@ dosgolem `rs2dyn` 補 `0008-rs2dyn-mono-vram.patch`：`waittrace` 在 M 為 `C` 
 | 動態比對涵蓋範圍 | 現在涵蓋標題、示範錄影 1 與 2、四關（秘技、位置不動、每幀開火）、四段 J 過場、選單、片尾。沒涵蓋：玩家移動、雙人、受傷死亡路徑。這些的繪製命令在單色路徑已被其他收據涵蓋（同一批 `Op`），但沒有對應的動態收據 |
 | 輸入對齊 | 新收據用 `waitsync`，鍵在等待迴圈裡送，沒有 E 對單色的輸入偏移問題 |
 | 單色遮罩與圖的 y 差 | 呼叫端的 `inc word_26882` 與模式無關，`MonoSink` 用同一個 `y` 畫遮罩與圖，收據逐位元組相同，不需另外假設 |
-| 判斷點的動態覆蓋 | 收據涵蓋所有可達的 `Op` 的單色分支（46 種命令）。`S190CC` 的唯一呼叫端不可達 |
+| 判斷點的動態覆蓋 | 收據涵蓋所有可達的 `Op` 的單色分支（46 種命令）。`BegInverted` 的唯一呼叫端不可達 |
 
 ### 與 E 的資料段差異（不進模擬）
 

@@ -147,7 +147,7 @@ CGA 與 MGA 的單色版另有 1,526 張，由 HD 彩色圖推導，這裡沒有
 | 音樂與音效 | 重製自帶 OPL2 合成器。暫存器寫入和原版驅動逐筆相同，喇叭事件也相同。波形只和參考實作比過品質 |
 | 尚未驗證 | 真實桌面的視窗與音效裝置、GPU 繪圖器、全螢幕都沒測過，只在虛擬環境跑過。手感沒有真人驗證 |
 | 尚未開始 | CGA、MGA 顯示模式與切換。Linux、Windows、macOS、Android 發行包 |
-| 核心的寫法 | 遊戲沒有模擬 x86，dosgolem 只用來量原版行為，不進遊戲。但 `rs2-core` 目前是照機器碼逐函式翻成 Rust，啟動時還要讀 `S.EXE` 的資料段。改成真正重寫的計畫在[規格 004](docs/spec/004-rewrite-and-delivery.md) |
+| 核心的寫法 | 遊戲沒有模擬 x86，dosgolem 只用來量原版行為，不進遊戲。`rs2-game` 是有型別的重寫，表格啟動時從 `S.EXE` 解析，對拍時才把狀態還原成資料段比對（[規格 004](docs/spec/004-rewrite-and-delivery.md)） |
 
 唯一現況入口是 [CONTEXT.md](CONTEXT.md)。
 
