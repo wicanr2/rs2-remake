@@ -217,3 +217,15 @@
 - 按住方向盤 1.7 秒只走兩步，是因為測試同時送點擊，`adb input` 的第二個點擊會取消進行中的滑動。測試改成分開送，並要求走超過 5 步。
 - 關於頁開不了：Android 14 起隱式 Intent 到不了未匯出的 Activity，`AboutActivity` 改成 exported。
 - 模擬器的 `qwerty2` 鍵盤被 SDL 當成手把接上，自動指派給玩家 1。規格 005 的明確指派會解決。
+
+### 敵彈領域與工具列（2026-11-05，同日）
+
+- 敵彈：`ebullet.rs` 重寫，狀態進 `EnemyBullets`，`tools/rust.sh verify` exit 0。變異測試確認記錄區、池指標、表外寫入都有被比對；`remove_hit_bullet` 回傳的 `bx` 殘值收據分辨不出來，依機器碼保留。代理的筆記在 `workspace/progress/rewrite-ebullet.md`。
+- 工具列：中文按鈕、狀態列、五頁設定畫面、手把指派、鍵盤重綁，`rs2-play` lib 240 項。實體手把與真實觸控沒有驗。
+- 重寫與工具列都在獨立 git worktree 做，不再互相弄壞編譯。`tools/worktree_data.sh` 接資料。
+
+勘誤：
+
+- `docs/re/11` 第 7.2 節寫 `3647h` 至 `3719h` 有 16 個未使用樣板，實際是 8 個（間隔 1Eh），已改。
+- `tools/worktree_data.sh` 第一版把 `workspace/extracted` 做成符號連結，也沒帶 `RS2_OUT` 的參考檔，容器內讀不到，`verify` 失敗。敵彈代理手動補救後回報，腳本已修。
+- 工具列代理在主機跑過一次 `python3`（只印一行字串）。
