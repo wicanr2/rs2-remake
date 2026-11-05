@@ -4,7 +4,8 @@
 //! 資料全來自 `rs2_core::HudStatus`（`Game::hud_status`）。血條 8 格對應原版 `hp` 字組的 8 個位元：
 //! 開局是 `FFh`，每次命中右移一位，所以亮的位元數就是剩下的格數。
 //!
-//! 充能條的刻度（`CHARGE_MAX` 與三級門檻）是顯示用的初值，規格 005「未決定」列的波動砲門檻定案後再對。
+//! 充能條的刻度對核心的波動砲門檻（`rs2_core::WAVE_LEVEL_1` 至 `WAVE_LEVEL_3`）：滿格是第三級，三等分刻度剛好落在
+//! 第一、二、三級的門檻上（核心的門檻等距，由核心的單元測試把關）。門檻是初值，規格 005「未決定」，調整時只改核心的常數。
 
 use super::style::{self, Rgba, color, fade, lighten, mix, with_alpha};
 use super::{Align, Canvas, Rect, font, text};
@@ -20,8 +21,8 @@ pub const FADE_MS: u64 = 200;
 /// 剩 1 格時的呼吸週期。
 pub const BREATH_MS: u64 = 1000;
 pub const HP_CELLS: usize = 8;
-/// 充能條滿格的計數（顯示用的初值）。
-pub const CHARGE_MAX: u16 = 48;
+/// 充能條滿格的計數：核心波動砲第三級的門檻，也是充能計數的上限。
+pub const CHARGE_MAX: u16 = rs2_core::WAVE_CHARGE_FULL;
 
 const M: i32 = 16;
 const CELL_W: i32 = 20;
@@ -378,7 +379,9 @@ fn draw_charge(c: &mut Canvas, r: Rect, charge: u16) {
     let f = (charge.min(CHARGE_MAX) as f32 / CHARGE_MAX as f32).clamp(0.0, 1.0);
     let w = ((r.w - 2) as f32 * f).round() as i32;
     if w > 0 {
-        let tone = if f >= 1.0 { color::WARN } else if f >= 2.0 / 3.0 { color::ON } else { color::PRIMARY };
+        // 顏色跟著級數：第二級（三分之二）以上換色，滿格（第三級）警示色。用整數比，不受浮點誤差影響。
+        let level = charge.min(CHARGE_MAX);
+        let tone = if level >= CHARGE_MAX { color::WARN } else if level * 3 >= CHARGE_MAX * 2 { color::ON } else { color::PRIMARY };
         style::fill_rrect_vgrad(c, Rect::new(r.x + 1, r.y + 1, w, r.h - 2), 5.0, lighten(tone, 0.25), mix(tone, color::BG, 0.25));
     }
     // 三級門檻的刻度：三分之一與三分之二。
@@ -691,6 +694,35 @@ mod tests {
         assert_ne!(base, counter);
         let other = render(&HudState::new(), &solo(0xFF), &HudFlags { counter: Some(124), ..HudFlags::default() }, &HudIcons::default(), 0);
         assert_ne!(counter, other);
+    }
+
+    #[test]
+    fn charge_ticks_sit_on_the_core_wave_thresholds() {
+        use rs2_core::{WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
+        // 三等分刻度（三分之一、三分之二、滿格）就是第一、二、三級的門檻。
+        assert_eq!((CHARGE_MAX / 3, CHARGE_MAX * 2 / 3, CHARGE_MAX), (WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3));
+        assert_eq!(CHARGE_MAX % 3, 0);
+        // 剛到門檻時條的填色邊緣在刻度上（一個像素以內）；少一步在刻度左邊。
+        let flags = HudFlags { charge_bar: true, ..HudFlags::default() };
+        let bar = layout([true, false], &flags).into_iter().find(|(e, _)| *e == Elem::Charge).unwrap().1;
+        let edge = |charge: u16| {
+            let mut s = solo(0xFF);
+            s[0].charge = charge;
+            let img = render(&HudState::new(), &s, &flags, &HudIcons::default(), 0);
+            // 填色的右緣：由左往右找第一個和條外底色差不多的像素（三個色版差的總和不大）。
+            // 刻度是 1 像素的亮線，疊在填色上時一樣算「差很多」，不會截斷。
+            let y = bar.y + bar.h / 2;
+            let plate = px(&img, bar.x - 6, y);
+            let far = |p: [u8; 4]| (0..3).map(|i| (i32::from(p[i]) - i32::from(plate[i])).abs()).sum::<i32>() > 100;
+            (4..bar.w).find(|&x| !far(px(&img, bar.x + x, y))).unwrap_or(bar.w)
+        };
+        for (k, level) in [WAVE_LEVEL_1, WAVE_LEVEL_2].into_iter().enumerate() {
+            let tick = bar.w * (k as i32 + 1) / 3;
+            let at = edge(level);
+            assert!((at - tick).abs() <= 3, "第 {} 級：填色到 {at}，刻度在 {tick}", k + 1);
+            assert!(edge(level - 1) < tick - 3, "少一步在刻度左邊：{}", edge(level - 1));
+        }
+        assert!(edge(WAVE_LEVEL_3) >= bar.w - 4, "第三級填滿：{}", edge(WAVE_LEVEL_3));
     }
 
     #[test]

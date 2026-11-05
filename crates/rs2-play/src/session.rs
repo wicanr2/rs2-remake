@@ -201,6 +201,8 @@ pub struct Session {
     live_input: bool,
     /// 最新一幀畫了玩家機。標題與過場沒有畫，那裡按鍵不會移動任何東西。
     player_drawn: [bool; 2],
+    /// 玩家的砲座已脫離機身（規格 005）。分離的砲座不套用機身的預測偏移。
+    free_pods: [bool; 2],
     /// 介面層（HUD、打擊回饋）的狀態，全部只看繪製命令與玩家狀態，不碰模擬。見 `feedback`、`ui::hud`。
     ui: UiState,
 }
@@ -293,6 +295,7 @@ impl Session {
             predictor: Predictor::new(),
             live_input: false,
             player_drawn: [false; 2],
+            free_pods: [false; 2],
             ui: UiState::new(),
         };
         // HD 畫面的標題選單選中列用圓角高亮條代替取反（只影響 HD 引擎，原版圖與 VgaSink 不變）。
@@ -348,6 +351,7 @@ impl Session {
             let st = self.game.player_status(p);
             let pos = self.playable(p).then_some((st.x as i32 * 8, st.y as i32));
             self.predictor.on_step(p, pos);
+            self.free_pods[p] = st.pods_detached;
         }
     }
 
@@ -360,7 +364,9 @@ impl Session {
             let reach = Reach { up: st.can_up, down: st.can_down, left: st.can_left, right: st.can_right };
             // 暫停中邏輯不會動，不累積。
             let dir = if self.hold { Dir::default() } else { crate::predict::dir_of(state, p) };
-            self.predictor.advance(p, dir, reach, dt, step_secs);
+            // 細步移動（規格 005）：下一步走半步或整步，看方向和上一個邏輯步採用的方向是否相同。
+            let size = crate::predict::next_step(st.fine_step, st.last_move, dir);
+            self.predictor.advance_sized(p, dir, reach, dt, step_secs, size);
         }
     }
 
@@ -583,6 +589,14 @@ impl Session {
         }
     }
 
+    /// 砲座分離鍵（規格 005「砲座像 Force」）這一步是否按著。每步跑之前呼叫，核心在按下的邊緣發射、收回砲座。
+    /// 選項沒開時核心不看它。
+    pub fn set_split_held(&mut self, held: [bool; 2]) {
+        for (p, h) in held.into_iter().enumerate() {
+            self.game.set_split_held(p, h);
+        }
+    }
+
     /// 無敵（規格 005）：呼叫 `Game::set_invincible`（原版作秘技的旗標 `word_273A5`）。
     /// 呼叫端開著時每步呼叫，從沒開過就不呼叫（原版模式不碰資料段）。
     pub fn set_invincible(&mut self, on: bool) {
@@ -656,6 +670,8 @@ impl Session {
             (w, h) = (320, 200);
         } else {
             let player = self.player_offsets();
+            // 分離的砲座不吃機身的預測偏移（規格 005「砲座像 Force」）。
+            self.layer.set_free_pods(self.free_pods);
             let opts = RenderOpts { interpolate: self.view.tween, hd, show_counter: self.view.counter, player };
             let (img, iw, ih) = self.layer.render(alpha, opts);
             self.frame.clear();
@@ -689,6 +705,11 @@ fn desaturate(rgba: &mut [u8]) {
 #[cfg(test)]
 #[path = "session_modes_tests.rs"]
 mod modes_tests;
+
+/// 射擊與操控選項（規格 005）的測試：決定性、全關等於原版、四個選項組合、預測、截圖。
+#[cfg(test)]
+#[path = "session_shoot_tests.rs"]
+mod shoot_tests;
 
 #[cfg(test)]
 mod tests {

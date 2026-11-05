@@ -15,6 +15,7 @@
 //! |---|---|
 //! | [`Core::fire_player_bullets`] | `sub_165CF`（朝右）、`sub_1669F`（朝左）。呼叫端：主機普通彈 `sub_14501`、`sub_1502F`，砲座 `sub_1480A`、`sub_15338` |
 //! | [`Core::fire_sweep`] | `sub_165CF` 的 `F` 分支。呼叫端：主機放開右 Shift 的大掃射 `sub_14501`、`sub_1502F` |
+//! | [`Core::fire_wave`] | 沒有原版對應。波動砲（規格 005），呼叫端 `player/enhanced.rs` |
 //! | [`Core::update_player_bullets`] | `sub_1673E`（各關每幀） |
 //! | [`PlayerBullets::release_all`] | `sub_10E33` 內清池指標表的那一段 |
 //!
@@ -201,6 +202,10 @@ pub(crate) enum Behavior {
     LaserLeft,
     /// `S`：掃射，傷害 3，命中不消失。
     Piercing,
+    /// `W`：波動砲第一級（規格 005），不屬於原版。傷害 [`WAVE_DAMAGE`] 第 0 項，命中消失。
+    WaveBolt,
+    /// `w`：波動砲第二級（規格 005），不屬於原版。傷害 [`WAVE_DAMAGE`] 第 1 項，命中不消失。
+    WaveLance,
 }
 
 impl Behavior {
@@ -210,6 +215,8 @@ impl Behavior {
             0x4C => Behavior::LaserRight,
             0x6C => Behavior::LaserLeft,
             0x53 => Behavior::Piercing,
+            KIND_WAVE_BOLT => Behavior::WaveBolt,
+            KIND_WAVE_LANCE => Behavior::WaveLance,
             _ => Behavior::Plain,
         }
     }
@@ -219,14 +226,31 @@ impl Behavior {
         match self {
             Behavior::Seeker | Behavior::Piercing => 3,
             Behavior::Plain | Behavior::LaserRight | Behavior::LaserLeft => 1,
+            Behavior::WaveBolt => WAVE_DAMAGE[0],
+            Behavior::WaveLance => WAVE_DAMAGE[1],
         }
     }
 
     /// 命中實體後是否繼續飛（原版 `16B8Fh`：型別 `S` 不設釋放旗標）。
     pub(crate) const fn pierces(self) -> bool {
-        matches!(self, Behavior::Piercing)
+        matches!(self, Behavior::Piercing | Behavior::WaveLance)
     }
 }
+
+// ---- 波動砲（規格 005「射擊」，remake-owned，沒有原版收據）----
+
+/// 波動砲子彈記錄的 `owner` 字母。原版的字母只有 0、`L`、`B`、`K`、`S`、`F`，邏輯不讀 `owner`。
+pub(crate) const WAVE_LETTER: u16 = b'W' as u16;
+/// 第一級、第二級子彈記錄的行為字組（原版只有 0、`A`、`L`、`l`、`S`）。
+const KIND_WAVE_BOLT: u16 = b'W' as u16;
+const KIND_WAVE_LANCE: u16 = b'w' as u16;
+/// 第一級、第二級命中實體時累計的傷害。初值，規格 005「未決定」，使用者試玩後調。
+/// 第三級沿用大掃射的穿透彈，傷害 3（[`Behavior::Piercing`]）。
+pub(crate) const WAVE_DAMAGE: [u8; 2] = [2, 3];
+/// 第三級七顆穿透彈的起點列，每顆形狀 3 列，合起來涵蓋列 0 至 18，只有列 17 與前一顆重疊一列。
+/// 原版大掃射是 1、4、7、10、13、16（涵蓋列 1 至 18，漏掉列 0）。最後一顆是 17 不是 18：
+/// 列 18 的形狀會讀到列 20，落在 G1 的越界列（見 [`Core::grid1_row_start`]）。
+const WAVE_FULL_ROWS: [u16; 7] = [0, 3, 6, 9, 12, 15, 17];
 
 /// 一顆玩家子彈的記錄。欄位是原版的 16 個字組，順序與位移對應見 `mirror.rs`，數值沿用原版字組寬度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -374,7 +398,7 @@ impl Core {
                 }
                 Step::SetRow(r) => row = r,
                 Step::Fire(shot) => {
-                    if self.spawn_player_bullet(shot, facing, letter, col, row) {
+                    if self.spawn_player_bullet(shot, facing, letter, col, row).is_some() {
                         spawned += 1;
                     }
                 }
@@ -398,18 +422,50 @@ impl Core {
     }
 
     /// 把樣板複製進第一個空槽，起點取 (`col`, `row`)，繪製位置跟著設，`owner` 取武器字母（原版 `sub_16578`）。
-    /// 回傳是否配到槽。
-    fn spawn_player_bullet(&mut self, shot: Shot, facing: Facing, letter: u16, col: u16, row: u16) -> bool {
-        let Some(slot) = self.pb.first_free() else { return false };
+    /// 回傳配到的槽，池滿了是 `None`。
+    ///
+    /// 繪製位置 y 是列 × 10 加 `Enhanced::spawn_dy`。原版恆為 0；細步移動（規格 005）的半步位置讓機身與砲座
+    /// 的繪製 y 比列起點多 5 像素，子彈只在顯示上跟著，碰撞仍用整數列。
+    fn spawn_player_bullet(&mut self, shot: Shot, facing: Facing, letter: u16, col: u16, row: u16) -> Option<usize> {
+        let slot = self.pb.first_free()?;
         let mut bullet = self.player_bullet_template(shot, facing);
         bullet.col = col;
         bullet.blit_x = col;
         bullet.row = row;
-        bullet.blit_y = row.wrapping_mul(10);
+        bullet.blit_y = row.wrapping_mul(10).wrapping_add(self.enh.spawn_dy);
         bullet.owner = letter;
         self.pb.slots[slot] = Slot { link: pb_record_link(slot), bullet };
         self.bump_gen(Pool::PlayerBullet, slot as u8);
-        true
+        Some(slot)
+    }
+
+    /// 波動砲（規格 005「射擊」）：依充能級數 `level`（1 至 3）射出，`col` 是玩家所在的欄，`row` 是玩家所在的列。
+    ///
+    /// | 級 | 子彈 | 傷害 | 命中 |
+    /// |---|---|---|---|
+    /// | 1 | 大彈樣板（`K` 武器的 4×3，每幀 5 欄），起點同大彈 | [`WAVE_DAMAGE`] 第 0 項 | 消失 |
+    /// | 2 | 同上 | [`WAVE_DAMAGE`] 第 1 項 | 穿透 |
+    /// | 3 | 大掃射的穿透彈樣板，七顆從列 0 起每 3 列一顆（[`WAVE_FULL_ROWS`]），列不看玩家 | 3 | 穿透 |
+    ///
+    /// 池滿了的那一顆放棄，和原版的發射一樣。
+    pub(crate) fn fire_wave(&mut self, level: u8, col: u16, row: u16) {
+        match level {
+            0 => {}
+            1 | 2 => {
+                let kind = if level == 1 { KIND_WAVE_BOLT } else { KIND_WAVE_LANCE };
+                if let Some(slot) = self.spawn_player_bullet(Shot::Big, Facing::Right, WAVE_LETTER, col, row) {
+                    self.pb.slots[slot].bullet.kind = kind;
+                }
+            }
+            _ => {
+                // 列是畫面上的絕對列，不跟著機身的半列位移。
+                let dy = std::mem::take(&mut self.enh.spawn_dy);
+                for r in WAVE_FULL_ROWS {
+                    self.spawn_player_bullet(Shot::Sweep, Facing::Right, WAVE_LETTER, col, r);
+                }
+                self.enh.spawn_dy = dy;
+            }
+        }
     }
 
     /// 每幀更新 20 顆玩家子彈（原版 `sub_1673E`）：每個使用中的槽走一步，出界或命中就釋放，

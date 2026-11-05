@@ -2060,7 +2060,6 @@ mod tests {
         }
         let tags = cells.iter().filter(|i| i.text == "開發中").count();
         assert_eq!(tags, OPTIONS.iter().filter(|o| !o.implemented).count());
-        assert_eq!(tags, 9, "打擊回饋已實作，只剩九個開發中");
         // 沒實作的欄位是灰的、不能聚焦。
         for (i, o) in OPTIONS.iter().enumerate() {
             let cell = cells.iter().find(|x| x.id == Some(Id::Opt(i))).unwrap();
@@ -2097,7 +2096,11 @@ mod tests {
         }
         // 即使檔案裡把沒實作的選項寫成開，也不算強化規則，因為它不會生效。
         let mut forced = Controls::new(Settings::default(), true);
-        forced.settings.set_opt_value(1, 1);
+        for (i, o) in OPTIONS.iter().enumerate() {
+            if !o.implemented {
+                forced.settings.set_opt_value(i, 1);
+            }
+        }
         assert!(!forced.settings.rules_enhanced() && !forced.bar_state().rules);
     }
 

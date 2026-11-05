@@ -12,6 +12,9 @@
 pub const STEP_X: f32 = 16.0;
 /// 垂直一步的位移（邏輯像素）：`sub_146AC`、`sub_146C3` 每步 0Ah 列（靜態已證實）。
 pub const STEP_Y: f32 = 10.0;
+/// 細步移動（規格 005）新按的方向第一步走的距離：水平 8 像素、垂直 5 像素。
+pub const FINE_STEP_X: f32 = STEP_X / 2.0;
+pub const FINE_STEP_Y: f32 = STEP_Y / 2.0;
 /// `err` 衰減的時間常數。
 pub const ERR_TAU_SECS: f32 = 0.040;
 /// 一步的位移超過這個就是換關或重生，不補償。
@@ -44,6 +47,29 @@ pub fn dir_of(state: &[bool; 128], player: usize) -> Dir {
     let left = k(dl) || k(l) || k(ul);
     let right = !left && (k(dr) || k(r) || k(ur));
     Dir { up, down, left, right }
+}
+
+/// 下一個邏輯步會走的距離，邏輯像素。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepPx {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// 原版的一步：水平 2 位元組（16 像素）、垂直 1 列（10 像素）。
+pub const FULL_STEP: StepPx = StepPx { x: STEP_X, y: STEP_Y };
+
+/// 下一步的距離。細步移動（規格 005）開著時，方向和上一個邏輯步實際採用的方向（`last`，核心的
+/// `PlayerStatus::last_move`）不同的軸走半步，相同的軸走整步，規則和核心的 `steer_fine` 一致：
+/// 新按或換向的第一步半步，按住之後每步整步。沒開時一律整步。
+pub fn next_step(fine: bool, last: (i8, i8), dir: Dir) -> StepPx {
+    if !fine {
+        return FULL_STEP;
+    }
+    // 左先於右、上先於下，和 `dir_of` 與核心一致。
+    let hx: i8 = if dir.left { -1 } else if dir.right { 1 } else { 0 };
+    let hy: i8 = if dir.up { -1 } else if dir.down { 1 } else { 0 };
+    StepPx { x: if hx != 0 && hx == last.0 { STEP_X } else { FINE_STEP_X }, y: if hy != 0 && hy == last.1 { STEP_Y } else { FINE_STEP_Y } }
 }
 
 /// 玩家機還能往哪裡走（邏輯那邊的界限），和 `rs2_core::PlayerStatus` 同內容，這裡不依賴它好寫測試。
@@ -97,8 +123,13 @@ impl Predictor {
         t.lead = (0.0, 0.0);
     }
 
-    /// 經過 `dt` 秒。`step_secs` 是這一步到下一步的時間，0 表示不用等，這時不累積 `lead`。
+    /// 經過 `dt` 秒。`step_secs` 是這一步到下一步的時間，0 表示不用等，這時不累積 `lead`。一步的距離是原版的整步。
     pub fn advance(&mut self, player: usize, dir: Dir, reach: Reach, dt: f32, step_secs: f32) {
+        self.advance_sized(player, dir, reach, dt, step_secs, FULL_STEP);
+    }
+
+    /// 同 [`Predictor::advance`]，一步的距離由 `step` 給（細步移動時用 [`next_step`] 算）。
+    pub fn advance_sized(&mut self, player: usize, dir: Dir, reach: Reach, dt: f32, step_secs: f32, step: StepPx) {
         let t = &mut self.tracks[player];
         if t.last.is_none() {
             return;
@@ -119,8 +150,8 @@ impl Predictor {
             } else {
                 0.0
             };
-            t.lead.0 = (t.lead.0 + vx * STEP_X * f).clamp(-STEP_X, STEP_X);
-            t.lead.1 = (t.lead.1 + vy * STEP_Y * f).clamp(-STEP_Y, STEP_Y);
+            t.lead.0 = (t.lead.0 + vx * step.x * f).clamp(-step.x, step.x);
+            t.lead.1 = (t.lead.1 + vy * step.y * f).clamp(-step.y, step.y);
         }
         let k = (-dt / ERR_TAU_SECS).exp();
         t.err = (t.err.0 * k, t.err.1 * k);
@@ -261,6 +292,60 @@ mod tests {
         let mut p = started();
         p.advance(0, RIGHT, Reach::ALL, FRAME, 0.0);
         assert_eq!(p.offset_hd(0), Some((0, 0)));
+    }
+
+    const LEFT: Dir = Dir { up: false, down: false, left: true, right: false };
+    const DOWN: Dir = Dir { up: false, down: true, left: false, right: false };
+
+    #[test]
+    fn fine_step_sizes_follow_the_last_direction_the_logic_used() {
+        // 沒開細步：永遠整步。
+        assert_eq!(next_step(false, (1, 1), RIGHT), FULL_STEP);
+        // 新按（上一步沒有這個方向）半步，按住（上一步同方向）整步，換向半步。
+        assert_eq!(next_step(true, (0, 0), RIGHT), StepPx { x: 8.0, y: FINE_STEP_Y });
+        assert_eq!(next_step(true, (1, 0), RIGHT), StepPx { x: 16.0, y: FINE_STEP_Y });
+        assert_eq!(next_step(true, (-1, 0), RIGHT), StepPx { x: 8.0, y: FINE_STEP_Y }, "換向");
+        assert_eq!(next_step(true, (0, 1), DOWN).y, 10.0);
+        assert_eq!(next_step(true, (0, 0), DOWN).y, 5.0);
+        // 同時按左右：左先於右，和邏輯一致。
+        let both = Dir { left: true, right: true, ..Dir::default() };
+        assert_eq!(next_step(true, (-1, 0), both).x, 16.0);
+        assert_eq!(next_step(true, (1, 0), both).x, 8.0);
+        // 沒按的軸不影響（預測只在有方向時累積），給半步。
+        assert_eq!(next_step(true, (1, 1), LEFT).y, FINE_STEP_Y);
+    }
+
+    #[test]
+    fn fine_step_prediction_lands_on_the_logic_position_at_the_step() {
+        // 按住右：第一步半步（8），之後整步（16）。時間剛好時，每個邏輯步到來的誤差都是 0。
+        let mut p = started();
+        let mut logic = 100;
+        let mut last = (0i8, 0i8);
+        for n in 0..6 {
+            let size = next_step(true, last, RIGHT);
+            p.advance_sized(0, RIGHT, Reach::ALL, STEP, STEP, size);
+            let want = if n == 0 { 8.0 } else { 16.0 };
+            assert!((p.offset_px(0).0 - want).abs() < 1e-3, "第 {n} 步預測 {} 應為 {want}", p.offset_px(0).0);
+            logic += want as i32;
+            p.on_step(0, Some((logic, 80)));
+            assert!(p.offset_px(0).0.abs() < 1e-3, "第 {n} 步到來時沒有誤差");
+            last = (1, 0);
+        }
+    }
+
+    #[test]
+    fn fine_step_tap_predicts_only_half_a_step_and_never_overshoots() {
+        let mut p = started();
+        // 輕點：新按，一整步的時間內最多領先半步。
+        p.advance_sized(0, RIGHT, Reach::ALL, STEP * 3.0, STEP, next_step(true, (0, 0), RIGHT));
+        assert_eq!(p.offset_px(0).0, FINE_STEP_X, "卡頓也不超過半步");
+        // 垂直同理。
+        p.advance_sized(0, DOWN, Reach::ALL, STEP * 3.0, STEP, next_step(true, (0, 0), DOWN));
+        assert_eq!(p.offset_px(0).1, FINE_STEP_Y);
+        // 預設的 advance 還是整步，原版時序不變。
+        let mut q = started();
+        q.advance(0, RIGHT, Reach::ALL, STEP * 3.0, STEP);
+        assert_eq!(q.offset_px(0).0, STEP_X);
     }
 
     #[test]

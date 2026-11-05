@@ -409,9 +409,13 @@ mod tests {
     fn only_implemented_options_count_as_enhanced_rules() {
         let mut s = Settings::default();
         // 沒實作的選項，檔案裡寫成開也不算強化規則，因為它不會生效。
-        s.set_opt_value(1, 1);
-        s.set_opt_value(8, 1);
+        for (i, o) in OPTIONS.iter().enumerate() {
+            if !o.implemented {
+                s.set_opt_value(i, 1);
+            }
+        }
         assert!(!s.rules_enhanced());
+        assert_eq!(s.rules(), Rules::ORIGINAL, "沒實作的選項不交給核心");
         s.set_opt_value(options::INVINCIBLE_INDEX, 1);
         assert!(s.rules_enhanced() && s.invincible());
         s.set_opt_value(options::INVINCIBLE_INDEX, 0);

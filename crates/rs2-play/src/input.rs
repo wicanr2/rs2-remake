@@ -266,6 +266,8 @@ pub struct InputMapper {
     carry: Vec<u8>,
     /// 遊戲目前看到的按鍵狀態，索引是 make code。
     game_down: [bool; 128],
+    /// 分離鍵在上一次取走之後按下過（含已放開的）。兩步之間的輕點分離鍵不會漏掉，規則同 `hold_short`。
+    split_latch: [bool; 2],
 }
 
 impl Default for InputMapper {
@@ -284,6 +286,7 @@ impl Default for InputMapper {
             hold_short: true,
             carry: Vec::new(),
             game_down: [false; 128],
+            split_latch: [false; 2],
         }
     }
 }
@@ -349,6 +352,13 @@ impl InputMapper {
     fn deliver(&mut self, src: Source, code: u8, now_us: u64) {
         let first = self.total(code) == 0;
         self.owners[code as usize][src as usize] += 1;
+        if self.hold_short {
+            for p in 0..2 {
+                if code == split_pseudo(p) {
+                    self.split_latch[p] = true;
+                }
+            }
+        }
         if first && !is_pseudo(code) {
             self.queue.push(code);
             self.typematic.press(code, now_us);
@@ -399,6 +409,7 @@ impl InputMapper {
     pub fn block(&mut self) {
         self.blocked = true;
         self.drop_delivered();
+        self.split_latch = [false; 2];
         self.armed = [false; 3];
     }
 
@@ -422,6 +433,14 @@ impl InputMapper {
     /// 分離鍵現在有沒有按著（任何來源）。沒有原版掃描碼，之後給「砲座像 Force」用。
     pub fn split_held(&self, player: usize) -> bool {
         self.total(split_pseudo(player.min(1))) > 0
+    }
+
+    /// 這一步要交給核心的分離鍵狀態（兩位玩家），並清掉記錄。現在按著，或上一步之後按過（`hold_short` 開著時
+    /// 兩步之間按下又放開的輕點也算一步按著，核心在按下的邊緣動作）。
+    pub fn take_split(&mut self) -> [bool; 2] {
+        let out = [self.split_held(0) || self.split_latch[0], self.split_held(1) || self.split_latch[1]];
+        self.split_latch = [false; 2];
+        out
     }
 
     /// `os_repeat` 是 SDL 的 `repeat` 旗標。作業系統的重複一律忽略，重複碼由 `Typematic` 自己產生。
@@ -968,6 +987,36 @@ mod tests {
         m.key_up(K::Period);
         assert!(!m.split_held(0));
         assert!(drain_all(&mut m).is_empty());
+    }
+
+    #[test]
+    fn a_split_tap_between_two_steps_is_not_lost_when_short_presses_are_kept() {
+        let mut m = InputMapper::new();
+        assert_eq!(m.take_split(), [false, false]);
+        // 兩步之間按下又放開：這一步仍算按著，下一步放開。
+        assert_eq!(m.key_down(K::Period, false, 0), KeyResult::Game);
+        m.key_up(K::Period);
+        assert!(!m.split_held(0));
+        assert_eq!(m.take_split(), [true, false]);
+        assert_eq!(m.take_split(), [false, false]);
+        // 按住：每一步都是按著。
+        m.key_down(K::Period, false, 0);
+        assert_eq!(m.take_split(), [true, false]);
+        assert_eq!(m.take_split(), [true, false]);
+        m.key_up(K::Period);
+        assert_eq!(m.take_split(), [false, false]);
+        // 原版時序（短按保留關閉）：只看取樣當下，輕點會漏。
+        let mut m = InputMapper::new();
+        m.set_hold_short(false);
+        m.key_down(K::Period, false, 0);
+        m.key_up(K::Period);
+        assert_eq!(m.take_split(), [false, false]);
+        // 擋住時不記錄，也不送。
+        let mut m = InputMapper::new();
+        m.key_down(K::Period, false, 0);
+        m.key_up(K::Period);
+        m.block();
+        assert_eq!(m.take_split(), [false, false]);
     }
 
     // -----------------------------------------------------------------------

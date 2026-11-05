@@ -15,6 +15,7 @@
 //! 玩家掃描的格網窗與一般的格網存取不同（[`Core::scan_cell`]、`mirror.rs`），列號表外時掃到的是格網之外的資料，
 //! 這裡不另外處理，照 [`Core::scan_footprint`] 走。
 
+use super::enhanced::DETACHED_POD_DAMAGE;
 use super::{BEAM_START, NO, YES};
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
@@ -79,11 +80,11 @@ impl Core {
 
     /// 在 G3 標出本體佔的 2 列 × 4 欄髒格（原版 `sub_14A2C`、`sub_1555A`），值 1。
     pub(super) fn mark_body_cells(&mut self, who: usize) {
-        const ROWS: u16 = 2;
         const COLS: u16 = 4;
         const DIRTY: u16 = 1;
         let p = self.pl.ship[who];
-        self.grid3_mark_block(p.row, p.col, ROWS, COLS, DIRTY);
+        // 原版 2 列；細步移動的半步位置橫跨三列，多標一列才擦得乾淨（規格 005）。
+        self.grid3_mark_block(p.row, p.col, self.body_dirty_rows(who), COLS, DIRTY);
     }
 
     /// 本體對 G1（原版 `sub_14B1E`、`sub_1564C`）：任何非 0 且非 FFh 的格都算受擊，不分哪個實體。
@@ -179,7 +180,9 @@ impl Core {
             None
         });
         if contact != 0 {
-            self.damage_entity_at_cell(contact, POD_DAMAGE);
+            // 分離的砲座（規格 005「砲座像 Force」）傷害較高，附著時是原版的 1。
+            let damage = if self.pods_detached(who) { DETACHED_POD_DAMAGE } else { POD_DAMAGE };
+            self.damage_entity_at_cell(contact, damage);
         }
     }
 

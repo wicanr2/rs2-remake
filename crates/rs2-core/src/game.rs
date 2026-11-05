@@ -8,7 +8,7 @@ use crate::flow::{Flow, Scenes};
 use crate::fx::Effects;
 use crate::mirror::{demo_playing, stage_cleared};
 use crate::pbullet::PlayerBullets;
-use crate::player::Players;
+use crate::player::{Enhanced, Players, ShootView};
 use crate::regs::Regs;
 use crate::scenery::Scenery;
 use crate::title::Title;
@@ -355,6 +355,9 @@ pub(crate) struct Port {
     pub(crate) rules: Rules,
     /// 砲座分離鍵按著（規格 005「砲座像 Force」）。沒有原版掃描碼，不走按鍵表。
     pub(crate) split_held: [bool; 2],
+    /// 玩家的強化狀態（`Core::enh`）在上一次交回控制權時的複本，給 `Game::player_status`、`Game::hud_status` 讀。
+    /// 不屬於原版狀態，不進資料段。
+    pub(crate) shoot: [ShootView; 2],
 }
 
 struct YieldOnce(bool);
@@ -390,6 +393,8 @@ pub struct Core {
     pub(crate) sc: Scenery,
     /// 兩位玩家與存活位元組。
     pub(crate) pl: Players,
+    /// 玩家的強化狀態（規格 005 的射擊與操控選項）。不屬於原版狀態，不進 `Mirror`、不寫資料段。
+    pub(crate) enh: Enhanced,
     /// 標題：選單與示範輪播。
     pub(crate) title: Title,
     /// 關卡流程：關卡字母、過關旗標、計時、輸入。
@@ -433,6 +438,7 @@ impl Core {
             terrain_scr: false,
             rules: Rules::ORIGINAL,
             split_held: [false; 2],
+            shoot: [ShootView::default(); 2],
         };
         let mut g = Core {
             ds,
@@ -444,6 +450,7 @@ impl Core {
             en: Enemies::default(),
             sc: Scenery::default(),
             pl: Players::default(),
+            enh: Enhanced::default(),
             title: Title::default(),
             flow: Flow::default(),
             scenes: Scenes::default(),
@@ -499,6 +506,7 @@ impl Core {
             p.integrity_checked = self.integrity_checked;
             p.display_start = self.display_start;
             p.audio.append(&mut self.audio);
+            p.shoot = self.enh.view();
         }
         YieldOnce(false).await;
         let (input, pokes) = {
@@ -568,6 +576,13 @@ pub struct PlayerStatus {
     pub can_down: bool,
     pub can_left: bool,
     pub can_right: bool,
+    /// 細步移動選項（規格 005）作用中。`can_*` 用細步的界限（欄 1 至 33、y 0 至 160），`y` 可能是半列位置。
+    pub fine_step: bool,
+    /// 上一個邏輯步實際採用的方向：水平（左 -1、右 +1）、垂直（上 -1、下 +1）。細步移動時，
+    /// 方向和它相同的下一步走整步（2 欄、10 像素），不同的走半步（1 欄、5 像素）。`fine_step` 為假時是 (0, 0)。
+    pub last_move: (i8, i8),
+    /// 砲座已脫離機身（規格 005「砲座像 Force」）。分離的砲座不跟著機身，顯示層不能把機身的預測偏移套在它身上。
+    pub pods_detached: bool,
 }
 
 pub struct Game {
@@ -630,7 +645,11 @@ impl Game {
 
     /// 重新開始：沿用同一份 `Dseg`，只重跑進入關卡的初始化，殘值行為與原版相同。
     pub fn restart(&mut self, start: Start) {
-        let checked = self.port.borrow().integrity_checked;
+        // 強化選項、分離鍵與第三關地形來源屬於前端的設定，不屬於一局的狀態，重新開始要帶到新的埠。
+        let (checked, rules, split_held, terrain_scr) = {
+            let p = self.port.borrow();
+            (p.integrity_checked, p.rules, p.split_held, p.terrain_scr)
+        };
         let image_free = self.ds.clone();
         let mut core = Core::new(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET], &[], start, self.fixes);
         core.ds = image_free;
@@ -643,7 +662,13 @@ impl Game {
         core.store_mirrors();
         self.ds.copy_from(&core.ds);
         let port = core.port.clone();
-        port.borrow_mut().draws.append(&mut core.draws);
+        {
+            let mut p = port.borrow_mut();
+            p.draws.append(&mut core.draws);
+            p.rules = rules;
+            p.split_held = split_held;
+            p.terrain_scr = terrain_scr;
+        }
         self.port = port;
         self.fut = stage1(core);
         self.finished = None;
@@ -747,7 +772,10 @@ impl Game {
     pub fn hud_status(&self, player: usize) -> HudStatus {
         let players = Players::from_dseg(&self.ds);
         let p = &players.ship[player];
-        HudStatus { active: players.is_alive(player), hp: p.hp, weapon: p.weapon, pods: p.pods.installed(), charge: p.charge }
+        // 波動砲充能（規格 005）開著時，充能是強化狀態的計數（0 至 `WAVE_CHARGE_FULL`），不是原版的鍵盤事件計數。
+        let port = self.port.borrow();
+        let charge = if port.rules.wave_charge { port.shoot[player.min(1)].charge } else { p.charge };
+        HudStatus { active: players.is_alive(player), hp: p.hp, weapon: p.weapon, pods: p.pods.installed(), charge }
     }
 
     /// 無敵選項（規格 005）：沿用原版秘技的旗標，`word_273A5` 是 `Y` 時受傷不減血（`1451Ch`、`1504Ah`，
@@ -764,16 +792,36 @@ impl Game {
     pub fn player_status(&self, player: usize) -> PlayerStatus {
         let players = Players::from_dseg(&self.ds);
         let p = &players.ship[player];
+        let (rules, view) = {
+            let port = self.port.borrow();
+            (port.rules, port.shoot[player.min(1)])
+        };
+        // 展示錄影不套用強化規則（`Core::player_rules`）。
+        let fine = rules.fine_step && !demo_playing(&self.ds);
+        let reach = if fine {
+            // 細步移動：同樣的邊界，垂直用繪製位置 y（原版的列界限 0 至 16 換成 0 至 160 像素）。
+            (
+                (p.blit_y as i16) > 0,
+                (p.blit_y as i16) < (crate::player::BOTTOM_PIXELS),
+                p.can_move_left(),
+                p.can_move_right(),
+            )
+        } else {
+            (p.can_move_up(), p.can_move_down(), p.can_move_left(), p.can_move_right())
+        };
         PlayerStatus {
             x: p.blit_x as i16,
             y: p.blit_y as i16,
             // 玩家位元：還在場上。血量 0：死亡動畫中，`die_step` 自己往下往右走，不接受輸入。
             // `byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
             controllable: players.is_alive(player) && p.hp != 0 && !demo_playing(&self.ds) && !stage_cleared(&self.ds),
-            can_up: p.can_move_up(),
-            can_down: p.can_move_down(),
-            can_left: p.can_move_left(),
-            can_right: p.can_move_right(),
+            can_up: reach.0,
+            can_down: reach.1,
+            can_left: reach.2,
+            can_right: reach.3,
+            fine_step: fine,
+            last_move: if fine { view.last_move } else { (0, 0) },
+            pods_detached: view.pods_detached && !demo_playing(&self.ds),
         }
     }
 

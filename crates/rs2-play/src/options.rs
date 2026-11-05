@@ -4,7 +4,9 @@
 //! 但畫成灰色並標「開發中」，不能切換，也不會影響遊戲。實作完一項就把那一列的 `implemented` 改成 `true`，
 //! 不用動設定畫面與設定檔。
 //!
-//! 現在已實作：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）與 `hit_feedback`（打擊回饋，只在 HD 畫面生效）。
+//! 現在已實作：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）、`hit_feedback`（打擊回饋，只在 HD 畫面生效），
+//! 以及射擊與操控的四項：`wave_charge`（波動砲充能）、`auto_fire`（按住連射）、`force_pod`（砲座像 Force）、
+//! `fine_step`（細步移動）。四項的行為在 `rs2-core` 的 `player/enhanced.rs`，由 `Settings::rules()` 交給核心。
 
 use crate::ui::text;
 
@@ -145,13 +147,13 @@ macro_rules! opt {
 /// 規格 005「選項」表，依畫面順序。
 pub const OPTIONS: [OptDef; 12] = [
     opt!("field_size", Group::View, text::OPT_FIELD_SIZE, Kind::Size, 0, true, false),
-    opt!("wave_charge", Group::Shoot, text::OPT_WAVE_CHARGE, Kind::Toggle, 0, true, false),
-    opt!("auto_fire", Group::Shoot, text::OPT_AUTO_FIRE, Kind::Toggle, 0, true, false),
-    opt!("force_pod", Group::Shoot, text::OPT_FORCE_POD, Kind::Toggle, 0, true, false),
+    opt!("wave_charge", Group::Shoot, text::OPT_WAVE_CHARGE, Kind::Toggle, 0, true, true),
+    opt!("auto_fire", Group::Shoot, text::OPT_AUTO_FIRE, Kind::Toggle, 0, true, true),
+    opt!("force_pod", Group::Shoot, text::OPT_FORCE_POD, Kind::Toggle, 0, true, true),
     opt!("hit_feedback", Group::Shoot, text::OPT_HIT_FEEDBACK, Kind::Toggle, 1, false, true),
     opt!("invincible", Group::Practice, text::OPT_INVINCIBLE, Kind::Toggle, 0, true, true),
     opt!("feel", Group::Control, text::OPT_FEEL, Kind::Feel, 1, false, true),
-    opt!("fine_step", Group::Control, text::OPT_FINE_STEP, Kind::Toggle, 0, true, false),
+    opt!("fine_step", Group::Control, text::OPT_FINE_STEP, Kind::Toggle, 0, true, true),
     opt!("ai_aim", Group::Ai, text::OPT_AI_AIM, Kind::Toggle, 0, true, false),
     opt!("ai_fire", Group::Ai, text::OPT_AI_FIRE, Kind::Toggle, 0, true, false),
     opt!("ai_react", Group::Ai, text::OPT_AI_REACT, Kind::Toggle, 0, true, false),
@@ -219,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn only_invincible_feel_and_hit_feedback_are_implemented_this_round() {
+    fn the_shoot_and_control_options_are_implemented_with_the_display_ones() {
         let done: Vec<&str> = OPTIONS.iter().filter(|o| o.implemented).map(|o| o.id).collect();
-        assert_eq!(done, vec!["hit_feedback", "invincible", "feel"]);
+        assert_eq!(done, vec!["wave_charge", "auto_fire", "force_pod", "hit_feedback", "invincible", "feel", "fine_step"]);
     }
 
     #[test]

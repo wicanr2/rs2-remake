@@ -42,15 +42,19 @@
 //!
 //! 頭目段背景（原版 `sub_15906` 一族）原本和玩家擠在同一個檔案，不屬於這個領域，搬到 `boss_scroll.rs`。
 //!
-//! 之後的強化模式（規格 005）要換的地方都是獨立的名字：移動步長與邊界（[`ROW_STEP`]、[`COL_STEP`]、
-//! [`Player::can_move_up`] 一族）、開火決策（[`Core::fire_main`]、[`Core::release_charge`]、[`SWEEP_CHARGE`]）、
-//! 砲座狀態（[`Pods`]、[`Core::advance_pods`]、[`POD_FRAMES`]）。
+//! 強化模式（規格 005）的四個玩家選項（波動砲充能、按住連射、砲座像 Force、細步移動）在 `player/enhanced.rs`，
+//! 狀態在 `Core::enh`，不進 `Mirror`。這個檔案的原版函式只在入口多一個 `Rules` 判斷，選項全關時不做任何事：
+//! [`Core::control_player`] 的 [`Core::settle_options`]、[`Core::split_pods`]，[`Core::steer`] 的細步分支，
+//! 開火的 [`Core::fire_enhanced`] 分支，[`Core::advance_pods`] 的分離分支。
 
 mod contact;
 mod draw;
+mod enhanced;
 
 #[cfg(test)]
 pub(crate) use contact::Pickup;
+pub use enhanced::{WAVE_CHARGE_FULL, WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
+pub(crate) use enhanced::{BOTTOM_PIXELS, Enhanced, ShootView};
 
 use crate::fx::EffectKind;
 use crate::game::Core;
@@ -468,6 +472,8 @@ impl Core {
                 p.reset_loadout(style);
             }
         }
+        // 強化狀態（砲座分離、細步、充能）不跨關。
+        self.enh.reset_for_stage();
     }
 
     /// 玩家每幀的輸入與移動（原版 `sub_14458`、`sub_14F92`）。過關後不處理。
@@ -542,10 +548,18 @@ impl Core {
         let p = &mut self.pl.ship[who];
         p.dying = DYING_FRAMES;
         p.hit = NO;
-        self.steer(who);
+        // 強化選項（規格 005）。全關時以下三個呼叫都不做事，原版路徑沒有任何資料段寫入。
+        let rules = self.player_rules();
+        self.settle_options(who, rules);
+        self.steer(who, rules.fine_step);
         self.turn_pods(who);
-        self.release_charge(who);
-        self.fire_main(who);
+        self.split_pods(who, rules);
+        if rules.wave_charge || rules.auto_fire {
+            self.fire_enhanced(who, rules);
+        } else {
+            self.release_charge(who);
+            self.fire_main(who);
+        }
     }
 
     /// 結算受擊：血量右移一位（無敵秘技開著時不移），重畫血條，進入無敵倒數。
@@ -575,8 +589,11 @@ impl Core {
     }
 
     /// 方向鍵（原版 `sub_14501` 的 `1454Bh` 至 `145C6h`）。上優先於下，左優先於右；斜向鍵同時算兩個方向。
-    /// 輸入位元不管有沒有真的移動（到邊界）都記。
-    fn steer(&mut self, who: usize) {
+    /// 輸入位元不管有沒有真的移動（到邊界）都記。`fine` 是細步移動選項（規格 005），走 [`Core::steer_fine`]。
+    fn steer(&mut self, who: usize, fine: bool) {
+        if fine {
+            return self.steer_fine(who);
+        }
         let style = &STYLES[who];
         let up = self.any_held(style.keys.upward());
         let down = self.any_held(style.keys.downward());
@@ -648,7 +665,10 @@ impl Core {
         p.input_bits |= InputBit::Fire as u8;
         p.fired = YES;
         let (col, row) = (p.col, p.row);
+        // 細步的半列位置：子彈的繪製 y 跟著機身。原版恆為 0。
+        self.enh.spawn_dy = self.main_gun_sub_row(who);
         self.fire_player_bullets(PLAIN_WEAPON, Facing::Right, col, row);
+        self.enh.spawn_dy = 0;
     }
 }
 

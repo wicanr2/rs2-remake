@@ -135,10 +135,13 @@ impl Core {
             return;
         }
         let facing = Facing::from_word(p.pods.facing);
+        // 細步的半列位置：子彈的繪製 y 跟著砲座。原版恆為 0。
+        self.enh.spawn_dy = self.pod_sub_row(who);
         self.fire_player_bullets(p.weapon, facing, p.pods.col, p.pods.row);
         if second {
             self.fire_player_bullets(p.weapon, facing, p.pods.col, p.pods.row.wrapping_add(style.gap_rows));
         }
+        self.enh.spawn_dy = 0;
         let dx = if p.pods.facing != FACING_RIGHT { 0u16.wrapping_sub(EXHAUST_LEFT_DX) } else { EXHAUST_RIGHT_DX };
         let at = (x.wrapping_add(dx), y.wrapping_add(EXHAUST_DY));
         self.draw_pod(who, 0, at, EXHAUST_IMAGE);
@@ -168,14 +171,25 @@ impl Core {
     /// 圖框動畫的段數與起點隨充能變，三段的上限與圖庫索引在 [`POD_FRAMES`]：
     /// 充能小於 6 時用 5 格循環，朝右 1Eh 起、朝左 24h 起；6 至 13 用 31h 起 3 格，14 以上用 34h 起 3 格，
     /// 這兩段朝左朝右用同一張圖。
+    ///
+    /// 砲座像 Force（規格 005）分離時，位置由 [`Core::fly_free_pods`] 算，這裡只換圖框；接回的那一幀由這裡接手位置。
     pub(super) fn advance_pods(&mut self, who: usize) {
+        // 原版恆為 false（強化狀態只在 `force_pod` 開著時離開附著）。
+        if self.pods_detached(who) {
+            self.fly_free_pods(who);
+        }
+        let detached = self.pods_detached(who);
         let style = &STYLES[who].pod;
+        // 波動砲充能中，圖框看換算後的值；否則就是原版的充能計數。
+        let charge = self.pod_display_charge(who);
         let p = &mut self.pl.ship[who];
-        let frames = POD_FRAMES.iter().rev().find(|f| p.charge >= f.min_charge).expect("最小的一段從 0 起");
-        p.pods.blit_y = p.blit_y.wrapping_sub(style.y_offset);
-        p.pods.blit_x = p.blit_x.wrapping_add(POD_DX);
-        p.pods.row = p.row.wrapping_sub(style.row_offset);
-        p.pods.col = p.col.wrapping_add(POD_DX);
+        let frames = POD_FRAMES.iter().rev().find(|f| charge >= f.min_charge).expect("最小的一段從 0 起");
+        if !detached {
+            p.pods.blit_y = p.blit_y.wrapping_sub(style.y_offset);
+            p.pods.blit_x = p.blit_x.wrapping_add(POD_DX);
+            p.pods.row = p.row.wrapping_sub(style.row_offset);
+            p.pods.col = p.col.wrapping_add(POD_DX);
+        }
         p.pods.anim = p.pods.anim.wrapping_add(1);
         if p.pods.anim >= frames.count {
             p.pods.anim = 0;
@@ -184,16 +198,18 @@ impl Core {
             p.pods.image = p.pods.anim.wrapping_add(frames.right_image);
         } else {
             p.pods.image = p.pods.anim.wrapping_add(frames.left_image);
-            p.pods.col = p.pods.col.wrapping_sub(POD_LEFT_SHIFT);
-            p.pods.blit_x = p.pods.blit_x.wrapping_sub(POD_LEFT_SHIFT);
+            if !detached {
+                p.pods.col = p.pods.col.wrapping_sub(POD_LEFT_SHIFT);
+                p.pods.blit_x = p.pods.blit_x.wrapping_sub(POD_LEFT_SHIFT);
+            }
         }
     }
 }
 
 /// 砲座在本體右後方的欄數（格網與繪製位置同值）。
-const POD_DX: u16 = 3;
+pub(super) const POD_DX: u16 = 3;
 /// 朝左時砲座再往左的欄數。
-const POD_LEFT_SHIFT: u16 = 5;
+pub(super) const POD_LEFT_SHIFT: u16 = 5;
 
 /// 砲座圖框動畫的一段：充能不小於 `min_charge` 時用。圖框是 `起點 + 動畫計數`，計數到 `count` 歸零。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

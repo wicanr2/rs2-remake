@@ -4,7 +4,7 @@ use crate::args::{Args, StartArg, ToggleName};
 use crate::audio::{Output, WavOut};
 use crate::controls::{Action, Controls, Effect, PanelChange, PanelOpen, Resize};
 use crate::input::{Hotkey, InputMapper, KeyResult, Source};
-use crate::keymap::{Btn, KeyMap, PadMap};
+use crate::keymap::{Btn, KeyMap, PadMap, split_pseudo};
 use crate::pacer::Pacer;
 use crate::pad::{Devices, PadEvent, PadMapper, STICK_ENGAGE, STICK_RELEASE};
 use crate::resources::{self, Env, Os};
@@ -333,6 +333,24 @@ fn apply_toggle(ctl: &mut Controls, t: ToggleName) {
     ctl.apply(a);
 }
 
+/// 收據的 `sc` 欄裡，分離鍵的虛擬碼（`keymap::split_pseudo`）表示那位玩家的分離鍵這一步按著。
+/// 分離鍵沒有原版掃描碼（規格 005「砲座像 Force」），收據用它重播，不送進遊戲。回傳 (分離鍵狀態, 真正的掃描碼)。
+fn split_codes(sc: &[u8]) -> ([bool; 2], Vec<u8>) {
+    let mut held = [false; 2];
+    let rest = sc
+        .iter()
+        .copied()
+        .filter(|&c| match (0..2).find(|&p| c == split_pseudo(p)) {
+            Some(p) => {
+                held[p] = true;
+                false
+            }
+            None => true,
+        })
+        .collect();
+    (held, rest)
+}
+
 /// 把前端的開關交給 `Session`：畫面選項、HUD 右端的標籤、打擊回饋。
 fn sync_session(session: &mut Session, ctl: &Controls) {
     session.set_view(ctl.view());
@@ -412,9 +430,10 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         // 沒有真實時鐘：介面層的時間用步數換算（一步約 110 毫秒），同樣的輸入得到同樣的畫面。
         session.set_clock_ms(session.steps() * 110);
         apply_invincible(&mut session, ctl.settings.invincible(), &mut god_applied);
-        let sc: &[u8] = cx.replay.get(done as usize).map(|v| v.as_slice()).unwrap_or(&[]);
+        let (split, sc) = split_codes(cx.replay.get(done as usize).map(|v| v.as_slice()).unwrap_or(&[]));
+        session.set_split_held(split);
         let t0 = Instant::now();
-        let outcome = session.step(sc);
+        let outcome = session.step(&sc);
         stats.step(t0.elapsed().as_micros() as u64);
         if let Some(w) = &mut wav {
             for m in session.take_audio() {
@@ -1185,24 +1204,27 @@ fn window_loop<'a>(
             pacer.update(now);
             while pacer.take_step() {
                 let idx = session.steps() as usize;
-                let sc: Vec<u8> = match cx.replay.get(idx) {
+                let (split, sc): ([bool; 2], Vec<u8>) = match cx.replay.get(idx) {
                     Some(r) => {
                         front.mapper.discard_queue();
-                        r.clone()
+                        split_codes(r)
                     }
                     None => {
                         if replay_note {
                             eprintln!("[replay] 收據用完，改回鍵盤輸入（第 {idx} 步起）");
                             replay_note = false;
                         }
-                        front.mapper.take()
+                        (front.mapper.take_split(), front.mapper.take())
                     }
                 };
                 if cx.args.record.is_some() {
-                    let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
+                    // 分離鍵的虛擬碼也記下來，重播才會一樣。
+                    let mut codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
+                    codes.extend((0..2).filter(|&p| split[p]).map(|p| split_pseudo(p).to_string()));
                     recorded.push(format!("{{\"n\":{idx},\"sc\":[{}]}}", codes.join(",")));
                 }
                 apply_invincible(&mut session, front.ctl.settings.invincible(), &mut god_applied);
+                session.set_split_held(split);
                 let t0 = Instant::now();
                 let outcome = session.step(&sc);
                 pacer.set_next(session.ticks());

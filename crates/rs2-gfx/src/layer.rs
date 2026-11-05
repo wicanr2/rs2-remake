@@ -63,12 +63,19 @@ impl Default for RenderOpts {
 const PLAYER_OFF_SCALE: i32 = 4;
 
 /// 玩家機預測對這個命令的偏移。`scale` 是引擎像素對邏輯像素的倍率。不是玩家機的命令回傳 `None`。
-fn player_off(player: &[Option<(i32, i32)>; 2], c: &BlitCmd, scale: i32) -> Option<Off> {
+/// `free_pods[p]` 為真時，玩家 `p` 的砲座已脫離機身，回傳 `None`。
+fn player_off(player: &[Option<(i32, i32)>; 2], free_pods: &[bool; 2], c: &BlitCmd, scale: i32) -> Option<Off> {
     let o = c.obj?;
     let p = match o.pool {
         rs2_core::Pool::Player => o.slot as usize,
         // 砲座的位置每幀由玩家機位置算出（`sub_14908` 等），槽 0、1 屬於玩家 1，槽 2、3 屬於玩家 2。
-        rs2_core::Pool::Pod => (o.slot / 2) as usize,
+        rs2_core::Pool::Pod => {
+            let p = (o.slot / 2) as usize;
+            if free_pods.get(p).copied().unwrap_or(false) {
+                return None;
+            }
+            p
+        }
         _ => return None,
     };
     if !interp::interpolable(c.op) {
@@ -131,6 +138,9 @@ pub struct LayerSink {
     counter_font: Option<Vec<u8>>,
     /// 標題選單選中列在 HD 用圓角高亮條，不取反（規格 005「HD 介面」）。預設關，和原版取反的畫法一致。
     menu_highlight: bool,
+    /// 玩家的砲座已脫離機身（規格 005「砲座像 Force」）：這個玩家的 `Pool::Pod` 命令不吃 `RenderOpts::player` 的偏移，
+    /// 走一般補間。預設全假，和原版一致。
+    free_pods: [bool; 2],
 }
 
 #[inline]
@@ -305,6 +315,7 @@ impl LayerSink {
             pushed: 0,
             counter_font: None,
             menu_highlight: false,
+            free_pods: [false; 2],
         }
     }
 
@@ -486,7 +497,7 @@ impl LayerSink {
                             }
                             continue;
                         }
-                        let off = player_off(&opts.player, c, 1).unwrap_or_else(|| {
+                        let off = player_off(&opts.player, &self.free_pods, c, 1).unwrap_or_else(|| {
                             let dl = self.cur.deltas[i].filter(|_| opts.interpolate);
                             dl.map(|dl| interp::offsets(&dl, t, 1)).unwrap_or_default()
                         });
@@ -545,6 +556,7 @@ impl LayerSink {
     fn render_hd(&mut self, t: f32, replay: bool, opts: RenderOpts) {
         let show_counter = opts.show_counter;
         let menu_highlight = self.menu_highlight;
+        let free_pods = self.free_pods;
         let Self { hd_space, hd_pal, hdm, hd: hd_assets, assets, pal, pal_before, hd_base_page, hd_scratch_before, hd_mask_before, hd_spare, cur, out, counter_font, .. } = self;
         let (Some(mem), Some(hda)) = (hdm.as_mut(), hd_assets.as_mut()) else { return };
         let pg = ((cur.page >> 15) & 1) as usize;
@@ -600,7 +612,7 @@ impl LayerSink {
                         if is_frame_counter(c) && counter_font.is_none() {
                             continue;
                         }
-                        let off = player_off(&opts.player, c, hd::S).unwrap_or_else(|| {
+                        let off = player_off(&opts.player, &free_pods, c, hd::S).unwrap_or_else(|| {
                             let dl = cur.deltas[i].filter(|_| opts.interpolate);
                             dl.map(|dl| interp::offsets(&dl, t, hd::S)).unwrap_or_default()
                         });
@@ -635,6 +647,12 @@ impl LayerSink {
     /// 只影響 HD 引擎之後套用的 `S18C6E`；原版圖引擎與 `VgaSink` 不受影響，補間關閉時逐像素等於原版。
     pub fn set_menu_highlight(&mut self, on: bool) {
         self.menu_highlight = on;
+    }
+
+    /// 玩家（0 或 1）的砲座脫離機身時，那位玩家的砲座不套用 `RenderOpts::player` 的預測偏移（它不跟著機身動）。
+    /// 機身與尾焰照舊。預設全假。
+    pub fn set_free_pods(&mut self, free: [bool; 2]) {
+        self.free_pods = free;
     }
 
     /// 這一幀的幀計數值（座標 (12h, BFh) 的 `S1890D`）。這一幀沒有畫幀計數、或已設 `set_counter_font` 時是 `None`。
@@ -717,5 +735,59 @@ impl LayerSink {
     /// 目前這一幀有幾個命令帶位移（測試與診斷用）。
     pub fn interpolated_cmds(&self) -> usize {
         self.cur.deltas.iter().filter(|d| d.is_some()).count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rs2_core::{BegGroup, ObjId, Pool, ShtGroup};
+
+    fn cmd(pool: Pool, slot: u8) -> BlitCmd {
+        BlitCmd {
+            op: Op::S18D46,
+            x: 0,
+            y: 0,
+            index: 0,
+            page: 0,
+            scratch: 0,
+            src_x: 0,
+            src_y: 0,
+            shift: 0,
+            cx: 0,
+            dx: 0,
+            text_x: 0,
+            text_y: 0,
+            sht_group: ShtGroup::Bh1,
+            mask_group: ShtGroup::Sht1,
+            beg_group: BegGroup::Beg1,
+            stride_reg: None,
+            obj: Some(ObjId { pool, slot, generation: 0 }),
+        }
+    }
+
+    #[test]
+    fn a_detached_pod_does_not_take_the_ship_prediction_offset() {
+        let player = [Some((8, -4)), Some((12, 0))];
+        let attached = [false; 2];
+        // 附著的砲座（槽 0、1 屬玩家 1，槽 2、3 屬玩家 2）和機身一樣吃偏移。
+        for (pool, slot, want) in [(Pool::Player, 0, 2), (Pool::Pod, 0, 2), (Pool::Pod, 1, 2), (Pool::Pod, 2, 3), (Pool::Pod, 3, 3), (Pool::Player, 1, 3)] {
+            let off = player_off(&player, &attached, &cmd(pool, slot), 1).expect("有偏移");
+            assert_eq!(off.ox, want, "{pool:?} 槽 {slot}");
+        }
+        // 玩家 1 的砲座分離：只有玩家 1 的砲座槽（0、1）不吃偏移，機身與玩家 2 的砲座照舊。
+        let free = [true, false];
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 0), 1).is_none());
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 1), 1).is_none());
+        assert!(player_off(&player, &free, &cmd(Pool::Player, 0), 1).is_some(), "機身照舊");
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 2), 1).is_some(), "玩家 2 的砲座照舊");
+        // 玩家 2 的砲座分離。
+        let free = [false, true];
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 2), 1).is_none());
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 3), 1).is_none());
+        assert!(player_off(&player, &free, &cmd(Pool::Pod, 0), 1).is_some());
+        // 沒有預測偏移的玩家本來就回傳 None，其他池也是。
+        assert!(player_off(&[None, None], &attached, &cmd(Pool::Pod, 0), 1).is_none());
+        assert!(player_off(&player, &attached, &cmd(Pool::Entity, 0), 1).is_none());
     }
 }

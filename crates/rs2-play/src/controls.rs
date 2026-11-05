@@ -502,8 +502,18 @@ mod tests {
     fn bar_state_shows_rules_and_god_only_for_implemented_options() {
         let mut k = c(true);
         assert!(!k.bar_state().rules && !k.bar_state().god);
-        // 沒實作的選項（波動砲充能）寫成開也不顯示強化規則。
-        k.settings.set_opt_value(1, 1);
+        // 沒實作的選項寫成開也不顯示強化規則。
+        for (i, o) in OPTIONS.iter().enumerate() {
+            if !o.implemented {
+                k.settings.set_opt_value(i, 1);
+            }
+        }
+        assert!(!k.bar_state().rules);
+        // 已實作而且改變規則的選項（細步移動）一開就顯示。
+        let fine = crate::options::index_of("fine_step").unwrap();
+        k.settings.set_opt_value(fine, 1);
+        assert!(k.bar_state().rules && !k.bar_state().god);
+        k.settings.set_opt_value(fine, 0);
         assert!(!k.bar_state().rules);
         k.settings.set_opt_value(INVINCIBLE_INDEX, 1);
         let b = k.bar_state();
