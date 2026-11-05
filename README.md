@@ -30,14 +30,16 @@
 
 | 場景 | 原版 | HD |
 |---|---|---|
-| 第一關捲動。敵機被打中時閃白 | ![第一關捲動，原版](docs/images/game/stage1-scroll-orig.png) | ![第一關捲動，HD](docs/images/game/stage1-scroll-hd.png) |
-| 頭目進場。調色盤已換成頭目用的配色 | ![頭目進場，原版](docs/images/game/stage1-boss-enter-orig.png) | ![頭目進場，HD](docs/images/game/stage1-boss-enter-hd.png) |
-| 頭目戰 | ![頭目戰，原版](docs/images/game/stage1-boss-orig.png) | ![頭目戰，HD](docs/images/game/stage1-boss-hd.png) |
-
-HD 第一關目前有這些問題，清單在 [docs/hd/codex-handoff.md](docs/hd/codex-handoff.md)：
-
-- 山影與倒懸岩交界有水平色帶，倒懸岩與天空有接縫，頭目上翼在零件交界斷開。這些要重畫。
-- 頭目進場時，漂浮岩塊與血條還是第一關的配色，原版會跟著換色。
+| 開場字卡 | ![開場字卡，原版](docs/images/game/act-card-orig.png) | ![開場字卡，HD](docs/images/game/act-card-hd.png) |
+| 第一關 | ![第一關，原版](docs/images/game/stage1-scroll-orig.png) | ![第一關，HD](docs/images/game/stage1-scroll-hd.png) |
+| 第一關頭目 | ![第一關頭目，原版](docs/images/game/stage1-boss-orig.png) | ![第一關頭目，HD](docs/images/game/stage1-boss-hd.png) |
+| 第二關敵艦 | ![第二關敵艦，原版](docs/images/game/stage2-ship-orig.png) | ![第二關敵艦，HD](docs/images/game/stage2-ship-hd.png) |
+| 第二關頭目 | ![第二關頭目，原版](docs/images/game/stage2-boss-orig.png) | ![第二關頭目，HD](docs/images/game/stage2-boss-hd.png) |
+| 第三關 | ![第三關，原版](docs/images/game/stage3-eyes-orig.png) | ![第三關，HD](docs/images/game/stage3-eyes-hd.png) |
+| 第三關機械基地 | ![第三關機械基地，原版](docs/images/game/stage3-base-orig.png) | ![第三關機械基地，HD](docs/images/game/stage3-base-hd.png) |
+| 第四關 | ![第四關，原版](docs/images/game/stage4-fly-orig.png) | ![第四關，HD](docs/images/game/stage4-fly-hd.png) |
+| 第四關頭目 | ![第四關頭目，原版](docs/images/game/stage4-fish-orig.png) | ![第四關頭目，HD](docs/images/game/stage4-fish-hd.png) |
+| 片尾 | ![片尾，原版](docs/images/game/ending-orig.png) | ![片尾，HD](docs/images/game/ending-hd.png) |
 
 ### 各素材庫
 
@@ -127,7 +129,7 @@ CGA 與 MGA 的單色版另有 1,526 張，由 HD 彩色圖推導，這裡沒有
 | 檔案格式 | 全部解出，工具重建結果可重現 |
 | 遊戲邏輯 | 靜態讀碼完成，未解項列在 `WORKLIST.md` |
 | 原版實跑 | dosgolem 走通冷啟動、四關與片尾，第一關頭目已實際擊殺 |
-| HD 圖像 | 全部索引都有輸出。單張成品只留本機，`docs/images/` 有對照圖。全流程接入無缺圖，接縫與部分配色待修 |
+| HD 圖像 | 全部索引都有輸出。單張成品只留本機，`docs/images/` 有對照圖。全流程接入無缺圖，配色跟著調色盤走 |
 | Rust 重製 | 從標題玩到片尾，含開場動畫、示範、選單、雙人、四關、過場、片尾。模擬與畫面和原版逐筆相同（20 份收據 19,284 筆） |
 | 音樂與音效 | 重製自帶 OPL2 合成器。暫存器寫入和原版驅動逐筆相同，喇叭事件也相同。波形只和參考實作比過品質 |
 | 尚未驗證 | 真實桌面的視窗與音效裝置、GPU 繪圖器、全螢幕都沒測過，只在虛擬環境跑過。手感沒有真人驗證 |

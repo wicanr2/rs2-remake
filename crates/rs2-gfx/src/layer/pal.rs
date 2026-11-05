@@ -54,6 +54,12 @@ pub fn to8(v: u8) -> u8 {
     ((v as u32 * 255 + 31) / 63) as u8
 }
 
+/// 48 位元組 DAC 表的 16 色。`S14448` 這類整張表的設定寫到 DAC 0 與 30h，所以色號 8 至 15（屬性暫存器的
+/// 38h 至 3Fh）是表的後 8 色，和 `visible8` 的結果相同。
+pub fn colors_of(rgb: &[u8; 48]) -> [[u8; 3]; 16] {
+    std::array::from_fn(|i| [to8(rgb[3 * i] & 0x3F), to8(rgb[3 * i + 1] & 0x3F), to8(rgb[3 * i + 2] & 0x3F)])
+}
+
 /// DAC 狀態與目前的調色盤名稱。
 #[derive(Clone)]
 pub struct Pal {
@@ -75,6 +81,25 @@ impl Pal {
         if start == 0 {
             self.name = identify(rgb);
         }
+    }
+
+    /// 只有一張整表時的狀態：DAC 0 與 30h 都寫這張表。
+    pub fn from_table(rgb: &[u8; 48]) -> Pal {
+        let mut p = Pal::new();
+        p.set(0x30, rgb);
+        p.set(0, rgb);
+        p
+    }
+
+    /// 由 8 位元的 16 色與名稱下標建立，`visible8` 會還原這 16 色。
+    pub fn from_colors(name: usize, colors: &[[u8; 3]; 16]) -> Pal {
+        let mut p = Pal::new();
+        p.name = Some(name);
+        for (i, c) in colors.iter().enumerate() {
+            let v6 = |v: u8| ((v as u32 * 63 + 127) / 255) as u8;
+            p.dac[AC[i]] = [v6(c[0]), v6(c[1]), v6(c[2])];
+        }
+        p
     }
 
     /// 套用 `SetDacOne`（INT 10h AX=1010h）。名稱不變：單一暫存器的改動（淡出、閃光）不換圖庫變體。

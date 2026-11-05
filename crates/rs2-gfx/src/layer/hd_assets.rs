@@ -5,6 +5,7 @@
 //! 調色盤變體只在原生調色盤不同時才存在，所以「變體檔存在」就等於「這張圖在這個調色盤下要換」。
 
 use super::pal::{Pal, PALETTES};
+use super::recolor::{Colors, Lut};
 use crate::assets::Assets;
 use crate::png;
 use rs2_core::{BegGroup, ShtGroup};
@@ -181,6 +182,31 @@ pub struct HdMask {
     pub v: Vec<u8>,
 }
 
+/// 讀 `tools/hd_basepal.py` 產生的表。檔案不存在時回傳空表，那就只用靜態變體。
+fn read_base_palettes(path: &Path) -> (HashMap<String, Colors>, HashMap<(Lib, u16), String>) {
+    let (mut colors, mut base) = (HashMap::new(), HashMap::new());
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (colors, base);
+    };
+    for l in text.lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        match f.as_slice() {
+            ["P", name, hex] if hex.len() == 96 => {
+                let b = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
+                let c: Colors = std::array::from_fn(|i| [b(6 * i), b(6 * i + 2), b(6 * i + 4)]);
+                colors.insert(name.to_string(), c);
+            }
+            ["I", lib, index, name] => {
+                if let (Some(lib), Ok(index)) = (Lib::ALL.iter().find(|x| x.name() == *lib), index.parse::<u16>()) {
+                    base.insert((*lib, index), name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    (colors, base)
+}
+
 /// 無調色盤變體的鍵。
 const NO_PAL: u16 = 0xFFFF;
 
@@ -192,6 +218,11 @@ pub struct HdAssets {
     fallback_mask: HashMap<(Lib, u16), Option<Arc<HdMask>>>,
     missing: Vec<String>,
     loaded: Vec<String>,
+    /// `base-palette.tsv`：調色盤名稱的 16 色。
+    pal_colors: HashMap<String, Colors>,
+    /// 每張 HD 圖畫的時候是哪個調色盤。
+    base_pal: HashMap<(Lib, u16), String>,
+    luts: HashMap<(String, String), Arc<Lut>>,
 }
 
 impl HdAssets {
@@ -203,8 +234,12 @@ impl HdAssets {
         if !Lib::ALL.iter().any(|l| dir.join(l.name()).is_dir()) {
             return Err(format!("{} 底下沒有 MY、SHT1 等任何一個圖庫目錄", dir.display()));
         }
+        let (pal_colors, base_pal) = read_base_palettes(&dir.join("base-palette.tsv"));
         Ok(HdAssets {
             dir: dir.to_path_buf(),
+            pal_colors,
+            base_pal,
+            luts: HashMap::new(),
             images: HashMap::new(),
             masks: HashMap::new(),
             fallback_img: HashMap::new(),
@@ -270,7 +305,11 @@ impl HdAssets {
                 let rel = format!("{}/variants/{}/{:04}.png", lib.name(), PALETTES[n].0, index);
                 // 變體不存在是常態（原生調色盤相同），不算缺圖。
                 let exists = self.dir.join(&rel).is_file();
-                let v = if exists { self.load_png(&rel, ew, eh).map(|i| Arc::new(HdImg { w: i.w, h: i.h, rgba: i.rgba })) } else { None };
+                let v = if exists {
+                    self.load_png(&rel, ew, eh).map(|i| Arc::new(HdImg { w: i.w, h: i.h, rgba: i.rgba }))
+                } else {
+                    self.recolored(lib, index, PALETTES[n].0, ew, eh)
+                };
                 self.images.insert(key, v);
             }
             if let Some(Some(v)) = self.images.get(&key) {
@@ -293,6 +332,27 @@ impl HdAssets {
             self.fallback_img.insert(fkey, f);
         }
         self.fallback_img.get(&fkey).cloned().flatten()
+    }
+
+    /// 這張 HD 圖畫的時候用的調色盤。`base-palette.tsv` 沒有記、或名稱不在 `PALETTES` 時回傳 `None`。
+    pub fn base_pal(&self, lib: Lib, index: u16) -> Option<(usize, Colors)> {
+        let name = self.base_pal.get(&(lib, index))?;
+        let n = PALETTES.iter().position(|p| p.0 == name)?;
+        Some((n, *self.pal_colors.get(name)?))
+    }
+
+    /// 靜態變體沒有涵蓋的組合：把基本圖從它畫的調色盤換成 `target`。兩者相同時回傳 `None`，直接用基本圖。
+    fn recolored(&mut self, lib: Lib, index: u16, target: &str, ew: usize, eh: usize) -> Option<Arc<HdImg>> {
+        let base = self.base_pal.get(&(lib, index))?.clone();
+        let (from, to) = (*self.pal_colors.get(&base)?, *self.pal_colors.get(target)?);
+        if from == to {
+            return None;
+        }
+        let lut = self.luts.entry((base, target.to_string())).or_insert_with(|| Arc::new(Lut::build(&from, &to))).clone();
+        let rel = format!("{}/{:04}.png", lib.name(), index);
+        let mut i = self.load_png(&rel, ew, eh)?;
+        lut.apply_rgba(&mut i.rgba);
+        Some(Arc::new(HdImg { w: i.w, h: i.h, rgba: i.rgba }))
     }
 
     /// 取遮罩。`lib` 要有遮罩區段（`MY`、`SHT1` 至 `SHT5`），沒有的庫回傳 `None`。
@@ -611,5 +671,37 @@ mod tests {
         assert_eq!(m.v[0], 255);
         assert_eq!(m.v[SCALE], 0);
         assert_eq!(m.v[2 * SCALE], 255);
+    }
+
+    #[test]
+    fn missing_variant_is_recolored_from_the_base_palette() {
+        let d = std::env::temp_dir().join(format!("rs2-hd-recolor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("MY")).unwrap();
+        let one = || vec![item(2, 1, &[0, 0])];
+        let assets = Assets { my: GoFile { mask: None, planes: [one(), one(), one(), one()] }, ..Assets::empty() };
+        // 基本圖是色 1（純紅）。目的調色盤把色 1 改成純綠。
+        std::fs::write(d.join("MY/0000.png"), solid_png(32, 8, [255, 0, 0, 255])).unwrap();
+        let hex = |c1: &str| {
+            let mut s = String::from("000000");
+            s.push_str(c1);
+            for i in 2..16 {
+                s.push_str(&format!("{:02x}{:02x}{:02x}", i * 16, i * 8, 255 - i * 16));
+            }
+            s
+        };
+        let tsv = format!("P\tstage1\t{}\nP\tstage1_boss\t{}\nI\tMY\t0\tstage1\n", hex("ff0000"), hex("00ff00"));
+        std::fs::write(d.join("base-palette.tsv"), tsv).unwrap();
+        let mut h = HdAssets::open(&d).unwrap();
+        let mut pal = Pal::new();
+        pal.name = PALETTES.iter().position(|p| p.0 == "stage1_boss");
+        let img = h.image(Lib::My, 0, &pal, &assets).unwrap();
+        assert!(img.rgba[1] > 200 && img.rgba[0] < 60, "{:?}", &img.rgba[..4]);
+        // 基本圖的調色盤本身不換色。
+        pal.name = PALETTES.iter().position(|p| p.0 == "stage1");
+        let img = h.image(Lib::My, 0, &pal, &assets).unwrap();
+        assert_eq!(&img.rgba[..4], &[255, 0, 0, 255]);
+        assert_eq!(h.base_pal(Lib::My, 0).map(|b| b.0), PALETTES.iter().position(|p| p.0 == "stage1"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

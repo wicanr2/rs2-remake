@@ -1,10 +1,10 @@
 #!/bin/sh
 # 產生 README 用的對照圖到 docs/images/。圖含原版美術，進版控是 AGENTS.md 硬規則 4 的例外，repo 要維持私人。
 # 前提：tools/run_all.sh、HD 成品（workspace/hd/assets）、
-# tools/rust.sh test -p rs2-trace --test layer -- --ignored（產生 workspace/rs2/shots）。
+# tools/rust.sh test -p rs2-trace --test hd_tour -- --ignored（產生 workspace/rs2/shots/tour）。
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-for d in workspace/rs2/shots workspace/hd/assets/overview workspace/hd/assets/maps workspace/extracted/maps; do
+for d in workspace/rs2/shots/tour workspace/hd/assets/overview workspace/hd/assets/maps workspace/extracted/maps; do
   test -d "$ROOT/$d" || { echo "缺 $d" >&2; exit 1; }
 done
 mkdir -p "$ROOT/docs/images"

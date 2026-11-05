@@ -14,6 +14,7 @@
 
 use super::hd_assets::{HdAssets, HdImg, HdMask, Lib, SCALE};
 use super::pal::Pal;
+use super::recolor::Colors;
 use super::Off;
 use crate::assets::Assets;
 use crate::font::DIGITS;
@@ -55,10 +56,19 @@ impl Canvas {
     }
 }
 
+/// 暫存區內容的色彩空間。背景通常在載入用的調色盤下寫進暫存區，之後才換成關卡調色盤，
+/// 所以寫入時保留圖原本的調色盤，第一次被複製到顯示頁才換色，避免來回轉換失真。
+#[derive(Clone)]
+pub struct ScrTag {
+    pub colors: Colors,
+    pub pal: Pal,
+}
+
 #[derive(Clone)]
 pub struct HdMem {
     pub pages: [Canvas; 2],
     pub scratch: [Canvas; 2],
+    pub scr_tag: [Option<ScrTag>; 2],
     /// 序列器 map mask。HD 畫布沒有平面，只有 `0Fh`（全平面）的填色與清除有意義，
     /// 其他值下的 `VramFill`、`S11504`、`S1152D` 略過（`VgaSink` 與索引色引擎才有逐平面的效果）。
     pub map_mask: u8,
@@ -68,11 +78,11 @@ impl HdMem {
     pub fn new() -> HdMem {
         let page = || Canvas::new(PW as usize, PH as usize, [0, 0, 0, 255]);
         let scr = || Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]);
-        HdMem { pages: [page(), page()], scratch: [scr(), scr()], map_mask: 0x0F }
+        HdMem { pages: [page(), page()], scratch: [scr(), scr()], scr_tag: [None, None], map_mask: 0x0F }
     }
 
     pub fn from_parts(pages: [Canvas; 2], scratch: [Canvas; 2]) -> HdMem {
-        HdMem { pages, scratch, map_mask: 0x0F }
+        HdMem { pages, scratch, scr_tag: [None, None], map_mask: 0x0F }
     }
 }
 
@@ -770,6 +780,16 @@ fn restores_map_mask(op: Op) -> bool {
             | Op::S18031
             | Op::S180C6
     )
+}
+
+/// 把圖寫進暫存區的命令用哪個圖庫。
+pub fn scratch_image_lib(c: &BlitCmd) -> Option<Lib> {
+    match c.op {
+        Op::S19ADC => Some(Lib::from_sht(c.sht_group)),
+        Op::S19B40 => Some(Lib::from_beg(c.beg_group)),
+        Op::S18ACE => Some(Lib::Map),
+        _ => None,
+    }
 }
 
 /// 套用一個 blit 命令。`S1890D` 的幀計數位置不在這裡處理。

@@ -3,7 +3,7 @@
 這批圖含原版美術，進版控是 AGENTS.md 硬規則 4 的例外，repo 要維持私人。
 
 用法：readme_images.py <workspace 目錄> <輸出目錄>
-來源：workspace/rs2/shots（重製實際合成的畫面）、workspace/hd/assets/overview（各素材庫總覽）、
+來源：workspace/rs2/shots/tour（重製實際合成的畫面）、workspace/hd/assets/overview（各素材庫總覽）、
 workspace/extracted/maps 與 workspace/hd/assets/maps（第三關地圖）。
 """
 import os
@@ -14,11 +14,18 @@ from PIL import Image
 
 W, OUT = sys.argv[1], sys.argv[2]
 
-# 畫面對照：(輸出名, shots 內的檔名前綴)。原版 320x200 放大 3 倍，HD 1280x800 縮成同尺寸。
+# 畫面對照：(輸出名, tour 內的檔名前綴)。來源是 rs2-trace 的 hd_tour 測試。原版 320x200 放大 3 倍，HD 1280x800 縮成同尺寸。
 SHOTS = [
-    ("stage1-scroll", "layer_dm1_n0300"),
-    ("stage1-boss-enter", "layer_dm1_n0639"),
-    ("stage1-boss", "layer_boss1_kill_n0700"),
+    ("act-card", "s1_00000"),
+    ("stage1-scroll", "s1_00214"),
+    ("stage1-boss", "s1_00650"),
+    ("stage2-ship", "s2_00508"),
+    ("stage2-boss", "s2_00808"),
+    ("stage3-eyes", "s3_00178"),
+    ("stage3-base", "s3_00898"),
+    ("stage4-fly", "s4_00490"),
+    ("stage4-fish", "s4_00850"),
+    ("ending", "s5_00120"),
 ]
 SIZE = (960, 600)
 
@@ -32,9 +39,9 @@ def main():
     os.makedirs(os.path.join(OUT, "game"), exist_ok=True)
     os.makedirs(os.path.join(OUT, "overview"), exist_ok=True)
     for name, prefix in SHOTS:
-        shots = os.path.join(W, "rs2", "shots")
-        orig = Image.open(os.path.join(shots, prefix + "_orig.png")).convert("RGB")
-        hd = Image.open(os.path.join(shots, prefix + "_hd.png")).convert("RGB")
+        shots = os.path.join(W, "rs2", "shots", "tour")
+        orig = Image.open(os.path.join(shots, prefix + "_o.png")).convert("RGB")
+        hd = Image.open(os.path.join(shots, prefix + "_h.png")).convert("RGB")
         if orig.size != (320, 200) or hd.size != (1280, 800):
             raise SystemExit(f"{prefix} 尺寸不符：{orig.size} {hd.size}")
         orig.resize(SIZE, Image.NEAREST).save(os.path.join(OUT, "game", name + "-orig.png"), optimize=True)

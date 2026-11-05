@@ -16,6 +16,7 @@ mod hd_assets;
 mod idx;
 mod interp;
 pub mod pal;
+mod recolor;
 
 use crate::assets::Assets;
 use crate::sink::{COUNTER_X, COUNTER_Y};
@@ -79,6 +80,13 @@ pub struct LayerSink {
     /// 這一幀命令套完之後的調色盤，與這一幀開始前的。
     pal: pal::Pal,
     pal_before: pal::Pal,
+    /// HD 畫布目前的色彩空間：最近一張有名字的調色盤。換成另一張有名字的調色盤時整塊畫布換色，
+    /// 漸變中（DAC 不在清單內，或 `SetDacOne` 改了單一暫存器）畫布不動，輸出時才換。
+    hd_space: Option<recolor::Colors>,
+    /// 畫 HD 時用的調色盤，對應 `hd_space`。
+    hd_pal: pal::Pal,
+    /// 上一次輸出換色用的查表。
+    out_lut: Option<(recolor::Colors, recolor::Colors, recolor::Lut)>,
     /// 索引色記憶體：套完這一幀（不內插）、這一幀開始前、重放用的暫存。
     idx: idx::Mem,
     idx_base: idx::Mem,
@@ -184,6 +192,66 @@ fn page_of(cmds: &[DrawCmd]) -> Option<u16> {
     clear.or(any)
 }
 
+/// 把暫存區 `which` 換到目前的色彩空間。
+fn scratch_to_space(
+    m: &mut HdMem,
+    which: usize,
+    space: Option<recolor::Colors>,
+    hd_pal: &pal::Pal,
+    before: &mut Option<[Canvas; 2]>,
+) {
+    let Some(space) = space else { return };
+    if let Some(t) = &m.scr_tag[which] {
+        if t.colors != space {
+            let lut = recolor::Lut::build(&t.colors, &space);
+            lut.apply_rgba(&mut m.scratch[which].px);
+            if let Some(b) = before {
+                lut.apply_rgba(&mut b[which].px);
+            }
+        }
+    }
+    m.scr_tag[which] = Some(hd::ScrTag { colors: space, pal: hd_pal.clone() });
+}
+
+/// 碰暫存區的命令之前：讀取的命令先把來源換到目前的色彩空間；把圖寫進暫存區的命令回傳要用的調色盤。
+fn hd_scratch_prepare(
+    m: &mut HdMem,
+    h: &HdAssets,
+    c: &BlitCmd,
+    space: Option<recolor::Colors>,
+    hd_pal: &pal::Pal,
+    before: &mut Option<[Canvas; 2]>,
+) -> Option<pal::Pal> {
+    let which = ((c.scratch >> 15) & 1) as usize;
+    if let Some(lib) = hd::scratch_image_lib(c) {
+        let (n, colors) = h.base_pal(lib, c.index)?;
+        // 同一塊暫存區混了不同調色盤的圖時，舊內容轉到新圖的調色盤。新圖保持原樣，通常它才是之後要顯示的背景。
+        let same = m.scr_tag[which].as_ref().is_some_and(|t| t.colors == colors);
+        if !same {
+            if let Some(t) = &m.scr_tag[which] {
+                let lut = recolor::Lut::build(&t.colors, &colors);
+                lut.apply_rgba(&mut m.scratch[which].px);
+            }
+            let pal = pal::Pal::from_colors(n, &colors);
+            m.scr_tag[which] = Some(hd::ScrTag { colors, pal });
+        }
+        return m.scr_tag[which].as_ref().map(|t| t.pal.clone());
+    }
+    match c.op {
+        Op::S11504 => m.scr_tag[0] = None,
+        Op::S1152D => m.scr_tag[1] = None,
+        Op::S19BA4 | Op::S19D08 | Op::S19DA8 | Op::S1A09F | Op::S19C4F | Op::S19E66 | Op::S19F3B | Op::S19FF9 | Op::S1A144 | Op::S1A1E6 => {
+            scratch_to_space(m, which, space, hd_pal, before);
+        }
+        Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D | Op::S17FA0 | Op::S18031 | Op::S180C6 => {
+            scratch_to_space(m, 0, space, hd_pal, before);
+            scratch_to_space(m, 1, space, hd_pal, before);
+        }
+        _ => {}
+    }
+    None
+}
+
 impl LayerSink {
     pub fn new(assets: Assets, hd: Option<HdAssets>) -> LayerSink {
         let hdm = hd.as_ref().map(|_| HdMem::new());
@@ -193,6 +261,9 @@ impl LayerSink {
             hd,
             pal: pal::Pal::new(),
             pal_before: pal::Pal::new(),
+            hd_space: None,
+            hd_pal: pal::Pal::new(),
+            out_lut: None,
             idx: idx::Mem::new(),
             idx_base: idx::Mem::new(),
             idx_tmp: idx::Mem::new(),
@@ -236,6 +307,11 @@ impl LayerSink {
         self.pal = pal.clone();
         self.pal_before = pal;
         self.cur = FrameData::empty();
+        self.hd_space = None;
+        if self.pal.name.is_some() {
+            self.hd_space = Some(self.pal.visible8());
+            self.hd_pal = self.pal.clone();
+        }
         if let Some(m) = &mut self.hdm {
             *m = HdMem::new();
             hd::load_pages(m, &self.idx.px, &self.pal.visible8());
@@ -282,7 +358,12 @@ impl LayerSink {
         let mut counter = None;
         for d in draws {
             match d {
-                DrawCmd::SetDac { start, rgb } => self.pal.set(*start, rgb),
+                DrawCmd::SetDac { start, rgb } => {
+                    self.pal.set(*start, rgb);
+                    if *start == 0 {
+                        self.sync_hd_space(rgb);
+                    }
+                }
                 DrawCmd::SetDacOne { index, rgb } => self.pal.set_one(*index, rgb),
                 DrawCmd::SetMapMask { mask } => {
                     idx::set_map_mask(&mut self.idx_st, *mask);
@@ -293,7 +374,8 @@ impl LayerSink {
                 DrawCmd::VramFill { off, words, value } => {
                     idx::vram_fill(&mut self.idx, &self.idx_st, *off, *words, *value);
                     if let Some(m) = &mut self.hdm {
-                        hd::vram_fill(m, &self.pal.visible8(), *off, *words, *value);
+                        let p = if self.hd_space.is_some() { &self.hd_pal } else { &self.pal };
+                        hd::vram_fill(m, &p.visible8(), *off, *words, *value);
                     }
                 }
                 DrawCmd::Blit(c) => {
@@ -308,7 +390,13 @@ impl LayerSink {
                     }
                     idx::apply(&mut self.idx, &mut self.idx_st, &self.assets, self.counter_font.as_deref(), c, Off::default());
                     if let (Some(m), Some(h)) = (&mut self.hdm, &mut self.hd) {
-                        hd::apply(m, h, &self.assets, &self.pal, c, Off::default());
+                        let scratch_pal = hd_scratch_prepare(m, h, c, self.hd_space, &self.hd_pal, &mut self.hd_scratch_before);
+                        let p = match &scratch_pal {
+                            Some(t) => t,
+                            None if self.hd_space.is_some() => &self.hd_pal,
+                            None => &self.pal,
+                        };
+                        hd::apply(m, h, &self.assets, p, c, Off::default());
                     }
                 }
             }
@@ -318,6 +406,28 @@ impl LayerSink {
         self.pushed += 1;
     }
 
+    /// 新的整張調色盤。有名字的話把 HD 畫布整塊換色，原版改 DAC 也是連已畫的像素一起變。
+    fn sync_hd_space(&mut self, rgb: &[u8; 48]) {
+        if self.hdm.is_none() || self.pal.name.is_none() {
+            return;
+        }
+        let want = pal::colors_of(rgb);
+        if let Some(old) = self.hd_space {
+            if old != want {
+                let lut = recolor::Lut::build(&old, &want);
+                // 暫存區等到被複製時才換色（`hd_scratch_prepare`）。
+                if let Some(m) = &mut self.hdm {
+                    for c in m.pages.iter_mut() {
+                        lut.apply_rgba(&mut c.px);
+                    }
+                }
+                lut.apply_rgba(&mut self.hd_base_page.px);
+            }
+        }
+        self.hd_space = Some(want);
+        self.hd_pal = pal::Pal::from_table(rgb);
+    }
+
     /// 輸出 RGBA。`alpha` 是前一幀到目前這幀的進度，0.0 到 1.0。
     /// 原版圖 320×200，HD 1280×800。沒有載入 HD 資料夾時，`hd: true` 輸出原版圖的最近鄰 4 倍。
     pub fn render(&mut self, alpha: f32, opts: RenderOpts) -> (&[u8], usize, usize) {
@@ -325,6 +435,7 @@ impl LayerSink {
         let replay = opts.interpolate && self.cur.any_delta;
         if opts.hd && self.hdm.is_some() {
             self.render_hd(t, replay, opts.show_counter);
+            self.hd_output_recolor();
             return (&self.out, hd::PW as usize, hd::PH as usize);
         }
         // 原版圖：重放或直接用套完的記憶體。
@@ -376,8 +487,25 @@ impl LayerSink {
         (&self.out, 320, 200)
     }
 
+    /// 漸變中目前的 DAC 和畫布的色彩空間不同，輸出時換色。
+    fn hd_output_recolor(&mut self) {
+        let Some(space) = self.hd_space else { return };
+        let now = self.pal.visible8();
+        // 原版循環少數幾個色號做火焰閃爍，只影響用那個色號畫的像素。HD 圖沒有色號，換色會染到相近的顏色，
+        // 所以少數色號的變化不換，只有整體淡入淡出才換。
+        if recolor::changed(&space, &now) < 6 {
+            return;
+        }
+        if !matches!(&self.out_lut, Some((a, b, _)) if *a == space && *b == now) {
+            self.out_lut = Some((space, now, recolor::Lut::build(&space, &now)));
+        }
+        if let Some((_, _, lut)) = &self.out_lut {
+            lut.apply_rgba(&mut self.out);
+        }
+    }
+
     fn render_hd(&mut self, t: f32, replay: bool, show_counter: bool) {
-        let Self { hdm, hd: hd_assets, assets, pal, pal_before, hd_base_page, hd_scratch_before, hd_mask_before, hd_spare, cur, out, counter_font, .. } = self;
+        let Self { hd_space, hd_pal, hdm, hd: hd_assets, assets, pal, pal_before, hd_base_page, hd_scratch_before, hd_mask_before, hd_spare, cur, out, counter_font, .. } = self;
         let (Some(mem), Some(hda)) = (hdm.as_mut(), hd_assets.as_mut()) else { return };
         let pg = ((cur.page >> 15) & 1) as usize;
         // 目的緩衝區沿用上一次換下來的 Vec。
@@ -408,14 +536,23 @@ impl LayerSink {
                 _ => {}
             }
             let skip_scratch_ops = matches!(src, Src::Before);
-            let mut p = pal_before.clone();
+            // 畫布已經換到 `hd_pal` 的色彩空間（`sync_hd_space` 連「開始前」的快照一起換），重放不用再跟著 DAC 變。
+            let mut p = if hd_space.is_some() { hd_pal.clone() } else { pal_before.clone() };
             for (i, d) in cur.cmds.iter().enumerate() {
                 if skip_scratch_ops && is_scratch_write(d) {
                     continue;
                 }
                 match d {
-                    DrawCmd::SetDac { start, rgb } => p.set(*start, rgb),
-                    DrawCmd::SetDacOne { index, rgb } => p.set_one(*index, rgb),
+                    DrawCmd::SetDac { start, rgb } => {
+                        if hd_space.is_none() {
+                            p.set(*start, rgb);
+                        }
+                    }
+                    DrawCmd::SetDacOne { index, rgb } => {
+                        if hd_space.is_none() {
+                            p.set_one(*index, rgb);
+                        }
+                    }
                     DrawCmd::SetMapMask { mask } => hd::set_map_mask(&mut tmp, *mask),
                     DrawCmd::VramFill { off, words, value } => hd::vram_fill(&mut tmp, &p.visible8(), *off, *words, *value),
                     DrawCmd::Blit(c) => {
@@ -437,7 +574,8 @@ impl LayerSink {
         if show_counter {
             if let Some(v) = cur.counter {
                 let mut pages = [page, Canvas::empty()];
-                hd::counter(&mut pages, &pal.visible8(), COUNTER_X, COUNTER_Y, v, false);
+                let c = if hd_space.is_some() { hd_pal.visible8() } else { pal.visible8() };
+                hd::counter(&mut pages, &c, COUNTER_X, COUNTER_Y, v, false);
                 let [p0, _] = pages;
                 page = p0;
             }

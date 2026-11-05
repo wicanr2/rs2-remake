@@ -11,7 +11,7 @@
 | 素材抽取 | 彩色、單色、遮罩、調色盤、地圖、音樂、音效、展示錄影、intro、文字畫面都解出並過結構驗證 |
 | 靜態邏輯 | 主流程、實體、移動腳本、碰撞、武器、敵彈、難度、亂數、四關流程、頭目、過場完成，未解項見 `WORKLIST.md` |
 | 動態驗證 | dosgolem 跑通冷啟動、四關、片尾、熱鍵、展示錄影、影格速率。第一關頭目已實際擊殺。全流程 20 份收據 19,284 筆與重製逐位元組相同。第二至四關頭目未擊殺，單色模式只驗開檔 |
-| HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。全流程接入無缺圖，配色與接縫待修 |
+| HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。全流程接入無缺圖，四關目視過，配色與第一關接縫已修 |
 | remake | 從標題玩到片尾：規格 [001](docs/spec/001-rust-first-stage.md)、[002](docs/spec/002-full-game.md)、[003](docs/spec/003-audio.md) 都是 CONFORMED。E 模式的模擬、畫面與音樂暫存器和原版逐筆相同。CGA、MGA 未做 |
 | 版控 | 私人 repo `wicanr2/rs2-remake`，推送前跑 `tools/leak_check.py`。`docs/images/` 有含原版美術的對照圖，公開前要清歷史 |
 | LICENSE | RRSAL-1.0 |
