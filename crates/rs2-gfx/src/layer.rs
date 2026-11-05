@@ -817,6 +817,34 @@ mod tests {
     }
 
     #[test]
+    fn index_memory_and_page_conversion_follow_the_field_geometry() {
+        use super::idx::{Mem, page_to_rgba};
+        let mut colors = [[0u8; 3]; 16];
+        colors[3] = [1, 2, 3];
+        colors[5] = [9, 8, 7];
+        for cols in [40u16, 48, 60] {
+            let g = Geom::new(cols);
+            let mut m = Mem::new(g);
+            assert_eq!(m.px.len(), g.mem_bytes() * 8, "{cols} 欄：位址空間 × 8 像素");
+            // 第一組的頁 0：左上角與右下角（第 199 列、最後一欄的最後一個像素）。
+            let last = (199 * usize::from(cols) + usize::from(cols) - 1) * 8 + 7;
+            m.px[0] = 3;
+            m.px[last] = 5;
+            let mut out = vec![0u8; g.px_width() * 200 * 4];
+            page_to_rgba(&m, 0, &colors, &mut out);
+            assert_eq!(out.len(), usize::from(cols) * 8 * 200 * 4);
+            assert_eq!(&out[..4], &[1, 2, 3, 255]);
+            assert_eq!(&out[out.len() - 4..], &[9, 8, 7, 255], "{cols} 欄：最後一個像素在右下角");
+            // 頁 1 在第二組：命令的頁值 8000h 換成這個版面的組位移，頁 0 的內容不跟著出現。
+            m.px[g.set1() as usize * 8] = 3;
+            out.fill(0);
+            page_to_rgba(&m, 0x8000, &colors, &mut out);
+            assert_eq!(&out[..4], &[1, 2, 3, 255]);
+            assert_eq!(&out[out.len() - 4..], &[0, 0, 0, 255], "{cols} 欄：頁 1 的右下角是黑");
+        }
+    }
+
+    #[test]
     fn a_detached_pod_does_not_take_the_ship_prediction_offset() {
         let player = [Some((8, -4)), Some((12, 0))];
         let attached = [false; 2];

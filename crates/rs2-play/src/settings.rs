@@ -415,6 +415,36 @@ mod tests {
     }
 
     #[test]
+    fn field_size_reaches_the_core_in_vga_and_ega_and_is_forced_to_100_in_mono() {
+        let i = index_of("field_size").unwrap();
+        assert!(OPTIONS[i].implemented && OPTIONS[i].changes_rules);
+        let mut s = Settings::default();
+        assert_eq!((s.field_size(), s.rules().field), (FieldSize::Normal, FieldSize::Normal), "預設 100%");
+        for (v, want) in [(0u8, FieldSize::Normal), (1, FieldSize::Wide), (2, FieldSize::Wider)] {
+            s.set_opt_value(i, v);
+            assert_eq!(s.field_size(), want);
+            for mode in DisplayMode::ALL {
+                s.mode = mode;
+                let field = s.rules().field;
+                if mode.is_mono() {
+                    assert_eq!(field, FieldSize::Normal, "{mode:?} 沒有寬版圖，進關一律 100%");
+                } else {
+                    assert_eq!(field, want, "{mode:?}");
+                }
+            }
+            s.mode = DisplayMode::Vga;
+            assert_eq!(s.rules_enhanced(), want != FieldSize::Normal, "改了戰場大小就是強化規則");
+            assert_eq!(s.rules(), Rules { field: want, ..Rules::ORIGINAL }, "只動 field，其他選項不受影響");
+        }
+        // 檔案裡的 100、120、150 讀得回來，其他值被略過並回報。
+        let (back, warns) = Settings::parse("opt.field_size=150\n");
+        assert!(warns.is_empty());
+        assert_eq!(back.field_size(), FieldSize::Wider);
+        let (_, warns) = Settings::parse("opt.field_size=130\n");
+        assert_eq!(warns.len(), 1);
+    }
+
+    #[test]
     fn only_implemented_options_count_as_enhanced_rules() {
         let mut s = Settings::default();
         // 沒實作的選項，檔案裡寫成開也不算強化規則，因為它不會生效。

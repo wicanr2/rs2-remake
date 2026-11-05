@@ -460,6 +460,34 @@ mod tests {
     }
 
     #[test]
+    fn mode_cycle_skips_mono_in_a_wide_stage_and_comes_back_afterwards() {
+        use DisplayMode::*;
+        let mut k = c(true);
+        k.set_field_wide(true);
+        assert!(k.mono_available && !k.mono_selectable(), "單色圖庫在，但這一關是寬的");
+        assert!(k.bar_state().field_wide);
+        let seen: Vec<DisplayMode> = (0..4).map(|_| { k.apply(Action::Mode); k.settings.mode }).collect();
+        assert_eq!(seen, vec![Ega, Vga, Ega, Vga], "寬戰場的關卡只在 VGA 與 EGA 之間循環");
+        // 回到 100% 的關卡，四種模式都能循環。
+        k.set_field_wide(false);
+        assert!(k.mono_selectable() && !k.bar_state().field_wide);
+        let seen: Vec<DisplayMode> = (0..4).map(|_| { k.apply(Action::Mode); k.settings.mode }).collect();
+        assert_eq!(seen, vec![Ega, Cga, Mga, Vga]);
+    }
+
+    #[test]
+    fn the_status_note_appears_only_when_a_mono_mode_meets_a_wider_option() {
+        use DisplayMode::*;
+        let i = crate::options::index_of("field_size").unwrap();
+        for (mode, value, note) in [(Cga, 1u8, true), (Mga, 2, true), (Cga, 0, false), (Vga, 2, false), (Ega, 1, false)] {
+            let mut k = c(true);
+            k.settings.mode = mode;
+            k.settings.set_opt_value(i, value);
+            assert_eq!(k.bar_state().field_mono_note, note, "{mode:?} 戰場大小值 {value}");
+        }
+    }
+
+    #[test]
     fn pause_resume_and_toggle() {
         let mut k = c(true);
         assert!(!k.frontend_paused());

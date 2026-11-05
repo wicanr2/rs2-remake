@@ -373,6 +373,45 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_field_keeps_the_window_and_letterboxes_top_and_bottom() {
+        assert_eq!(Fit::frame(40, false), Fit::SD);
+        assert_eq!(Fit::frame(40, true), Fit::HD);
+        assert!(!Fit::frame(48, false).smooth && Fit::frame(60, true).smooth, "原版圖最近鄰，HD 線性");
+        // 預設視窗倍率 3：960×600 的遊戲區加 26 的工具列。
+        let (w, h, bar) = (960u32, 600 + 26, 26u32);
+        let r = fit_rect_for(w, h, bar, Fit::frame(60, false), false);
+        assert_eq!((r.w, r.h), (960, 400), "150%：480×200 放 2 倍，寬剛好填滿");
+        assert_eq!((r.x, r.y), (0, bar as i32 + 100), "上下各留 100");
+        let r = fit_rect_for(w, h, bar, Fit::frame(48, false), false);
+        assert_eq!((r.w, r.h), (768, 400), "120%：384×200 放 2 倍，左右上下留邊");
+        assert_eq!((r.x, r.y), (96, bar as i32 + 100));
+        // 全螢幕 1920×1080（工具列 26）：可用 1920×1054，150% 放 4 倍 = 1920×800。
+        let r = fit_rect_for(1920, 1080, 26, Fit::frame(60, false), false);
+        assert_eq!((r.w, r.h), (1920, 800));
+        // 畫面不超出視窗，比例是欄數比 25。
+        for cols in [48u16, 60] {
+            for (ww, wh) in [(640u32, 426u32), (1280, 826), (2400, 1080), (300, 100)] {
+                let r = fit_rect_for(ww, wh, 26, Fit::frame(cols, true), false);
+                assert!(r.x >= 0 && r.y >= 26 && r.x + r.w <= ww as i32 && r.y + r.h <= wh as i32, "{cols} 欄 {ww}×{wh}：{r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_hd_sized_frames_shake_including_the_wide_ones() {
+        let shake = (10, -6);
+        assert_eq!(shake_px(shake, 320, 960), (0, 0));
+        assert_eq!(shake_px(shake, 480, 1440), (0, 0), "原版圖的寬戰場不震動");
+        assert_eq!(shake_px(shake, 640, 960), (0, 0), "單色不震動");
+        for (frame_w, shown) in [(1280usize, 1280i32), (1536, 1536), (1920, 960)] {
+            let want = (shake.0 * shown / frame_w as i32, shake.1 * shown / frame_w as i32);
+            let got = shake_px(shake, frame_w, shown);
+            assert!((got.0 - want.0).abs() <= 1 && (got.1 - want.1).abs() <= 1, "{frame_w}：{got:?} 約 {want:?}");
+            assert_ne!(got, (0, 0), "{frame_w} 寬的 HD 畫面要震");
+        }
+    }
+
+    #[test]
     fn mono_fit_is_four_by_three_centred_and_never_stretched() {
         // 預設倍率 3 的視窗：可用區域 960×600，4:3 的矩形取滿高度，左右各留 80。
         let r = fit_rect_for(960, 626, 26, Fit::MONO, false);

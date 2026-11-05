@@ -577,12 +577,13 @@ impl Session {
         self.set_mode(v.mode);
     }
 
-    /// 換顯示模式。單色圖庫缺檔時要求 CGA、MGA 會被拒絕（回傳假），維持原來的模式。
+    /// 換顯示模式。單色圖庫缺檔，或這一關的戰場加大了（單色沒有寬版圖，規格 005「戰場大小」）時，
+    /// 要求 CGA、MGA 會被拒絕（回傳假），維持原來的模式。
     ///
     /// 只換 `render` 選哪一個接收端，並呼叫 `Game::set_terrain_scr`（單色讀 `SHT.SCR`，E 讀 `SHT.SCN`）。
     /// 接收端隨時是最新的，所以不用重播，切換當下的畫面是對的。
     pub fn set_mode(&mut self, m: DisplayMode) -> bool {
-        if m.is_mono() && self.mono.is_none() {
+        if m.is_mono() && (self.mono.is_none() || self.field_wide()) {
             return false;
         }
         self.view.mode = m;
@@ -639,8 +640,21 @@ impl Session {
 
     /// `Game` 狀態對應的原版資料段（`rs2-trace` 的 `Mirror`）的 SHA-256（十六進位）。
     /// 每次呼叫傾印一份 64 KB，只有 `--hash-out` 與測試用。
+    ///
+    /// 戰場加大時，格網不在原版資料段裡（傾印略過它），雜湊後面再接上三塊格網的位元組與欄數，
+    /// 所以寬戰場的格網內容也算在決定性比對裡。欄數 40 時與原版的雜湊相同。
     pub fn dseg_hash(&self) -> String {
-        sha256_hex(self.ds().bytes())
+        let ds = self.ds();
+        let grids = &self.game.state().grids;
+        if grids.cols() == 40 {
+            return sha256_hex(ds.bytes());
+        }
+        let mut all = ds.bytes().to_vec();
+        all.extend_from_slice(&grids.cols().to_le_bytes());
+        for part in [&grids.g1, &grids.g2, &grids.terrain] {
+            all.extend_from_slice(part);
+        }
+        sha256_hex(&all)
     }
 
     /// 狀態對應的資料段傾印。
@@ -758,6 +772,11 @@ mod modes_tests;
 #[cfg(test)]
 #[path = "session_shoot_tests.rs"]
 mod shoot_tests;
+
+/// 戰場大小（規格 005：100%、120%、150%）的測試：整段流程、決定性、展示錄影、單色模式、輸出尺寸、截圖。
+#[cfg(test)]
+#[path = "session_field_tests.rs"]
+mod field_tests;
 
 #[cfg(test)]
 mod tests {

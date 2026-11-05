@@ -970,4 +970,213 @@ mod tests {
         assert_eq!(c.grids.peek16(GRID4_START + 2), 0x0333, "初始視窗從 G4 起點加 2 連續寫");
         assert_eq!(c.grids.peek16(GRID4_START + 2 + 84), 0x0444, "每列 42 格");
     }
+
+    // ---- 戰場加大（規格 005「戰場大小」） ----
+
+    fn wide_core(cols: u16) -> Core {
+        let mut c = core();
+        c.enter_field(cols);
+        c
+    }
+
+    #[test]
+    fn a_wide_field_has_bigger_grids_that_still_fit_the_16_bit_space_without_overlap() {
+        for cols in [48u16, 60] {
+            let g = Grids::with_cols(cols);
+            let lay = g.layout();
+            assert_eq!((g.g1.len(), g.g2.len()), (20 * usize::from(cols), 20 * usize::from(cols) + 1));
+            assert_eq!(g.terrain.len(), lay.terrain_block());
+            assert_eq!(lay.row_bytes(), cols);
+            assert_eq!(lay.terrain_row_bytes(), 2 * cols);
+            // 三塊記憶體依序排開，不重疊，最後一塊結束在 16 位元空間之內。
+            let g1_end = u32::from(GRID1_START) + g.g1.len() as u32;
+            let g2_end = u32::from(GRID2_START) + g.g2.len() as u32;
+            let terrain_end = u32::from(GRID4_START) + g.terrain.len() as u32;
+            assert!(g1_end <= u32::from(GRID2_START), "{cols} 欄：G1 不蓋到 G2");
+            assert!(g2_end <= u32::from(GRID4_START), "{cols} 欄：G2 不蓋到 G4");
+            assert!(terrain_end <= 0x1_0000, "{cols} 欄：地形塊在 16 位元空間之內");
+            // G4、G3、游標相鄰：游標緊接在 G3 之後。
+            assert_eq!(lay.g3_start(), GRID4_START + 2 * lay.terrain_words());
+            assert_eq!(lay.terrain_cursor(), lay.g3_start() + 2 * lay.terrain_words());
+        }
+        assert_eq!(Grids::default().cols(), 40);
+        assert!(!Layout::new(40).wide() && Layout::new(48).wide() && Layout::new(60).wide());
+    }
+
+    #[test]
+    fn entering_a_field_swaps_the_grids_clears_them_and_emits_one_field_command() {
+        let mut c = core();
+        c.draws.clear();
+        c.enter_field(60);
+        assert_eq!(c.field_cols(), 60);
+        assert_eq!(c.field_extra(), 20);
+        assert_eq!(c.draws, vec![DrawCmd::Field { cols: 60 }]);
+        assert_eq!(c.g2_slots.len(), 20 * 60 + 1, "修正模式的槽號跟著格網大小");
+        assert!(c.grids.g1.iter().chain(&c.grids.g2).chain(&c.grids.terrain).all(|&b| b == 0), "換一組全清的格網");
+        // 寬戰場每關都送一次；同樣的欄數重送是接收端的空動作，核心的格網不換。
+        c.grid1_put(3, 3, 9);
+        c.enter_field(60);
+        assert_eq!(c.grid1_byte(GRID1_START + 3 * 60 + 3), 9, "同欄數重進不重設格網");
+        assert_eq!(c.draws.len(), 2);
+        // 離開關卡回到 40 欄，格網換回原版大小。
+        c.leave_field();
+        assert_eq!((c.field_cols(), c.grids.g1.len(), c.g2_slots.len()), (40, 800, 20 * 40 + 1));
+        assert_eq!(c.draws.last(), Some(&DrawCmd::Field { cols: 40 }));
+        // 40 接 40 什麼都不送：原版的命令串不變。
+        let n = c.draws.len();
+        c.enter_field(40);
+        c.begin_stage_field();
+        c.leave_field();
+        assert_eq!(c.draws.len(), n);
+    }
+
+    #[test]
+    fn wide_g1_rows_are_plain_rows_and_everything_outside_them_is_void() {
+        for cols in [48u16, 60] {
+            let mut c = wide_core(cols);
+            for row in 0..20u16 {
+                assert_eq!(c.grid1_row_start(row), GRID1_START + row * cols);
+                assert_eq!(c.grid2_row_base(row), GRID2_START + row * cols);
+                assert_eq!(c.scan_row_start(ScanGrid::Entities, row), GRID1_START + row * cols);
+            }
+            // 列 20 以上與負列：沒有原版的別名（列基底表、死亡旗標），一律在格網之外。
+            for row in [20u16, 21, 0x17C, 0x1F4, 0xFFFF, 0xFFFD] {
+                assert_eq!(c.grid1_row_start(row), VOID, "列 {row:#X}");
+                assert_eq!(c.grid2_row_base(row), VOID);
+                assert_eq!(c.scan_row_start(ScanGrid::Bullets, row), VOID);
+                assert_eq!(c.grid3_cell_addr(row, 3), VOID);
+                assert_eq!(c.grid4_cell_addr(row, 3), VOID);
+            }
+            // 寫進越界列的格不留痕跡；欄超出一列的格也不寫（不溢進下一列）。
+            let before = c.grids.clone();
+            c.grid1_put(20, 5, 7);
+            c.grid1_put(0xFFFF, 5, 7);
+            c.grid1_put(4, cols, 7);
+            c.grid1_put(4, 0xFFFF, 7);
+            assert_eq!(c.grids, before);
+            c.grid1_put(4, cols - 1, 7);
+            assert_eq!(c.grid1_byte(GRID1_START + 4 * cols + cols - 1), 7, "最後一欄寫得到");
+            assert_eq!(c.grid1_byte(GRID1_START + 5 * cols), 0);
+            assert_eq!(c.grid1_byte(GRID1_START - 1), 0, "G1 之前沒有列基底表可讀");
+        }
+    }
+
+    #[test]
+    fn wide_probes_cover_the_whole_row_and_stop_at_the_new_edge() {
+        let c = wide_core(60);
+        let row3 = c.grid1_row_start(3);
+        assert_eq!(c.grid1_probe(row3, row3), None, "列起點本身不測");
+        assert!(c.grid1_probe(row3, row3 + 1).is_some());
+        assert!(c.grid1_probe(row3, row3 + 58).is_some(), "欄 58 還在範圍內");
+        assert_eq!(c.grid1_probe(row3, row3 + 59), None, "最後一欄之後（欄數減 1）出界，同原版 27h 的規則");
+        assert_eq!(c.grid1_probe(VOID, 5), None, "越界列什麼都測不到");
+        assert_eq!(c.side_limit(), 59);
+        assert_eq!(core().side_limit(), 0x27);
+        // 玩家掃描：列內的欄 1 至 59 都掃得到，下一列的第一格不掃。
+        assert!(c.scan_cell(ScanGrid::Entities, row3, row3 + 59).is_some());
+        assert_eq!(c.scan_cell(ScanGrid::Entities, row3, row3 + 60), None);
+        assert_eq!(c.scan_cell(ScanGrid::Entities, VOID, 5), None);
+    }
+
+    #[test]
+    fn wide_g2_writes_cover_columns_1_to_cols_minus_2_and_drop_the_rest() {
+        let c = wide_core(48);
+        let base = c.grid2_row_base(7);
+        assert!(!c.grid2_writable(base, base), "欄 0 不寫");
+        assert!(c.grid2_writable(base, base + 1));
+        assert!(c.grid2_writable(base, base + 46), "欄 46 是最後一個可寫");
+        assert!(!c.grid2_writable(base, base + 47), "欄 47 不寫");
+        assert!(!c.grid2_writable(VOID, 5));
+        // 比最後一列再多一格寫得到（溢位格），之後不行。
+        let last = GRID2_START + 20 * 48;
+        assert!(c.grid2_writable(last - 30, last));
+        assert!(!c.grid2_writable(last - 30, last + 1));
+    }
+
+    #[test]
+    fn wide_g3_marks_clip_to_the_field_instead_of_spilling_into_other_memory() {
+        let mut c = wide_core(48);
+        // 完全在畫面內：每格一個字組。
+        c.grid3_mark_block(2, 3, 2, 3, 0x0101);
+        for (r, k) in [(2u16, 3u16), (2, 4), (2, 5), (3, 3), (3, 4), (3, 5)] {
+            assert_eq!(c.grids.peek16(c.grid3_cell_addr(r, k)), 0x0101, "列 {r} 欄 {k}");
+        }
+        assert_eq!(c.grids.terrain.iter().filter(|&&b| b == 1).count(), 12, "6 格，每格一個字組的兩個位元組");
+        // 超出右緣與下緣的格丟掉：沒有任何一格寫到畫面之外，也沒有寫進游標或下一列。
+        let mut c = wide_core(48);
+        c.grid3_mark_block(17, 46, 4, 4, 0x0202);
+        let kept = [(17u16, 46u16), (17, 47), (18, 46), (18, 47)];
+        for (r, k) in kept {
+            assert_eq!(c.grids.peek16(c.grid3_cell_addr(r, k)), 0x0202, "列 {r} 欄 {k}");
+        }
+        assert_eq!(c.grids.terrain.iter().filter(|&&b| b == 2).count(), 2 * kept.len(), "列 19 沒有人寫，欄 48 以上不存在：只剩 2 × 2 格");
+        assert_eq!(c.grids.peek16(c.layout().terrain_cursor()), 0, "游標沒被碰");
+        // 往左上多出去（負的列與欄）的部分裁掉，剩下的左上角那一格留下。
+        let mut c = wide_core(48);
+        c.grid3_mark_block(0xFFFF, 0xFFFF, 2, 2, 0x0303);
+        assert_eq!(c.grids.peek16(c.grid3_cell_addr(0, 0)), 0x0303);
+        assert_eq!(c.grids.terrain.iter().filter(|&&b| b == 3).count(), 2, "只有一格（2 個位元組）");
+    }
+
+    #[test]
+    fn wide_g3_or_stays_inside_g3_and_in_row_or_drops_the_cell() {
+        let mut c = wide_core(60);
+        let first = c.grid3_cell_addr(4, 0);
+        c.grid3_or_in_row(first, first, 0x01);
+        c.grid3_or_in_row(first, first + 2 * 59, 0x02);
+        c.grid3_or_in_row(first, first + 2 * 60, 0x04);
+        c.grid3_or_in_row(first, first - 2, 0x08);
+        assert_eq!((c.grids.peek8(first), c.grids.peek8(first + 118), c.grids.peek8(first + 120)), (1, 2, 0), "超出右緣的格不溢進下一列");
+        assert_eq!(c.grids.peek8(first - 2), 0);
+        let lay = c.layout();
+        let before = c.grids.clone();
+        for addr in [lay.g3_start() - 1, lay.g3_end() + 1, 0, 0xFFFF] {
+            c.grid3_or(addr, 0xFF);
+        }
+        assert_eq!(c.grids, before);
+    }
+
+    #[test]
+    fn wide_terrain_scrolls_and_fills_in_the_wide_layout() {
+        let mut c = wide_core(48);
+        let lay = c.layout();
+        // 新欄：從列 1 欄 0 之位置起，游標每寫一格加一列（列距 96 位元組）。
+        c.start_terrain_column();
+        c.store_terrain_tile(0x0111);
+        c.store_terrain_tile(0x0222);
+        assert_eq!(c.grids.peek16(GRID4_START + lay.terrain_row_bytes()), 0x0111);
+        assert_eq!(c.grids.peek16(GRID4_START + 2 * lay.terrain_row_bytes()), 0x0222);
+        assert_eq!(c.terrain_cursor(), 3 * lay.terrain_row_bytes());
+        // 初始視窗每列 cols + 2 格，只有前 cols 格存進 G4，列距和碰撞讀取一致。
+        let window = 50u16;
+        c.fill_terrain_cell(0, 0x0333);
+        c.fill_terrain_cell(47, 0x0444);
+        c.fill_terrain_cell(48, 0x0555);
+        c.fill_terrain_cell(49, 0x0666);
+        let next_row = GRID4_START + 2 + lay.terrain_row_bytes();
+        assert_eq!(c.grids.peek16(GRID4_START + 2), 0x0333);
+        assert_eq!(c.grids.peek16(GRID4_START + 2 + 2 * 47), 0x0444);
+        assert_eq!(c.grids.peek16(next_row), 0, "視窗多出的兩格（欄 48、49）不存，不溢進下一列");
+        c.fill_terrain_cell(window, 0x0777);
+        assert_eq!(c.grids.peek16(next_row), 0x0777, "下一列從欄 0 重新開始");
+        // 捲動一格：G4 左移一個字組，G3 同樣，游標的低位元組清 0。
+        let probe = GRID4_START + 2 + 2 * 10;
+        c.grids.poke16(probe, 0x0AAA);
+        c.scroll_terrain_grids();
+        assert_eq!(c.grids.peek16(probe - 2), 0x0AAA);
+    }
+
+    #[test]
+    fn wide_cell_addresses_have_the_shape_of_the_original_with_a_wider_row() {
+        // 原版（40 欄）列距 50h，加大的版面同一個公式、列距是 2 × 欄數。
+        let (orig, wide) = (core(), wide_core(48));
+        for (row, col) in [(0u16, 0u16), (3, 5), (19, 39)] {
+            let o = orig.grid4_cell_addr(row, col) - GRID4_START;
+            let w = wide.grid4_cell_addr(row, col) - GRID4_START;
+            assert_eq!(o, row * 0x50 + 1 + 2 * col + 1);
+            assert_eq!(w, row * 96 + 1 + 2 * col + 1);
+        }
+        assert!(wide.grid4_contains(GRID4_START) && wide.grid4_contains(wide.layout().g4_last()));
+        assert!(!wide.grid4_contains(wide.layout().g4_last() + 1));
+    }
 }

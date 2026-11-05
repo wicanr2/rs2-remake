@@ -167,6 +167,7 @@ impl Mirror {
     /// 在資料段寫一個位元組再讀回狀態（測試與對拍的 poke）。
     /// 位移不在狀態裡（唯讀表格、工作變數）就 `panic`：寫了讀不回來的 poke 等於沒套用，不能默默略過。
     pub fn poke8(&self, state: &mut State, offset: u16, value: u8) {
+        assert!(state.grids.cols() == 40, "poke 只用在 100% 的戰場：寬戰場的格網不在原版資料段，讀回來會被重設");
         let mut ds = self.dump(state);
         ds.w8(offset, value);
         *state = self.load(&ds);
@@ -175,6 +176,7 @@ impl Mirror {
 
     /// 同 [`Mirror::poke8`]，寫一個字組。
     pub fn poke16(&self, state: &mut State, offset: u16, value: u16) {
+        assert!(state.grids.cols() == 40, "poke 只用在 100% 的戰場：寬戰場的格網不在原版資料段，讀回來會被重設");
         let mut ds = self.dump(state);
         ds.w16(offset, value);
         *state = self.load(&ds);
@@ -1001,8 +1003,13 @@ const GRID2: u16 = 0x2C1C;
 /// G4 地形格（`900Ch`）、G3 髒格（`964Ch`）與第三關新欄的寫入游標（`word_2684C`，`9C8Ch`）三塊相鄰，各 640h 位元組，游標 2 位元組。
 const TERRAIN: u16 = 0x900C;
 
+/// 戰場加大（規格 005「戰場大小」）時的格網比原版的格網大，原版資料段沒有對應的位置：傾印與載入都略過，
+/// 不去蓋別的變數。要比對寬戰場的格網就比 [`Grids`] 的位元組本身（`Session::dseg_hash` 這樣做）。
 impl Layout for Grids {
     fn load(&mut self, ds: &Dseg) {
+        if self.cols() != 40 {
+            return;
+        }
         for (k, v) in self.g1.iter_mut().enumerate() {
             *v = ds.r8(GRID1 + k as u16);
         }
@@ -1015,6 +1022,9 @@ impl Layout for Grids {
     }
 
     fn store(&self, ds: &mut Dseg) {
+        if self.cols() != 40 {
+            return;
+        }
         for (k, &v) in self.g1.iter().enumerate() {
             ds.w8(GRID1 + k as u16, v);
         }
@@ -1241,6 +1251,37 @@ mod tests {
         let (d0, d1) = (Mirror::new(&image_of(0x00)).dump(state), Mirror::new(&image_of(0xFF)).dump(state));
         let covered = (0..0x10000).map(|i| d0.bytes()[i] == d1.bytes()[i]).collect();
         (d0, covered)
+    }
+
+    #[test]
+    fn wide_grids_are_not_in_the_original_data_segment_and_neither_dump_nor_load_touches_it() {
+        // 戰場加大的格網比原版大，傾印略過它，不去蓋別的變數；原版大小的格網照舊寫進資料段。
+        for cols in [48u16, 60] {
+            let mut state = State::default();
+            state.grids = rs2_game::Grids::with_cols(cols);
+            state.grids.g1.fill(0xAB);
+            state.grids.g2.fill(0xCD);
+            state.grids.terrain.fill(0xEF);
+            let m = Mirror::new(&image_of(0));
+            let dumped = m.dump(&state);
+            let plain = m.dump(&State::default());
+            assert_eq!(dumped.bytes(), plain.bytes(), "{cols} 欄：傾印與沒有格網內容的狀態相同");
+            // 載入也不去動寬格網：載進一份全新的（40 欄）狀態，格網還是原版大小。
+            let back = m.load(&dumped);
+            assert_eq!(back.grids.cols(), 40);
+        }
+        let mut state = State::default();
+        state.grids.g1.fill(0xAB);
+        let dumped = Mirror::new(&image_of(0)).dump(&state);
+        assert_eq!(dumped.r8(GRID1), 0xAB, "40 欄的格網照舊寫進 1B32h");
+    }
+
+    #[test]
+    #[should_panic(expected = "poke 只用在 100% 的戰場")]
+    fn poking_a_wide_state_is_refused_because_the_load_would_reset_the_grids() {
+        let mut state = State::default();
+        state.grids = rs2_game::Grids::with_cols(48);
+        Mirror::new(&image_of(0)).poke8(&mut state, 0x0100, 1);
     }
 
     #[test]

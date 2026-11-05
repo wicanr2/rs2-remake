@@ -535,6 +535,42 @@ mod tests {
     }
 
     #[test]
+    fn a_wide_hud_stretches_to_the_frame_width_and_keeps_the_height() {
+        // 寬度 1280 就是原版的版面。
+        let flags = HudFlags { rules: true, god: true, charge_bar: true, counter: Some(7) };
+        assert_eq!(layout_in(W, [true, true], &flags), layout([true, true], &flags));
+        for w in [1536, 1920] {
+            for mask in 0..64u32 {
+                let active = [mask & 1 != 0 || mask & 2 == 0, mask & 2 != 0];
+                let flags = HudFlags { rules: mask & 4 != 0, god: mask & 8 != 0, charge_bar: mask & 16 != 0, counter: (mask & 32 != 0).then_some(12345) };
+                let l = layout_in(w, active, &flags);
+                for (i, (e, r)) in l.iter().enumerate() {
+                    assert!(r.x >= 0 && r.right() <= w && r.y >= 0 && r.bottom() <= H, "{w} 寬：{e:?} {r:?} 超出 HUD（mask {mask}）");
+                    for (o, orc) in &l[..i] {
+                        let x = r.intersect(orc);
+                        assert!(x.w == 0 || x.h == 0, "{w} 寬：{e:?} {r:?} 與 {o:?} {orc:?} 重疊（mask {mask}）");
+                    }
+                }
+            }
+            // P1 仍靠左、P2 靠右貼齊新的右緣，充能條在新的正中央。
+            let both = layout_in(w, [true, true], &HudFlags { charge_bar: true, ..HudFlags::default() });
+            let get = |e: Elem| both.iter().find(|(x, _)| *x == e).unwrap().1;
+            assert_eq!(get(Elem::Tag(0)).x, M);
+            assert_eq!(get(Elem::Tag(1)).right(), w - M);
+            assert_eq!(get(Elem::Charge).x, (w - CHARGE_W) / 2);
+            let r = render_in(w, &HudState::new(), &solo(0xFF), &HudFlags::default(), &HudIcons::default(), 0);
+            assert_eq!(r.len(), (w * H * 4) as usize);
+            assert!(r.chunks_exact(4).all(|p| p[3] == 255), "不透明");
+            // 蓋到同寬的畫面：只換底部 40 列，上面不動。
+            let mut frame = vec![7u8; (w * 800 * 4) as usize];
+            overlay(&mut frame, &r);
+            let o = (Y0 * w * 4) as usize;
+            assert!(frame[..o].iter().all(|b| *b == 7));
+            assert_eq!(&frame[o..], &r[..]);
+        }
+    }
+
+    #[test]
     fn hud_is_one_opaque_1280_by_40_plate_with_a_highlight_line() {
         let r = render(&HudState::new(), &solo(0xFF), &HudFlags::default(), &HudIcons::default(), 0);
         assert_eq!(r.len(), (W * H * 4) as usize);
