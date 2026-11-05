@@ -641,6 +641,10 @@ struct EnemyTrace {
     /// 這段時間時間表的生成列因為池滿而放棄的次數，以及其中景物綁定的列。
     drops: u32,
     bound_drops: u32,
+    /// 每步的地圖左緣欄（第三關捲動的位置；其他關是 0）。
+    map_left: Vec<u16>,
+    /// 每步欄在 40 以上的第三關地圖速度敵人（寬戰場裡提前生成、還在隨景物移動的）：`(槽號, 腳本讀取位置, 左緣欄加欄)`。
+    approaching: Vec<Vec<(usize, u16, i32)>>,
 }
 
 /// 從標題玩到第 `stage` 關，再走 `steps` 步，記下景物綁定敵人的位置、敵人數與放棄次數。`fire` 為真時玩家像
@@ -652,7 +656,7 @@ fn enemy_trace(f: FieldSize, stage: u8, steps: u32, fire: bool) -> EnemyTrace {
     let mut s = open(Begin::Title, f, view(DisplayMode::Vga));
     let mut drv = reach(&mut s, stage);
     let (drops0, bound0) = (s.game.enemy_spawn_drops(), s.game.bound_spawn_drops());
-    let mut t = EnemyTrace { bound: Vec::new(), peak: 0, mean: 0.0, drops: 0, bound_drops: 0 };
+    let mut t = EnemyTrace { bound: Vec::new(), peak: 0, mean: 0.0, drops: 0, bound_drops: 0, map_left: Vec::new(), approaching: Vec::new() };
     let mut active_sum = 0usize;
     for _ in 0..steps {
         s.set_invincible(true);
@@ -667,7 +671,7 @@ fn enemy_trace(f: FieldSize, stage: u8, steps: u32, fire: bool) -> EnemyTrace {
         let active = slots.iter().filter(|e| e.link != 0).count();
         t.peak = t.peak.max(active);
         active_sum += active;
-        let mut rows: Vec<BoundRow> = slots
+        let all: Vec<BoundRow> = slots
             .iter()
             .filter(|e| e.link != 0)
             .map(|e| e.enemy)
@@ -675,11 +679,25 @@ fn enemy_trace(f: FieldSize, stage: u8, steps: u32, fire: bool) -> EnemyTrace {
                 let bound = if stage == b'C' { (e.hp == 2 && e.mode == u16::from(b'N')) || e.kind == u16::from(b'S') } else { false };
                 bound || e.mode == u16::from(b'Y')
             })
-            .filter(|e| (0..40).contains(&(e.col as i16)))
             .map(|e| ((e.script, e.row as i16, e.hp, e.frames), e.col as i16))
             .collect();
+        let left = s.game.state().scenes.map.left_col;
+        // 欄在 40 以上的（提前生成、還沒開始走腳本的敵人）：記下槽號與它釘住的地圖欄（左緣欄加欄）。
+        // 提前這段腳本讀取位置不動，同一個樣板的敵人識別相同，所以要靠槽號分開。
+        t.approaching.push(
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.link != 0)
+                // 只認第三關和地圖同速的敵人（模式 Y 的敵人在原版生成幀之後也可能在欄 40 以上，例如斜向噴出的碎片）。
+                .filter(|(_, e)| stage == b'C' && ((e.enemy.hp == 2 && e.enemy.mode == u16::from(b'N')) || e.enemy.kind == u16::from(b'S')) && (e.enemy.col as i16) >= 40)
+                .map(|(i, e)| (i, e.enemy.script, i32::from(left) + i32::from(e.enemy.col as i16)))
+                .collect(),
+        );
+        let mut rows: Vec<BoundRow> = all.into_iter().filter(|(_, col)| (0..40).contains(col)).collect();
         rows.sort();
         t.bound.push(rows);
+        t.map_left.push(left);
     }
     t.mean = active_sum as f64 / f64::from(steps);
     t.drops = s.game.enemy_spawn_drops() - drops0;
@@ -700,6 +718,36 @@ fn field_terrain_bound_enemies_stand_on_the_same_map_columns_as_in_100_percent()
         let base = enemy_trace(FieldSize::Normal, stage, steps, false);
         for f in [FieldSize::Wide, FieldSize::Wider] {
             let t = enemy_trace(f, stage, steps, false);
+            assert_eq!(base.map_left, t.map_left, "關 {} {} 欄：每步的地圖左緣欄要和 100% 相同（景物捲動和寬度無關）", stage as char, f.cols());
+            if stage == b'C' {
+                assert!(t.map_left.last() > t.map_left.first(), "第三關的地圖有在捲");
+                // 提前生成的地面敵人（欄 40 以上）釘在同一個地圖欄上：左緣欄加欄在整段提前的時間裡不變，
+                // 而且提前的步數是兩倍的多出來的欄數（地圖每兩幀 1 欄）。
+                // 提前這段腳本讀取位置不動：同一槽、腳本讀取位置不變的連續步數是一段提前。
+                // （原版生成幀之後、或腳本中途變身出來的敵人，腳本位置每幀都動，只會是長度 1 的段。）
+                let mut episodes: Vec<Vec<i32>> = Vec::new();
+                let mut open: std::collections::HashMap<(usize, u16), usize> = std::collections::HashMap::new();
+                for step in &t.approaching {
+                    let now: std::collections::HashSet<(usize, u16)> = step.iter().map(|&(slot, script, _)| (slot, script)).collect();
+                    open.retain(|key, _| now.contains(key));
+                    for &(slot, script, m) in step {
+                        let ep = *open.entry((slot, script)).or_insert_with(|| {
+                            episodes.push(Vec::new());
+                            episodes.len() - 1
+                        });
+                        episodes[ep].push(m);
+                    }
+                }
+                episodes.retain(|ms| ms.len() >= 3);
+                let lead = 2 * (f.cols() as usize - 40);
+                let full = episodes.iter().filter(|ms| ms.len() >= lead - 1).count();
+                for ms in &episodes {
+                    assert!(ms.iter().all(|m| *m == ms[0]), "{} 欄：提前這段沒有釘在同一個地圖欄：{ms:?}", f.cols());
+                    assert!(ms.len() <= lead + 1, "{} 欄：提前了 {} 步，上限 {}", f.cols(), ms.len(), lead + 1);
+                }
+                assert!(episodes.len() >= 5 && full >= 3, "{} 欄：要看到提前生成的敵人（{} 段，滿長度 {full} 段）", f.cols(), episodes.len());
+                eprintln!("[terrain] 關 C {} 欄：提前生成的敵人 {} 個，其中滿 {lead} 步的 {full} 個，每個都釘在同一個地圖欄", f.cols(), episodes.len());
+            }
             let (mut matched, mut base_only, mut wide_only) = (0usize, 0usize, 0usize);
             for i in 0..steps as usize {
                 let (a, b): (std::collections::HashMap<_, _>, std::collections::HashMap<_, _>) = (base.bound[i].iter().copied().collect(), t.bound[i].iter().copied().collect());

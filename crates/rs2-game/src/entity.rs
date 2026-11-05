@@ -2404,9 +2404,18 @@ mod tests {
         let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
         let image = rs2_formats::unpack_s_exe(&std::fs::read(dir.join("S.EXE")).unwrap()).unwrap();
         let tables = crate::tables::Tables::parse(&image).unwrap();
+        let mut c = core();
+        *c.tables_mut() = tables.clone();
+        // 景物綁定的列數（非頭目）：每關 (模式 Y 的 x 在 40 以上, 模式 Y 的 x 在 40 以下, 地圖速度的 x 在 40 以上, 地圖速度的 x 在 40 以下)。
+        let mut counts = std::collections::BTreeMap::new();
         for (name, table) in [("S1", Timetable::Stage1), ("S2", Timetable::Stage2), ("S3", Timetable::Stage3), ("S4", Timetable::Stage4), ("END", Timetable::Ending)] {
             for &(frame, template) in tables.timetable(table) {
                 let e = tables.enemy_template(template);
+                let pace = if table.is_boss_row(frame) { None } else { c.scenery_pace(table, template) };
+                if let Some(pace) = pace {
+                    let k = (pace == Pace::Map) as usize * 2 + ((e.col as i16) < 40) as usize;
+                    counts.entry(name).or_insert([0usize; 4])[k] += 1;
+                }
                 let mut script = String::new();
                 let mut at = e.script;
                 for _ in 0..24 {
@@ -2421,7 +2430,7 @@ mod tests {
                     }
                 }
                 eprintln!(
-                    "[inv] {name} 幀 {frame} 樣板 {template:#06x} x {} 列 {} 模式 {} 型 {} hp {} bullet {} dcol {} bdx {} boss {} 腳本 {script}",
+                    "[inv] {name} 幀 {frame} 樣板 {template:#06x} x {} 列 {} 模式 {} 型 {} hp {} bullet {} dcol {} bdx {} boss {} 景物 {pace:?} 腳本 {script}",
                     e.col as i16,
                     e.row as i16,
                     e.mode as u8 as char,
@@ -2434,6 +2443,15 @@ mod tests {
                 );
             }
         }
+        for (name, n) in &counts {
+            eprintln!("[inv] {name}：模式 Y（x ≥ 40 {}、x < 40 {}），地圖速度（x ≥ 40 {}、x < 40 {}）", n[0], n[1], n[2], n[3]);
+        }
+        // 分類的結果固定下來：之後改了時間表解析或分類規則，這裡會先報。
+        assert_eq!(counts.get("S1"), Some(&[4, 0, 0, 0]), "第一關");
+        assert_eq!(counts.get("S2"), Some(&[8, 36, 0, 0]), "第二關");
+        assert_eq!(counts.get("S3"), Some(&[0, 18, 22, 1]), "第三關");
+        assert_eq!(counts.get("S4"), None, "第四關沒有景物綁定的列");
+        assert_eq!(counts.get("END"), None, "片尾沒有");
     }
 
     /// 真實時間表的平移統計（規格 005「戰場大小」的生成規則）：每關的列數依 x 分類，頭目列與其他列的數量。
