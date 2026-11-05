@@ -9,6 +9,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::fx::EffectKind;
 use crate::game::Core;
 
 impl Core {
@@ -409,14 +410,9 @@ impl Core {
         if self.ds.r16(a(0x20103)) != 0x59 {
             return;
         }
-        let ax = self.ds.r16(a(0x20107));
-        self.ds.w16(a(0x20B7C), ax);
-        let ax = self.ds.r16(a(0x20109));
-        self.ds.w16(a(0x20B7E), ax);
-        self.r.ax = 0x45;
-        self.ds.w16(a(0x20B78), 0x45);
+        let (x, y) = (self.ds.r16(a(0x20107)), self.ds.r16(a(0x20109)));
         let o = self.cur_obj;
-        self.s17a3a();
+        self.spawn_effect(EffectKind::Trail, x, y);
         self.cur_obj = o;
     }
 

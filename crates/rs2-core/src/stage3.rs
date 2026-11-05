@@ -71,7 +71,7 @@ impl Core {
         self.s10e33();
         self.ds.w16(a(0x25BC4), 0);
         self.ds.w8(a(0x1CFAD), 0x4E);
-        self.ds.w16(a(0x20B7A), 0);
+        self.fx.reset_chain();
         self.s1aa86();
         self.s10ad4();
         self.ds.w8(a(0x2739A), 0x59);
@@ -91,15 +91,12 @@ impl Core {
                 let n = self.ds.r8(a(0x1CFAE)).wrapping_add(1);
                 self.ds.w8(a(0x1CFAE), n);
                 self.r.dx = 0x43;
-                self.s3_addw(0x20B7A, 3u16.wrapping_neg());
+                self.fx.shift_chain_left(3);
                 if n > 0x14 {
                     break;
                 }
-                self.ds.w16(a(0x20B78), 0x65);
-                if self.ds.r16(a(0x26872)) != 0 {
-                    self.ds.w16(a(0x20B78), 0x45);
-                }
-                self.s17a3a();
+                let page = self.ds.r16(a(0x26872));
+                self.spawn_stage_clear_burst(page);
             }
             self.suspend(Req::Checkpoint).await;
         }
@@ -138,7 +135,7 @@ impl Core {
         self.s14704();
         self.s15232();
         self.s164d7();
-        self.s17c9a();
+        self.update_effects();
         self.s1100a();
         self.s162b1();
         self.s178bb();
@@ -173,7 +170,7 @@ impl Core {
         self.s14704();
         self.s15232();
         self.s164d7();
-        self.s17c9a();
+        self.update_effects();
         // 13B9Fh 的 cmp word_26872, 0 與 jz $+2 沒有效果。
         self.s1100a();
         self.s162b1();

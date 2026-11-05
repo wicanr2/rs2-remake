@@ -222,7 +222,7 @@ impl Core {
         self.ds.w8(a(0x1CFDB), b'B');
         self.s10e33();
         self.ds.w8(a(0x1CFAD), b'N');
-        self.ds.w16(a(0x20B7A), 0);
+        self.fx.reset_chain();
         self.s1aa6c();
         self.s10ad4();
         self.ds.w8(a(0x2739A), b'Y');
@@ -246,12 +246,9 @@ impl Core {
             if n > 0x14 {
                 break;
             }
-            self.s2_add(0x20B7A, 3u16.wrapping_neg());
-            self.ds.w16(a(0x20B78), 0x65);
-            if self.ds.r16(a(0x26872)) != 0 {
-                self.ds.w16(a(0x20B78), 0x45);
-            }
-            self.s17a3a();
+            self.fx.shift_chain_left(3);
+            let page = self.ds.r16(a(0x26872));
+            self.spawn_stage_clear_burst(page);
         }
         // 13277：離開。
         self.ds.w8(a(0x2739A), b'N');
@@ -305,7 +302,7 @@ impl Core {
         self.s14704();
         self.s15232();
         self.s164d7();
-        self.s17c9a();
+        self.update_effects();
         self.s1100a();
         self.s1375f();
         self.s13443();
@@ -334,7 +331,7 @@ impl Core {
         self.s14704();
         self.s15232();
         self.s164d7();
-        self.s17c9a();
+        self.update_effects();
         // 1336E 的 cmp word_26872, 0 與 jz short $+2 沒有效果。
         self.s1100a();
         self.s1375f();

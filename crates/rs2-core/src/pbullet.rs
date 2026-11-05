@@ -10,6 +10,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::fx::EffectKind;
 use crate::game::Core;
 
 impl Core {
@@ -510,13 +511,9 @@ impl Core {
         if self.r.al() != 0x0A {
             return;
         }
-        self.ds.w16(a(0x20B78), 0x41);
-        let ax = self.ds.r16(a(0x1F483));
-        self.ds.w16(a(0x20B7C), ax);
-        let ax = self.ds.r16(a(0x1F485));
-        self.ds.w16(a(0x20B7E), ax);
+        let (x, y) = (self.ds.r16(a(0x1F483)), self.ds.r16(a(0x1F485)));
         let o = self.cur_obj;
-        self.s17a3a();
+        self.spawn_effect(EffectKind::SeekerTrail, x, y);
         self.cur_obj = o;
         self.s16ba8();
         if self.r.ax == 0xFF {
@@ -672,15 +669,10 @@ impl Core {
             }
         }
         // 16976
-        let ax = self.ds.r16(a(0x1F483));
-        self.ds.w16(a(0x20B7C), ax);
-        let ax = self.ds.r16(a(0x1F485));
-        self.ds.w16(a(0x20B7E), ax);
-        let ax = self.ds.r16(a(0x1F48F));
-        self.r.ax = ax;
-        self.ds.w16(a(0x20B78), ax);
+        let (x, y) = (self.ds.r16(a(0x1F483)), self.ds.r16(a(0x1F485)));
+        let letter = self.ds.r16(a(0x1F48F));
         let o = self.cur_obj;
-        self.s17a3a();
+        self.spawn_effect(EffectKind::from_letter(letter), x, y);
         self.cur_obj = o;
     }
 

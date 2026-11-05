@@ -127,6 +127,15 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     (0x9CCA, 0x9CCA, "繪製參數"),
     // byte_26890：sub_1890D、18993、189C1、162B1 寫，sub_18A1F、18A61（數字繪製）讀。
     (0x9CD0, 0x9CD0, "數字繪製暫存"),
+    // 特效領域重寫（規格 004）：工作變數與參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名四項相同。
+    // word_20B74：只有 sub_17C6C 寫後讀。
+    (0x3FB4, 0x3FB5, "特效腳本指標暫存"),
+    // word_20B76：sub_17CB6 寫，sub_17D2C 讀。
+    (0x3FB6, 0x3FB7, "特效形狀指標"),
+    // word_20B78：呼叫端寫，只有 sub_17A3A 讀；重製改成 EffectKind 參數。
+    (0x3FB8, 0x3FB9, "特效字母"),
+    // word_20B80：只有 sub_17CB6 寫，沒有指令讀。
+    (0x3FC0, 0x3FC1, "特效腳本指標備份（只寫不讀）"),
 ];
 
 fn ds_exempt(i: usize) -> bool {

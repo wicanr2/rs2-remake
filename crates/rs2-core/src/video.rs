@@ -36,6 +36,18 @@ impl Core {
         self.draws.push(DrawCmd::Blit(cmd));
     }
 
+    /// 寫繪製參數：欄 `word_26880`、像素列 `word_26882`、圖庫索引 `word_26888`。下一個繪製命令帶走它們。
+    pub(crate) fn set_blit_params(&mut self, x: u16, y_px: u16, index: u16) {
+        self.ds.w16(a(0x26888), index);
+        self.ds.w16(a(0x26880), x);
+        self.ds.w16(a(0x26882), y_px);
+    }
+
+    /// 邏輯寫 `word_2687E`（形狀的寬）。下一個繪製命令把它記成 `stride_reg`。
+    pub(crate) fn set_stride_reg(&mut self, v: u16) {
+        self.ds.w16(a(0x2687E), v);
+    }
+
     pub(crate) fn s18c0a(&mut self) {
         self.emit(Op::S18C0A)
     }

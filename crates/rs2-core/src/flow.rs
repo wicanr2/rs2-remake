@@ -17,7 +17,7 @@ impl Core {
         self.s11112();
         self.s10e33();
         self.ds.w8(a(0x1CFAD), b'N');
-        self.ds.w16(a(0x20B7A), 0);
+        self.fx.reset_chain();
     }
 
     /// `10D29h` 至 `10D8Bh`：第一關主迴圈。回傳離開原因。
@@ -66,16 +66,12 @@ impl Core {
             let n = self.ds.r8(a(0x1CFAE)).wrapping_add(1);
             self.ds.w8(a(0x1CFAE), n);
             self.r.dx = b'C' as u16;
-            let v = self.ds.r16(a(0x20B7A)).wrapping_sub(3);
-            self.ds.w16(a(0x20B7A), v);
+            self.fx.shift_chain_left(3);
             if n > 0x14 {
                 return Some(self.leave(Exit::Clear));
             }
-            self.ds.w16(a(0x20B78), 0x65);
-            if self.ds.r16(a(0x26872)) != 0 {
-                self.ds.w16(a(0x20B78), 0x45);
-            }
-            self.s17a3a();
+            let page = self.ds.r16(a(0x26872));
+            self.spawn_stage_clear_burst(page);
         }
         None
     }
@@ -136,7 +132,7 @@ impl Core {
         self.s14f92();
         self.s15232();
         self.s164d7();
-        self.s17c9a();
+        self.update_effects();
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
@@ -170,7 +166,7 @@ impl Core {
         self.s14704();
         self.s14f92();
         self.s15232();
-        self.s17c9a();
+        self.update_effects();
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
@@ -217,7 +213,7 @@ impl Core {
         self.s11112();
         self.s10e33();
         self.ds.w8(a(0x1CFAD), b'N');
-        self.ds.w16(a(0x20B7A), 0);
+        self.fx.reset_chain();
         if self.ds.r8(a(0x1CFAB)) != b'N' {
             self.s1aa52();
             self.s10ad4();

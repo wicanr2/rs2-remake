@@ -6,6 +6,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::fx::EffectKind;
 use crate::game::Core;
 
 impl Core {
@@ -456,13 +457,9 @@ impl Core {
             return;
         }
         self.ds.w16(a(0x1EDAA), 0x59);
-        self.r.ax = self.ds.r16(a(0x1F188));
-        self.ds.w16(a(0x20B7C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F18A));
-        self.ds.w16(a(0x20B7E), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F198));
-        self.ds.w16(a(0x20B78), self.r.ax);
-        self.s17a3a();
+        let (x, y) = (self.ds.r16(a(0x1F188)), self.ds.r16(a(0x1F18A)));
+        let letter = self.ds.r16(a(0x1F198));
+        self.spawn_effect(EffectKind::from_letter(letter), x, y);
     }
 
     /// `sub_15FD9`：依移動碼 `al` 移動。1 至 8 為八向，9 追玩家 1 列，0Ah 右跳，0Bh 發射 `B`，0Fh 死亡，0Dh 先由 `sub_1606A` 換成上或下。

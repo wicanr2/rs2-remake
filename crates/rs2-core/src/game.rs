@@ -2,6 +2,7 @@
 
 use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
+use crate::fx::Effects;
 use crate::regs::Regs;
 use std::cell::RefCell;
 use std::future::Future;
@@ -140,6 +141,13 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
     // ---- 等待計時器（規格 002）----
     (0xA7F7, 0xA7FA, "word_273B7、word_273B9 的 tick 計數。INT 8（1A7CEh、1A7D2h）加 1，只有 sub_11097（11097h、1109Dh）讀寫。\
                       原版在 1109Dh 取樣時 273B9 還沒歸零（值 >= cx），重製在 WaitDone 已歸零；輪詢迴圈裡 tick 數也不同"),
+    // ---- 特效領域重寫（規格 004）：函式內先寫後讀的工作變數與參數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh refs word_20B74／20B76／20B78／20B80，另 grep 反組譯裡所有 3FB4h 至 3FC1h 的位移形式，沒有其他讀寫。
+    (0x3FB4, 0x3FB5, "word_20B74 腳本指標暫存；只有 sub_17C6C 寫（17C6Ch）後讀（17C92h）"),
+    (0x3FB6, 0x3FB7, "word_20B76 形狀指標；只有 sub_17CB6 寫（17D01h）、sub_17D2C 讀（17D2Ch）"),
+    (0x3FB8, 0x3FB9, "word_20B78 特效字母；呼叫端（sub_10CD0、13205、13A51、13DAF、14679、147E1、151A7、1530F、15F8D、167E9、16946、173E1）寫，\
+                      只有 sub_17A3A 讀（17A3Ah 起的比較）。重製改成 EffectKind 參數"),
+    (0x3FC0, 0x3FC1, "word_20B80 只有 sub_17CB6 寫（17CC8h），沒有任何指令讀"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -178,6 +186,7 @@ pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
     core.ds.w8(0xA8FA, 2);
     // byte_1D3A2：密碼檢查通過時寫 Y，映像是 N。第二關 130AFh 不是 Y 就停在無限迴圈。
     core.ds.w8(0x07E2, b'Y');
+    core.store_mirrors();
     core.ds
 }
 
@@ -228,9 +237,13 @@ impl Future for YieldOnce {
 
 /// 模擬狀態。逐函式移植的程式都掛在這裡，只有協程摸得到。
 pub struct Core {
+    /// 還沒搬走的領域的狀態。已搬走的領域住在下面有型別的欄位，這裡對應的位元組只在
+    /// `store_mirrors`（交回控制權）與 `load_mirrors`（載入、poke）時同步，見 `mirror.rs`。
     pub ds: Dseg,
     pub r: Regs,
     pub fixes: Fixes,
+    /// 特效池。
+    pub(crate) fx: Effects,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -272,6 +285,7 @@ impl Core {
             ds,
             r: Regs::default(),
             fixes,
+            fx: Effects::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,
@@ -288,6 +302,7 @@ impl Core {
             pb_spawned: 0,
             port: Rc::new(RefCell::new(port)),
         };
+        g.load_mirrors();
         // 兩個入口都載入展示錄影（10CF9h 的 sub_1BED5）。
         for (i, &b) in dm1.iter().enumerate().take(3000) {
             g.ds.w8(0xAAE2u16.wrapping_add(i as u16), b);
@@ -314,6 +329,8 @@ impl Core {
 
     /// 把控制權交回外面，恢復時處理這段期間送達的掃描碼。
     pub(crate) async fn suspend(&mut self, req: Req) {
+        // 已搬走的領域先寫回 `self.ds`，外面看到的資料段才是完整的，之後的 poke 也套在完整的資料段上。
+        self.store_mirrors();
         {
             let mut p = self.port.borrow_mut();
             p.req = Some(req);
@@ -328,12 +345,17 @@ impl Core {
             let mut p = self.port.borrow_mut();
             (std::mem::take(&mut p.input), std::mem::take(&mut p.pokes))
         };
+        let poked = !pokes.is_empty();
         for (o, v, word) in pokes {
             if word {
                 self.ds.w16(o, v);
             } else {
                 self.ds.w8(o, v as u8);
             }
+        }
+        if poked {
+            // poke 可能落在已搬走的領域，讓結構看到新值。
+            self.load_mirrors();
         }
         for sc in input {
             self.int9(sc);
@@ -358,6 +380,21 @@ impl Core {
 }
 
 /// 對外的遊戲物件：一個跑在協程裡的 `Core`。
+/// 玩家機的狀態，見 `Game::player_status`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerStatus {
+    /// 左緣，單位是位元組（8 像素）。
+    pub x: i16,
+    /// 上緣，單位是列。
+    pub y: i16,
+    /// 玩家的按鍵會移動它：還活著、不是示範、玩家邏輯有在跑。
+    pub controllable: bool,
+    pub can_up: bool,
+    pub can_down: bool,
+    pub can_left: bool,
+    pub can_right: bool,
+}
+
 pub struct Game {
     /// 上一次交回控制權時的資料段複本。要改值用 `poke8`、`poke16`。
     pub ds: Dseg,
@@ -395,6 +432,7 @@ impl Game {
         let mut core = Core::new(&files.image, &[], Start::NewGame { difficulty: None }, fixes);
         core.draws.clear();
         core.ds.load(ds_snapshot);
+        core.load_mirrors();
         core.files = files;
         // sub_11375 通過時把 dl（`Y`）寫進 byte_1CFAA，並把自己改成 retn。快照要帶上這個狀態。
         core.s11375_patched = core.ds.r8(a(0x1CFAA)) != b'N';
@@ -406,6 +444,7 @@ impl Game {
 
     pub fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Game {
         let mut core = Core::new(image, dm1, start, fixes);
+        core.store_mirrors();
         let ds = core.ds.clone();
         let port = core.port.clone();
         port.borrow_mut().draws.append(&mut core.draws);
@@ -418,11 +457,13 @@ impl Game {
         let image_free = self.ds.clone();
         let mut core = Core::new(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET], &[], start, self.fixes);
         core.ds = image_free;
+        core.load_mirrors();
         core.s11375_patched = patched;
         core.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
         core.ds.w8(0x041D, 1);
         core.draws.clear();
         core.enter_stage();
+        core.store_mirrors();
         self.ds.copy_from(&core.ds);
         let port = core.port.clone();
         port.borrow_mut().draws.append(&mut core.draws);
@@ -504,6 +545,30 @@ impl Game {
 
     pub fn state_hash_input(&self) -> &[u8] {
         self.ds.bytes()
+    }
+
+    /// 玩家機的狀態，給前端的顯示層預測用。`player` 是 0 或 1。
+    ///
+    /// 啟用位元與界限來自 `sub_14501`、`sub_1502F` 與各方向的移動函式，位置與列欄是它們更新的變數。
+    pub fn player_status(&self, player: usize) -> PlayerStatus {
+        let r16 = |l: u32| self.ds.r16(a(l));
+        let r8 = |l: u32| self.ds.r8(a(l));
+        let (bit, y, x, row, col) = if player == 0 {
+            (0x01, 0x1DAC5, 0x1DAC7, 0x1DAC9, 0x1DACB)
+        } else {
+            (0x10, 0x1DB1F, 0x1DB21, 0x1DB37, 0x1DB39)
+        };
+        let (row, col) = (r16(row), r16(col));
+        PlayerStatus {
+            x: r16(x) as i16,
+            y: r16(y) as i16,
+            // `byte_1CFDD` 的玩家位元：還活著。`byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
+            controllable: r8(0x1CFDD) & bit != 0 && r8(0x1CFDC) != b'Y' && r8(0x1CFAD) != b'F',
+            can_up: (row as i16) > 0,
+            can_down: row < 0x10,
+            can_left: (col as i16) > 1,
+            can_right: col < 0x21,
+        }
     }
 
     /// 下一次恢復會走到一輪結尾的檢查（Esc 暫停、熱鍵）。

@@ -11,6 +11,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::fx::EffectKind;
 use crate::game::Core;
 
 impl Core {
@@ -209,12 +210,8 @@ impl Core {
         }
         self.s146c3();
         self.s146da();
-        self.ds.w16(a(0x20B78), 0x47);
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.ds.w16(a(0x20B7C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9));
-        self.ds.w16(a(0x20B7E), self.r.ax);
-        self.s17a3a();
+        let (x, y) = (self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
+        self.spawn_effect(EffectKind::PlayerDeath, x, y);
     }
 
     /// `sub_146AC`：玩家 1 上移，列大於 0（有號）才動，圖 0Bh。
@@ -347,12 +344,8 @@ impl Core {
         if self.ds.r8(a(0x1DAC0)) == 0x4E {
             return;
         }
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.ds.w16(a(0x20B7C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9));
-        self.ds.w16(a(0x20B7E), self.r.ax);
-        self.ds.w16(a(0x20B78), 0x53);
-        self.s17a3a();
+        let (x, y) = (self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
+        self.spawn_effect(EffectKind::SparkRight, x, y);
     }
 
     /// `sub_1480A`：玩家 1 的砲座：位置、碰撞、繪製、發射。砲座編號 0、1。
@@ -1148,12 +1141,8 @@ impl Core {
         }
         self.s151f1();
         self.s15208();
-        self.ds.w16(a(0x20B78), 0x47);
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.ds.w16(a(0x20B7C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37));
-        self.ds.w16(a(0x20B7E), self.r.ax);
-        self.s17a3a();
+        let (x, y) = (self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
+        self.spawn_effect(EffectKind::PlayerDeath, x, y);
     }
 
     /// `sub_151DA`：玩家 2 上移，圖 0Eh。
@@ -1286,12 +1275,8 @@ impl Core {
         if self.ds.r8(a(0x1DB1A)) == 0x4E {
             return;
         }
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.ds.w16(a(0x20B7C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37));
-        self.ds.w16(a(0x20B7E), self.r.ax);
-        self.ds.w16(a(0x20B78), 0x53);
-        self.s17a3a();
+        let (x, y) = (self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
+        self.spawn_effect(EffectKind::SparkRight, x, y);
     }
 
     /// `sub_15338`：玩家 2 的砲座：位置、碰撞、繪製、發射。砲座編號 2、3。
