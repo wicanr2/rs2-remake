@@ -2,21 +2,27 @@
 
 use crate::args::{Args, StartArg, ToggleName};
 use crate::audio::{Output, WavOut};
-use crate::controls::{Action, Controls};
-use crate::input::{InputMapper, KeyResult};
+use crate::controls::{Action, Controls, Effect, PanelChange, PanelOpen, Resize};
+use crate::input::{Hotkey, InputMapper, KeyResult, Source};
+use crate::keymap::{Btn, KeyMap, PadMap};
 use crate::pacer::Pacer;
-use crate::pad::{PadEvent, PadMapper};
-use crate::touch::TouchMapper;
+use crate::pad::{Devices, PadEvent, PadMapper, STICK_ENGAGE, STICK_RELEASE};
 use crate::resources::{self, Env, Os};
 use crate::session::{Begin, Outcome, Session, ViewOpts};
 use crate::settings::{self, Settings};
-use crate::toolbar::bar_height;
-use crate::view::{Overlay, Presenter, ShotInfo, window_size};
+use crate::toolbar::{BarState, desktop_height, metrics};
+use crate::touch::TouchMapper;
+use crate::ui::panel::{Cx, Page, Panel, PanelOut};
+use crate::ui::{self, text};
+use crate::view::{Overlay, Presenter, ShotInfo, UiLayer, window_size};
 use rs2_audio::Engine;
 use rs2_core::{Fixes, Start};
 use rs2_gfx::{Assets, HdAssets};
 use rs2_trace::{Inputs, load_inputs, parse_sc};
+use sdl2::controller::{Axis, GameController};
 use sdl2::event::{Event, WindowEvent};
+use sdl2::joystick::Joystick;
+use sdl2::keyboard::{Mod, Scancode};
 use sdl2::mouse::MouseButton;
 use sdl2::render::WindowCanvas;
 use sdl2::video::FullscreenType;
@@ -178,6 +184,18 @@ fn build_session(cx: &Ctx, hd: Option<HdAssets>, view: ViewOpts) -> Session {
     Session::new(&cx.inputs, cx.assets.clone(), hd, begin_of(&cx.args), fixes, view)
 }
 
+/// 無敵（規格 005）：開著時每步呼叫，從沒開過就不呼叫，所以全部選項為預設時模擬與原版逐位元組相同。
+/// 關掉時只還原一次。
+fn apply_invincible(session: &mut Session, on: bool, applied: &mut bool) {
+    if on {
+        session.set_invincible(true);
+        *applied = true;
+    } else if *applied {
+        session.set_invincible(false);
+        *applied = false;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 共用：統計、雜湊、存圖
 // ---------------------------------------------------------------------------
@@ -315,6 +333,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     let mut toggles = cx.args.toggles.clone();
     let mut stats = Stats::default();
     let mut shot_ok = true;
+    let mut god_applied = false;
     let t_all = Instant::now();
     let mut stop_reason = "步數用完".to_string();
     let mut wav = match &cx.args.wav_out {
@@ -333,6 +352,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
             }
         });
         session.set_view(ctl.view());
+        apply_invincible(&mut session, ctl.settings.invincible(), &mut god_applied);
         let sc: &[u8] = cx.replay.get(done as usize).map(|v| v.as_slice()).unwrap_or(&[]);
         let t0 = Instant::now();
         let outcome = session.step(sc);
@@ -354,7 +374,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
                 let shot_idx = if alpha == 1.0 { shots.iter().position(|(s, _)| *s == n) } else { None };
                 let shot_path = shot_idx.map(|i| shots[i].1.clone());
                 let t2 = Instant::now();
-                let info = p.draw(c, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), None, shot_path.as_deref())?;
+                let info = p.draw(c, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), None, None, shot_path.as_deref())?;
                 stats.present(t2.elapsed().as_micros() as u64);
                 if let (Some(i), Some(info)) = (shot_idx, info) {
                     let (s, path) = shots.remove(i);
@@ -402,63 +422,232 @@ fn save_settings(dir: &Option<PathBuf>, s: &Settings) {
     }
 }
 
-/// 執行一個前端動作，並處理視窗大小、全螢幕與存檔。回傳要不要離開。
-fn do_action(a: Action, ctl: &mut Controls, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>) -> bool {
-    let eff = ctl.apply(a);
-    session.set_view(ctl.view());
+/// 狀態列訊息顯示多久。
+const NOTICE_US: u64 = 6_000_000;
+
+/// 視窗模式的前端狀態：開關、設定畫面、手把清單與指派，以及三個按鍵來源的所有權。
+struct Front {
+    ctl: Controls,
+    panel: Option<Panel>,
+    last_page: Page,
+    devs: Devices,
+    pads: PadMapper,
+    mapper: InputMapper,
+    touch: Option<TouchMapper>,
+    /// 狀態列的訊息與到期時間（微秒）。
+    notice: Option<(String, u64)>,
+    /// 設定畫面外部的狀態有變（裝置、設定、熱鍵）就加一，畫面要重畫。
+    panel_gen: u64,
+    /// 重綁手把按鈕時，LT、RT 兩個扳機目前有沒有按著（任何一支）。
+    trig_down: [bool; 2],
+    /// 已經交給 `mapper` 與 `pads` 的對應。
+    synced: (KeyMap, PadMap),
+}
+
+impl Front {
+    fn new(ctl: Controls, touch: Option<TouchMapper>) -> Front {
+        let mut mapper = InputMapper::new();
+        mapper.set_keymap(ctl.settings.keys);
+        let mut pads = PadMapper::new();
+        pads.set_map(ctl.settings.pad);
+        let synced = (ctl.settings.keys, ctl.settings.pad);
+        Front { ctl, panel: None, last_page: Page::Game, devs: Devices::new(), pads, mapper, touch, notice: None, panel_gen: 0, trig_down: [false; 2], synced }
+    }
+
+    fn say(&mut self, s: String, now_us: u64) {
+        eprintln!("[前端] {s}");
+        self.notice = Some((s, now_us + NOTICE_US));
+        self.panel_gen += 1;
+    }
+
+    /// 訊息過期就清掉。回傳有沒有清。
+    fn expire_notice(&mut self, now_us: u64) -> bool {
+        if matches!(&self.notice, Some((_, until)) if now_us >= *until) {
+            self.notice = None;
+            return true;
+        }
+        false
+    }
+
+    fn bar_state(&self) -> BarState {
+        let mut b = self.ctl.bar_state();
+        if let Some((s, _)) = &self.notice {
+            b.notice = s.clone();
+        }
+        b
+    }
+
+    /// 手把或觸控的事件交給所有權計數。回傳有沒有按暫停鈕。
+    fn feed(&mut self, src: Source, events: Vec<PadEvent>, now_us: u64) -> bool {
+        let mut pause = false;
+        for e in events {
+            // Android 沒有別的地方看得到輸入，煙霧測試與回報問題都靠這行。
+            if cfg!(target_os = "android") {
+                eprintln!("[輸入] {src:?} {e:?}");
+            }
+            match e {
+                PadEvent::Down(c) => self.mapper.code_down(src, c, now_us),
+                PadEvent::Up(c) => self.mapper.code_up(src, c),
+                PadEvent::Pause => pause = true,
+            }
+        }
+        pause
+    }
+
+    /// 讓輸入層跟上目前的狀態：鍵盤與手把的對應、手把指派、前端暫停時擋住輸入。
+    fn sync(&mut self, now_us: u64) {
+        if self.synced.0 != self.ctl.settings.keys {
+            self.mapper.set_keymap(self.ctl.settings.keys);
+            self.synced.0 = self.ctl.settings.keys;
+        }
+        if self.synced.1 != self.ctl.settings.pad {
+            self.pads.set_map(self.ctl.settings.pad);
+            self.synced.1 = self.ctl.settings.pad;
+        }
+        let ev = self.pads.sync(&self.devs);
+        if !ev.is_empty() {
+            self.feed(Source::Pad, ev, now_us);
+        }
+        let want = self.ctl.frontend_paused();
+        if want != self.mapper.is_blocked() {
+            if want {
+                // 先把手把與觸控自己的狀態清乾淨，再擋住。
+                self.release_pads_and_touch(now_us);
+                self.mapper.block();
+            } else {
+                self.mapper.unblock();
+            }
+        }
+    }
+
+    fn release_pads_and_touch(&mut self, now_us: u64) {
+        let ev = self.pads.release_all();
+        self.feed(Source::Pad, ev, now_us);
+        let ev = self.touch.as_mut().map(|t| t.release_all()).unwrap_or_default();
+        self.feed(Source::Touch, ev, now_us);
+    }
+
+    /// 視窗失焦、切到背景：放開全部來源，取消重綁。
+    fn release_everything(&mut self, now_us: u64) {
+        self.release_pads_and_touch(now_us);
+        self.mapper.release_all();
+        self.trig_down = [false; 2];
+        if let Some(p) = self.panel.as_mut() {
+            p.focus_lost();
+        }
+        self.panel_gen += 1;
+    }
+
+    fn open_panel(&mut self, target: PanelOpen, size: (u32, u32)) {
+        let page = match target {
+            PanelOpen::Controls => {
+                if self.devs.list().is_empty() { Page::Keyboard } else { Page::Pad }
+            }
+            PanelOpen::Game => Page::Game,
+            PanelOpen::Last => self.last_page,
+        };
+        self.show_page(page, size);
+    }
+
+    fn show_page(&mut self, page: Page, size: (u32, u32)) {
+        match self.panel.as_mut() {
+            Some(p) => p.set_page(page),
+            None => self.panel = Some(Panel::new(page, size.0 as i32, size.1 as i32, self.ctl.mobile, self.ctl.dp)),
+        }
+        self.ctl.panel_open = true;
+    }
+
+    fn close_panel(&mut self) {
+        if let Some(p) = self.panel.take() {
+            self.last_page = p.page();
+        }
+        self.ctl.panel_open = false;
+    }
+}
+
+/// 設定畫面的大小：視窗寬度，高度是工具列以下。
+fn panel_size(canvas: &WindowCanvas, ctl: &Controls) -> (u32, u32) {
+    let (ww, wh) = canvas.output_size().unwrap_or((960, 600));
+    (ww, wh.saturating_sub(ctl.toolbar().height(ww)))
+}
+
+/// 處理一個動作的後續：視窗大小、全螢幕、授權頁、存檔、開關設定畫面，並讓輸入層跟上。回傳要不要離開。
+fn apply_effect(eff: Effect, front: &mut Front, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>, now_us: u64) -> bool {
+    session.set_view(front.ctl.view());
     if eff.about {
         // Android 的 AboutActivity 收這個網址（android/AndroidManifest.xml）。桌面版沒有對應程式，開不了就算了。
         if let Err(e) = sdl2::url::open_url("rs2about://license") {
             eprintln!("[關於] 開不了授權頁面：{e}");
         }
     }
-    if eff.resize {
-        let win = canvas.window_mut();
-        let (cw, ch) = win.size();
-        let target = match a {
-            Action::Scale => window_size(ctl.settings.scale, ctl.settings.toolbar),
-            _ => {
-                // 工具列顯示或隱藏：寬度不變，高度加減工具列。
-                let bar = bar_height(cw);
-                (cw, if ctl.settings.toolbar { ch + bar } else { ch.saturating_sub(bar).max(1) })
+    match eff.resize {
+        Resize::None => {}
+        Resize::Scale => {
+            let target = window_size(front.ctl.settings.scale, front.ctl.settings.toolbar);
+            if let Err(e) = canvas.window_mut().set_size(target.0, target.1) {
+                eprintln!("[視窗] 調整大小失敗：{e}");
             }
-        };
-        if let Err(e) = win.set_size(target.0, target.1) {
-            eprintln!("[視窗] 調整大小失敗：{e}");
+        }
+        Resize::Toolbar => {
+            // 工具列顯示或隱藏：寬度不變，高度加減工具列與狀態列。
+            let win = canvas.window_mut();
+            let (cw, ch) = win.size();
+            let bar = desktop_height(cw);
+            let h = if front.ctl.settings.toolbar { ch + bar } else { ch.saturating_sub(bar).max(1) };
+            if let Err(e) = win.set_size(cw, h) {
+                eprintln!("[視窗] 調整大小失敗：{e}");
+            }
         }
     }
     if eff.fullscreen {
-        let mode = if ctl.fullscreen { FullscreenType::Desktop } else { FullscreenType::Off };
+        let mode = if front.ctl.fullscreen { FullscreenType::Desktop } else { FullscreenType::Off };
         if let Err(e) = canvas.window_mut().set_fullscreen(mode) {
             eprintln!("[視窗] 全螢幕切換失敗：{e}");
-            ctl.fullscreen = !ctl.fullscreen;
+            front.ctl.fullscreen = !front.ctl.fullscreen;
         }
     }
     if eff.save {
-        save_settings(cfg, &ctl.settings);
+        save_settings(cfg, &front.ctl.settings);
     }
+    match eff.panel {
+        PanelChange::Open(t) => {
+            let size = panel_size(canvas, &front.ctl);
+            front.open_panel(t, size);
+        }
+        PanelChange::Close => front.close_panel(),
+        PanelChange::None => {}
+    }
+    front.panel_gen += 1;
+    front.sync(now_us);
     eff.quit
 }
 
-/// 每 dp 幾個像素。讀不到螢幕 DPI 時當 2。
-fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
-    video.display_dpi(0).map(|(d, _, _)| d / 160.0).ok().filter(|d| *d >= 0.5).unwrap_or(2.0)
+fn do_action(a: Action, front: &mut Front, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>, now_us: u64) -> bool {
+    let eff = front.ctl.apply(a);
+    apply_effect(eff, front, session, canvas, cfg, now_us)
 }
 
-/// 手把事件交給鍵盤對照。
-fn feed_pad(events: Vec<PadEvent>, mapper: &mut InputMapper, t_us: u64) {
-    for e in events {
-        // Android 沒有別的地方看得到輸入，煙霧測試與回報問題都靠這行。
-        if cfg!(target_os = "android") {
-            eprintln!("[輸入] {e:?}");
-        }
-        match e {
-            PadEvent::Down(k) => {
-                mapper.key_down(k, false, t_us);
-            }
-            PadEvent::Up(k) => mapper.key_up(k),
-        }
+/// 設定畫面處理完一個輸入之後：要關就關，其餘後續照一般動作處理。
+fn finish_panel(out: PanelOut, front: &mut Front, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>, now_us: u64) -> bool {
+    let mut eff = out.eff;
+    if out.close {
+        eff.merge(front.ctl.apply(Action::ClosePanel));
     }
+    apply_effect(eff, front, session, canvas, cfg, now_us)
+}
+
+/// 對設定畫面做一件事。沒有設定畫面時什麼都不做。
+fn with_panel(front: &mut Front, f: impl FnOnce(&mut Panel, &mut Cx) -> PanelOut) -> PanelOut {
+    let Front { panel, ctl, devs, .. } = front;
+    match panel {
+        Some(p) => f(p, &mut Cx { ctl, devs }),
+        None => PanelOut::default(),
+    }
+}
+
+/// 每 dp 個像素。讀不到螢幕 DPI 時當 2。
+fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
+    video.display_dpi(0).map(|(d, _, _)| d / 160.0).ok().filter(|d| *d >= 0.5).unwrap_or(2.0)
 }
 
 fn loading_frame() -> Vec<u8> {
@@ -512,7 +701,7 @@ pub fn run_installing(install: impl FnOnce(&mut dyn FnMut(f32)) -> Result<Args, 
             if pct != shown {
                 shown = pct;
                 pump.pump_events();
-                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, &toolbar, &state, None, None) {
+                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, &toolbar, &state, None, None, None) {
                     eprintln!("[install] 畫不了進度：{e}");
                 }
             }
@@ -534,7 +723,8 @@ fn window_loop<'a>(
     let timer = sdl.timer()?;
     let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
     ctl.mobile = cx.args.touch;
-    if ctl.mobile {
+    ctl.dp = cx.args.dp.unwrap_or_else(|| dp_of(video));
+    if ctl.mobile && cx.args.open_panels.is_empty() {
         // 手機上工具列預設收起來，按 ☰ 才展開。
         ctl.settings.toolbar = false;
     }
@@ -542,7 +732,7 @@ fn window_loop<'a>(
     // HD 預載在背景跑，視窗先顯示載入畫面。
     let hd_handle = cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone()));
     if hd_handle.is_some() {
-        pres.draw(&mut canvas, &loading_frame(), 320, 200, &ctl.toolbar(), &ctl.bar_state(), None, None)?;
+        pres.draw(&mut canvas, &loading_frame(), 320, 200, &ctl.toolbar(), &ctl.bar_state(), None, None, None)?;
     }
     let hd = finish_hd(hd_handle)?;
     let mut session = build_session(&cx, hd, ctl.view());
@@ -560,8 +750,7 @@ fn window_loop<'a>(
     };
 
     let mut pump = sdl.event_pump()?;
-    let mut mapper = InputMapper::new();
-    // 手把。子系統開不起來（沒有裝置節點的環境）就只用鍵盤。
+    // 手把。子系統開不起來（沒有裝置節點的環境）就只用鍵盤。手把不自動指派，要在設定畫面指派。
     let pad_sys = match sdl.game_controller() {
         Ok(p) => Some(p),
         Err(e) => {
@@ -569,14 +758,24 @@ fn window_loop<'a>(
             None
         }
     };
-    let mut pads = PadMapper::new();
-    let mut opened: Vec<sdl2::controller::GameController> = Vec::new();
-    let mut touch_map = if ctl.mobile {
+    let joy_sys = sdl.joystick().ok();
+    let mut opened: Vec<GameController> = Vec::new();
+    let mut joys: Vec<Joystick> = Vec::new();
+    let touch_map = if ctl.mobile {
         let (ww, wh) = canvas.output_size()?;
-        Some(TouchMapper::new(ww, wh, dp_of(&video)))
+        Some(TouchMapper::new(ww, wh, ctl.dp))
     } else {
         None
     };
+    let mut front = Front::new(ctl, touch_map);
+    if cx.args.fake_pads {
+        // 驗證用：不接實體手把也能看手把頁的版面。
+        front.devs.add(9001, "Fake Pad One", true);
+        front.devs.add(9002, "Fake Pad Two", true);
+        front.devs.add(9003, "Fake Joystick", false);
+        let _ = front.devs.assign(0, 9001);
+        front.sync(0);
+    }
     let freq = timer.performance_frequency();
     let mut pacer = Pacer::new(freq, timer.performance_counter());
     let t_start = timer.performance_counter();
@@ -585,6 +784,7 @@ fn window_loop<'a>(
     let mut shots = cx.args.shots.clone();
     shots.sort_by_key(|s| s.0);
     let mut pending_shot: Option<(u64, PathBuf)> = None;
+    let mut shots_taken = 0usize;
     let mut shot_ok = true;
     let mut stats = Stats::default();
     let mut dirty = true;
@@ -595,6 +795,12 @@ fn window_loop<'a>(
     // 手機上每 5 秒記一次實際速度。邏輯應該是一秒 9.1 步，繪製跟螢幕更新率。
     let mut perf_t = Instant::now();
     let mut perf_base = (0u64, 0u64, 0u64, 0u64);
+    let mut was_paused = false;
+    let mut god_applied = false;
+    // 設定畫面與暫停標示的點陣，內容沒變就不重畫、不重傳貼圖。
+    let mut panel_img: Vec<u8> = Vec::new();
+    let mut panel_img_key = u64::MAX;
+    let mut banner: Option<(Vec<u8>, i32, i32, i32)> = None;
 
     'main: loop {
         let iter_start = Instant::now();
@@ -605,95 +811,223 @@ fn window_loop<'a>(
                 break;
             }
         }
+        let mut any_event = false;
         for ev in pump.poll_iter() {
             let t_us = ticks_to_us(timer.performance_counter(), freq);
+            // 搖桿、滑鼠與手指的移動很頻繁，一般不用為它們重畫；設定畫面開著時拖曳要捲動，所以照畫。
+            if front.panel.is_some() || !matches!(ev, Event::ControllerAxisMotion { .. } | Event::MouseMotion { .. } | Event::FingerMotion { .. }) {
+                any_event = true;
+            }
             match ev {
                 Event::Quit { .. } => break 'main,
-                Event::KeyDown { scancode: Some(sc), repeat, .. } => {
-                    if let KeyResult::Hotkey(h) = mapper.key_down(sc, repeat, t_us) {
-                        if do_action(h.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir) {
+                Event::KeyDown { scancode: Some(sc), repeat, keymod, .. } => {
+                    let shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
+                    // 不管有沒有設定畫面都先交給輸入層記錄實體按鍵，設定畫面開著時它擋住不送。
+                    let r = front.mapper.key_down(sc, repeat, t_us);
+                    if front.panel.is_some() {
+                        let nav = matches!(sc, Scancode::Tab | Scancode::Up | Scancode::Down | Scancode::Left | Scancode::Right | Scancode::PageUp | Scancode::PageDown);
+                        if repeat && !nav {
+                            continue;
+                        }
+                        let capturing = front.panel.as_ref().is_some_and(|p| p.capturing());
+                        // 重綁中連 F 鍵都是候選的新鍵（會被拒絕），不執行熱鍵。
+                        let quit = match r {
+                            KeyResult::Hotkey(Hotkey::Page) if !capturing => {
+                                with_panel(&mut front, |p, _| {
+                                    p.next_page(if shift { -1 } else { 1 });
+                                    PanelOut::default()
+                                });
+                                false
+                            }
+                            KeyResult::Hotkey(h) if !capturing => match Action::from_hotkey(h) {
+                                Some(a) => do_action(a, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us),
+                                None => false,
+                            },
+                            _ => {
+                                let out = with_panel(&mut front, |p, c| p.key_down(sc, shift, c));
+                                finish_panel(out, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us)
+                            }
+                        };
+                        if quit {
                             break 'main;
                         }
-                        dirty = true;
+                    } else if let KeyResult::Hotkey(h) = r {
+                        if let Some(a) = Action::from_hotkey(h) {
+                            if do_action(a, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
+                                break 'main;
+                            }
+                        }
                     }
                 }
-                Event::KeyUp { scancode: Some(sc), .. } => mapper.key_up(sc),
+                Event::KeyUp { scancode: Some(sc), .. } => {
+                    front.mapper.key_up(sc);
+                    if let Some(p) = front.panel.as_mut() {
+                        p.key_up(sc);
+                    }
+                }
                 Event::ControllerDeviceAdded { which, .. } => {
                     if let Some(sys) = &pad_sys {
                         match sys.open(which) {
-                            Ok(c) => match pads.attach(c.instance_id()) {
-                                Some(p) => {
-                                    eprintln!("[手把] 玩家 {} 用 {}", p + 1, c.name());
-                                    opened.push(c);
-                                }
-                                None => eprintln!("[手把] 已經有兩支了，不用 {}", c.name()),
-                            },
+                            Ok(c) => {
+                                let name = c.name();
+                                front.devs.add(c.instance_id(), &name, true);
+                                front.say(text::pad_added(&name), t_us);
+                                opened.push(c);
+                            }
                             Err(e) => eprintln!("[手把] 開不了第 {which} 支：{e}"),
                         }
                     }
                 }
                 Event::ControllerDeviceRemoved { which, .. } => {
-                    feed_pad(pads.detach(which), &mut mapper, t_us);
+                    let ev = front.pads.detach(which);
+                    front.feed(Source::Pad, ev, t_us);
+                    if let Some((dev, was)) = front.devs.remove(which) {
+                        front.say(text::pad_removed(&dev.name, was), t_us);
+                    }
                     opened.retain(|c| c.instance_id() != which);
                 }
-                Event::ControllerButtonDown { which, button, .. } => {
-                    if cfg!(target_os = "android") {
-                        eprintln!("[手把事件] {which} 按下 {button:?}");
+                // 沒有標準配置的搖桿：列出來並明示不支援。有標準配置的由 ControllerDeviceAdded 處理。
+                Event::JoyDeviceAdded { which, .. } => {
+                    if let (Some(js), Some(gs)) = (&joy_sys, &pad_sys) {
+                        if !gs.is_game_controller(which) {
+                            match js.open(which) {
+                                Ok(j) => {
+                                    let name = j.name();
+                                    front.devs.add(j.instance_id(), &name, false);
+                                    front.say(text::pad_unsupported_added(&name), t_us);
+                                    joys.push(j);
+                                }
+                                Err(e) => eprintln!("[手把] 開不了搖桿 {which}：{e}"),
+                            }
+                        }
                     }
-                    feed_pad(pads.button(which, button, true), &mut mapper, t_us)
+                }
+                Event::JoyDeviceRemoved { which, .. } => {
+                    if front.devs.find(which).is_some_and(|d| !d.supported) {
+                        if let Some((dev, _)) = front.devs.remove(which) {
+                            front.say(text::pad_removed(&dev.name, None), t_us);
+                        }
+                        joys.retain(|j| j.instance_id() != which);
+                    }
+                }
+                Event::ControllerButtonDown { which, button, .. } => {
+                    if front.panel.as_ref().is_some_and(|p| p.capturing()) {
+                        if let Some(b) = Btn::from_sdl(button) {
+                            let out = with_panel(&mut front, |p, c| p.pad_button(b, c));
+                            finish_panel(out, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us);
+                        }
+                    }
+                    let ev = front.pads.button(which, button, true);
+                    if front.feed(Source::Pad, ev, t_us) && do_action(Action::TogglePause, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
+                        break 'main;
+                    }
                 }
                 Event::ControllerButtonUp { which, button, .. } => {
-                    if cfg!(target_os = "android") {
-                        eprintln!("[手把事件] {which} 放開 {button:?}");
-                    }
-                    feed_pad(pads.button(which, button, false), &mut mapper, t_us)
+                    let ev = front.pads.button(which, button, false);
+                    front.feed(Source::Pad, ev, t_us);
                 }
                 Event::ControllerAxisMotion { which, axis, value, .. } => {
-                    if cfg!(target_os = "android") {
-                        eprintln!("[手把事件] {which} 軸 {axis:?} = {value}");
+                    // 重綁手把按鈕時，扳機過了門檻算按下 LT、RT。
+                    if front.panel.as_ref().is_some_and(|p| p.capturing()) {
+                        let (i, btn) = match axis {
+                            Axis::TriggerLeft => (0, Some(Btn::LT)),
+                            Axis::TriggerRight => (1, Some(Btn::RT)),
+                            _ => (0, None),
+                        };
+                        if let Some(btn) = btn {
+                            if !front.trig_down[i] && value >= STICK_ENGAGE {
+                                front.trig_down[i] = true;
+                                let out = with_panel(&mut front, |p, c| p.pad_button(btn, c));
+                                finish_panel(out, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us);
+                            } else if front.trig_down[i] && value < STICK_RELEASE {
+                                front.trig_down[i] = false;
+                            }
+                        }
                     }
-                    feed_pad(pads.axis(which, axis, value), &mut mapper, t_us)
+                    let ev = front.pads.axis(which, axis, value);
+                    front.feed(Source::Pad, ev, t_us);
                 }
                 Event::MouseButtonDown { mouse_btn: MouseButton::Left, x, y, .. } => {
                     let (ww, _) = canvas.output_size()?;
-                    if let Some(b) = ctl.toolbar().hit(ww, x, y) {
-                        if do_action(b.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir) {
+                    let tb = front.ctl.toolbar();
+                    let bar_h = tb.height(ww) as i32;
+                    if y < bar_h {
+                        if let Some(b) = tb.hit(ww, x, y) {
+                            if let Some(a) = Action::from_button(b) {
+                                if do_action(a, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
+                                    break 'main;
+                                }
+                            }
+                        }
+                    } else if let Some(p) = front.panel.as_mut() {
+                        p.press(x, y - bar_h);
+                    }
+                }
+                Event::MouseMotion { mousestate, y, .. } => {
+                    if mousestate.left() && front.panel.is_some() {
+                        let (ww, _) = canvas.output_size()?;
+                        let bar_h = front.ctl.toolbar().height(ww) as i32;
+                        let Front { panel, ctl, devs, .. } = &mut front;
+                        if let Some(p) = panel.as_mut() {
+                            p.drag(y - bar_h, ctl, devs);
+                        }
+                    }
+                }
+                Event::MouseButtonUp { mouse_btn: MouseButton::Left, x, y, .. } => {
+                    if front.panel.is_some() {
+                        let (ww, _) = canvas.output_size()?;
+                        let bar_h = front.ctl.toolbar().height(ww) as i32;
+                        let out = with_panel(&mut front, |p, c| p.release(x, y - bar_h, c));
+                        if finish_panel(out, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
                             break 'main;
                         }
-                        dirty = true;
+                    }
+                }
+                Event::MouseWheel { y, .. } => {
+                    let Front { panel, ctl, devs, .. } = &mut front;
+                    if let Some(p) = panel.as_mut() {
+                        p.wheel(y, ctl, devs);
                     }
                 }
                 Event::FingerDown { finger_id, x, y, .. } => {
-                    if let Some(tm) = &mut touch_map {
+                    // 設定畫面開著時，觸控的操作走滑鼠事件（SDL 會把觸控合成滑鼠事件），控制鈕不作用。
+                    if front.panel.is_none() && front.touch.is_some() {
                         let (ww, wh) = canvas.output_size()?;
                         let (px, py) = (x * ww as f32, y * wh as f32);
-                        let in_bar = ctl.toolbar().height(ww) as f32 > py;
-                        let t = tm.down(finger_id, px, py, session.in_play(), in_bar);
-                        feed_pad(t.keys, &mut mapper, t_us);
-                        if t.toggle_toolbar {
-                            do_action(Action::Toolbar, &mut ctl, &mut session, &mut canvas, &cx.cfg_dir);
-                            dirty = true;
+                        let in_bar = front.ctl.toolbar().height(ww) as f32 > py;
+                        let playable = session.in_play();
+                        let t = front.touch.as_mut().map(|tm| tm.down(finger_id, px, py, playable, in_bar));
+                        if let Some(t) = t {
+                            front.feed(Source::Touch, t.keys, t_us);
+                            if t.toggle_toolbar && do_action(Action::Toolbar, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
+                                break 'main;
+                            }
+                            // Android 的煙霧測試從 logcat 取按鈕位置，不在測試裡重算版面。
+                            if t.toggle_toolbar && cfg!(target_os = "android") && front.ctl.settings.toolbar {
+                                let (ww, _) = canvas.output_size()?;
+                                for (b, r) in front.ctl.toolbar().layout(ww).buttons {
+                                    eprintln!("[工具列] {b:?} {} {}", r.x + r.w / 2, r.y + r.h / 2);
+                                }
+                            }
+                            if t.toggle_pause && do_action(Action::TogglePause, &mut front, &mut session, &mut canvas, &cx.cfg_dir, t_us) {
+                                break 'main;
+                            }
                         }
                     }
                 }
                 Event::FingerMotion { finger_id, x, y, .. } => {
-                    if let Some(tm) = &mut touch_map {
+                    if front.touch.is_some() {
                         let (ww, wh) = canvas.output_size()?;
-                        feed_pad(tm.moved(finger_id, x * ww as f32, y * wh as f32), &mut mapper, t_us);
+                        let ev = front.touch.as_mut().map(|tm| tm.moved(finger_id, x * ww as f32, y * wh as f32)).unwrap_or_default();
+                        front.feed(Source::Touch, ev, t_us);
                     }
                 }
                 Event::FingerUp { finger_id, .. } => {
-                    if let Some(tm) = &mut touch_map {
-                        feed_pad(tm.up(finger_id), &mut mapper, t_us);
-                    }
+                    let ev = front.touch.as_mut().map(|tm| tm.up(finger_id)).unwrap_or_default();
+                    front.feed(Source::Touch, ev, t_us);
                 }
                 // Android 切到背景：放開全部的鍵。切回前景：不補步。繪圖裝置可能重建。
-                Event::AppWillEnterBackground { .. } | Event::AppDidEnterBackground { .. } => {
-                    if let Some(tm) = &mut touch_map {
-                        feed_pad(tm.release_all(), &mut mapper, t_us);
-                    }
-                    mapper.release_all();
-                }
+                Event::AppWillEnterBackground { .. } | Event::AppDidEnterBackground { .. } => front.release_everything(t_us),
                 Event::AppDidEnterForeground { .. } => {
                     pacer.reset(timer.performance_counter());
                     last_draw = timer.performance_counter();
@@ -704,12 +1038,14 @@ fn window_loop<'a>(
                     dirty = true;
                 }
                 Event::Window { win_event, .. } => match win_event {
-                    WindowEvent::FocusLost => mapper.release_all(),
+                    WindowEvent::FocusLost => front.release_everything(t_us),
                     WindowEvent::FocusGained => pacer.reset(timer.performance_counter()),
                     WindowEvent::SizeChanged(..) => {
-                        if let Some(tm) = &mut touch_map {
+                        if front.touch.is_some() {
                             let (ww, wh) = canvas.output_size()?;
-                            feed_pad(tm.resize(ww, wh, dp_of(&video)), &mut mapper, t_us);
+                            let dp = front.ctl.dp;
+                            let ev = front.touch.as_mut().map(|tm| tm.resize(ww, wh, dp)).unwrap_or_default();
+                            front.feed(Source::Touch, ev, t_us);
                         }
                         dirty = true;
                     }
@@ -718,47 +1054,74 @@ fn window_loop<'a>(
                 },
                 _ => {}
             }
+            // 每個事件之後輸入層都要跟上：開關設定畫面或前端暫停的那一刻起，後面的事件就不能再送進遊戲。
+            front.sync(t_us);
+            if front.panel.is_some() {
+                front.panel_gen += 1;
+            }
+        }
+        if any_event {
+            dirty = true;
         }
 
         let now = timer.performance_counter();
-        mapper.set_hold_short(ctl.settings.feel);
-        mapper.poll(ticks_to_us(now, freq));
-        pacer.update(now);
-        while pacer.take_step() {
-            let idx = session.steps() as usize;
-            let sc: Vec<u8> = match cx.replay.get(idx) {
-                Some(r) => {
-                    mapper.discard_queue();
-                    r.clone()
-                }
-                None => {
-                    if replay_note {
-                        eprintln!("[replay] 收據用完，改回鍵盤輸入（第 {idx} 步起）");
-                        replay_note = false;
-                    }
-                    mapper.take()
-                }
-            };
-            if cx.args.record.is_some() {
-                let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
-                recorded.push(format!("{{\"n\":{idx},\"sc\":[{}]}}", codes.join(",")));
-            }
-            let t0 = Instant::now();
-            let outcome = session.step(&sc);
-            pacer.set_next(session.ticks());
-            stats.step(t0.elapsed().as_micros() as u64);
-            for m in session.take_audio() {
-                if let Some(o) = &output {
-                    o.send(m);
-                }
-            }
-            if cx.args.hash_out.is_some() {
-                hashes.push(session.dseg_hash());
-            }
+        let now_us = ticks_to_us(now, freq);
+        if front.expire_notice(now_us) {
+            front.panel_gen += 1;
             dirty = true;
-            if let Outcome::Ended(e) = outcome {
-                eprintln!("[game] 遊戲結束 {e:?}（第 {} 步）", session.steps());
-                break 'main;
+        }
+        front.mapper.set_hold_short(front.ctl.settings.feel);
+        // 前端暫停：Pacer 不步進，輸入不送進遊戲。回到執行時重設計時，不補步。
+        let paused = front.ctl.frontend_paused();
+        if paused != was_paused {
+            if !paused {
+                pacer.reset(now);
+                last_draw = now;
+            }
+            eprintln!("[前端] {}（第 {} 步，按暫停 {}，設定畫面 {}）", if paused { "前端暫停" } else { "繼續" }, session.steps(), front.ctl.paused, front.ctl.panel_open);
+            was_paused = paused;
+            dirty = true;
+        }
+        if !paused {
+            front.mapper.poll(now_us);
+            pacer.update(now);
+            while pacer.take_step() {
+                let idx = session.steps() as usize;
+                let sc: Vec<u8> = match cx.replay.get(idx) {
+                    Some(r) => {
+                        front.mapper.discard_queue();
+                        r.clone()
+                    }
+                    None => {
+                        if replay_note {
+                            eprintln!("[replay] 收據用完，改回鍵盤輸入（第 {idx} 步起）");
+                            replay_note = false;
+                        }
+                        front.mapper.take()
+                    }
+                };
+                if cx.args.record.is_some() {
+                    let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
+                    recorded.push(format!("{{\"n\":{idx},\"sc\":[{}]}}", codes.join(",")));
+                }
+                apply_invincible(&mut session, front.ctl.settings.invincible(), &mut god_applied);
+                let t0 = Instant::now();
+                let outcome = session.step(&sc);
+                pacer.set_next(session.ticks());
+                stats.step(t0.elapsed().as_micros() as u64);
+                for m in session.take_audio() {
+                    if let Some(o) = &output {
+                        o.send(m);
+                    }
+                }
+                if cx.args.hash_out.is_some() {
+                    hashes.push(session.dseg_hash());
+                }
+                dirty = true;
+                if let Outcome::Ended(e) = outcome {
+                    eprintln!("[game] 遊戲結束 {e:?}（第 {} 步）", session.steps());
+                    break 'main;
+                }
             }
         }
         log_missing(&mut session);
@@ -788,32 +1151,75 @@ fn window_loop<'a>(
         }
 
         if pending_shot.is_none() {
-            if let Some(i) = shots.iter().position(|(n, _)| *n <= session.steps()) {
+            // 驗證用：有 --open-panel 時，第一張圖等到步數，其後的圖不再等（設定畫面開著時步數不會增加）。
+            let chain = !cx.args.open_panels.is_empty() && shots_taken > 0;
+            if let Some(i) = shots.iter().position(|(n, _)| *n <= session.steps() || chain) {
                 pending_shot = Some(shots.remove(i));
+                if let Some(plan) = cx.args.open_panels.get(shots_taken).copied() {
+                    match plan {
+                        Some(page) => {
+                            let size = panel_size(&canvas, &front.ctl);
+                            front.show_page(page, size);
+                        }
+                        None => front.close_panel(),
+                    }
+                    front.panel_gen += 1;
+                    front.sync(now_us);
+                }
+                dirty = true;
             }
         }
-        let animating = ctl.settings.tween;
+        let paused = front.ctl.frontend_paused();
+        let animating = front.ctl.settings.tween && !paused;
         if dirty || animating || pending_shot.is_some() {
             // 存圖固定用 alpha 1.0：畫出剛跑完的那一步。
             let alpha = if pending_shot.is_some() { 1.0 } else { pacer.alpha() };
-            // 玩家機預測看的是下一步會生效的按鍵。回放中的輸入不是鍵盤來的，不預測。
+            // 玩家機預測看的是下一步會生效的按鍵。回放中的輸入不是鍵盤來的，不預測。暫停時玩家機不動，不預測。
             let draw_now = timer.performance_counter();
-            if cx.replay.get(session.steps() as usize).is_none() {
+            if !paused && cx.replay.get(session.steps() as usize).is_none() {
                 let dt = (draw_now - last_draw) as f64 / freq as f64;
-                session.predict(&mapper.next_state(), dt as f32, pacer.step_secs());
+                session.predict(&front.mapper.next_state(), dt as f32, pacer.step_secs());
             }
             last_draw = draw_now;
             let in_play = session.in_play();
+            let (ww, wh) = canvas.output_size()?;
+            let tb = front.ctl.toolbar();
+            let bar_h = tb.height(ww);
             let t1 = Instant::now();
             let (frame, fw, fh) = session.render(alpha);
             stats.render(t1.elapsed().as_micros() as u64);
             let shot_path = pending_shot.as_ref().map(|(_, p)| p.clone());
             let t2 = Instant::now();
-            let overlay = touch_map.as_ref().map(|t| Overlay { controls: t.controls(), playable: in_play });
-            let info = pres.draw(&mut canvas, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), overlay, shot_path.as_deref())?;
+            // 設定畫面開著時觸控鈕不畫（它蓋在最上面）。
+            let overlay = if front.panel.is_some() { None } else { front.touch.as_ref().map(|t| Overlay { controls: t.controls(), playable: in_play }) };
+            // 設定畫面；沒有的話，工具列收起來又暫停時畫一個「已暫停」標示。
+            let mut layer: Option<UiLayer<'_>> = None;
+            let (ctl, devs) = (&front.ctl, &front.devs);
+            if let Some(p) = front.panel.as_mut() {
+                p.resize(ww as i32, wh.saturating_sub(bar_h) as i32, ctl.mobile, ctl.dp);
+                let key = front.panel_gen.wrapping_mul(1_000_003).wrapping_add(p.version());
+                if key != panel_img_key {
+                    panel_img = p.render(ctl, devs);
+                    panel_img_key = key;
+                }
+                let (pw, ph) = p.size();
+                layer = Some(UiLayer { px: &panel_img, w: pw as u32, h: ph as u32, x: 0, y: bar_h as i32, key });
+            } else if ctl.paused && !tb.visible {
+                let fh_px = metrics(ww, ctl.mobile, ctl.dp).fh;
+                if banner.as_ref().map(|b| b.3) != Some(fh_px) {
+                    let (px, w, h) = ui::banner(text::ST_PAUSED, fh_px);
+                    banner = Some((px, w, h, fh_px));
+                }
+                if let Some((px, w, h, f)) = banner.as_ref() {
+                    layer = Some(UiLayer { px, w: *w as u32, h: *h as u32, x: *f / 2, y: *f / 2, key: (1u64 << 62) | *f as u64 });
+                }
+            }
+            let bar_state = front.bar_state();
+            let info = pres.draw(&mut canvas, frame, fw, fh, &tb, &bar_state, overlay, layer, shot_path.as_deref())?;
             stats.present(t2.elapsed().as_micros() as u64);
             if let (Some((s, path)), Some(info)) = (pending_shot.take(), info) {
                 shot_ok &= report_shot(&path, info, s);
+                shots_taken += 1;
             }
             dirty = false;
             // 有垂直同步時 present 自己會等；仍然加一道下限，免得繪圖器宣稱有同步卻沒等時空轉。
@@ -828,7 +1234,7 @@ fn window_loop<'a>(
         }
     }
 
-    save_settings(&cx.cfg_dir, &ctl.settings);
+    save_settings(&cx.cfg_dir, &front.ctl.settings);
     stats.report();
     write_hashes(&cx.args.hash_out, &hashes)?;
     if let Some(p) = &cx.args.record {

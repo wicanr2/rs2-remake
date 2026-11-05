@@ -2,8 +2,9 @@
 """第三方授權聲明。在 docker 內跑，離線。
 
 用法：pkg_notices.py <rs2-play 的 Cargo.toml> <SDL2 原始碼 tar.gz> <輸出目錄>
-輸出：THIRD-PARTY-NOTICES.txt（Rust crate 清單與授權全文）、SDL2-LICENSE.txt（取自 SDL2 原始碼）。
+輸出：THIRD-PARTY-NOTICES.txt（Rust crate 清單與授權全文、介面字型的 OFL 全文）、SDL2-LICENSE.txt（取自 SDL2 原始碼）。
 crate 清單來自 `cargo metadata --locked --offline`，授權檔取自 crate 原始碼目錄，所以和實際連結進去的版本一致。
+介面字型的 OFL 全文取自 <Cargo.toml 所在目錄>/assets/OFL.txt。
 """
 import hashlib
 import json
@@ -51,9 +52,20 @@ def main():
                 "   原始碼：https://github.com/libsdl-org/SDL/releases/tag/release-2.26.5\n")
     body.append("2. Rust 標準函式庫（MIT 或 Apache-2.0，擇一），靜態連結進執行檔。\n")
     body.append(f"3. Rust crate（靜態連結進執行檔，共 {len(ext)} 個）\n" + "\n".join(lines) + "\n")
-    body.append("4. 以上 crate 的授權檔全文\n")
+    # 介面中文字型：只把介面用到的字烘成點陣放進執行檔（crates/rs2-play/assets/ui-font.bin），授權全文在 assets/OFL.txt。
+    ofl = manifest.parent / "assets" / "OFL.txt"
+    ofl_text = ofl.read_text(encoding="utf-8").strip() + "\n"
+    body.append("4. Noto Sans CJK TC（SIL Open Font License 1.1）\n"
+                "   用途：工具列與設定畫面的中文字。只把介面用到的字烘成點陣放進執行檔，不附字型檔。\n"
+                "   來源：https://github.com/notofonts/noto-cjk，commit f8d157532fbfaeda587e826d4cd5b21a49186f7c，\n"
+                "   Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf，\n"
+                "   SHA-256 dce08bd4fd91aa8aa76ed8fea4b694c2dfb8550f67871e326843212ddbeb88b4。\n"
+                "   授權全文見本檔最後。\n")
+    body.append("5. 上列 crate 的授權檔全文\n")
     for h, (text, who) in texts.items():
         body.append("-" * 72 + "\n" + "\n".join(who) + "\n" + "-" * 72 + "\n" + text)
+    body.append("6. Noto Sans CJK TC 的授權全文（SIL Open Font License 1.1）\n")
+    body.append("-" * 72 + "\nNotoSansCJKtc-Regular.otf／OFL.txt\n" + "-" * 72 + "\n" + ofl_text)
     (out / "THIRD-PARTY-NOTICES.txt").write_text("\n".join(body), encoding="utf-8")
     print(f"notices：{len(ext)} 個 crate，{len(texts)} 份不同的授權全文")
 

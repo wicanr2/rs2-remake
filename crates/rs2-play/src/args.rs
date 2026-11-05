@@ -1,5 +1,6 @@
 //! 命令列參數。解析不依賴 SDL，可單元測試。
 
+use crate::ui::panel::Page;
 use std::path::PathBuf;
 
 /// 版本字串。發行包建置時由環境變數 `RS2_VERSION` 帶入（例如 `v.0.9.0-20261105`），沒有就用 crate 版本。
@@ -40,8 +41,14 @@ pub const USAGE: &str = "\
   --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd 或 feel（測試用，可重複）
   --max-secs S          視窗模式跑 S 秒後自行結束（驗證用）
   --record FILE         視窗模式結束時寫出每步實際送進遊戲的掃描碼（JSONL，每步一行，可再用 --replay 重播）
+  --open-panel 頁名      開設定畫面到指定頁（驗證用）：手把、手把按鍵、鍵盤、遊戲、顯示，或 pad、padkeys、keyboard、game、display；
+                        「無」或 none 是關閉。第一次出現的 --shot-at 步數到時才開，可重複，第 k 個 --open-panel
+                        配第 k 個 --shot-at（設定畫面開著時前端暫停，步數不再增加，後面的圖不等步數）
+  --dp X                手機版每 dp 的像素數（驗證用，預設讀螢幕 DPI，讀不到用 2）
+  --fake-pads           列出兩支假的手把與一支不支援的搖桿，沒有實體手把也能看手把頁的版面（驗證用）
 
-視窗內：F1 補間、F2 幀計數、F3 原版圖與 HD、F4 倍率（2、3、4、5）、F5 手感（NEW 或原版時序）、F10 工具列、F11 全螢幕。
+視窗內：F1 補間、F2 幀計數、F3 原貌／HD、F4 倍率（2、3、4、5）、F5 手感（新或原版時序）、F8 設定畫面換頁、
+F10 設定畫面、F11 全螢幕。工具列的按鈕與設定畫面見規格 005。
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +92,12 @@ pub struct Args {
     pub toggles: Vec<(u64, ToggleName)>,
     pub max_secs: Option<f64>,
     pub record: Option<PathBuf>,
+    /// 驗證用：第 k 個值配第 k 個 `--shot-at`，存圖時設定畫面開在那一頁，`None` 是關閉。
+    pub open_panels: Vec<Option<Page>>,
+    /// 驗證用：手機版每 dp 的像素數。
+    pub dp: Option<f32>,
+    /// 驗證用：沒有實體手把也列出兩支假的手把與一支不支援的搖桿，看手把頁的版面。
+    pub fake_pads: bool,
 }
 
 fn onoff(flag: &str, v: &str) -> Result<bool, String> {
@@ -128,6 +141,9 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         toggles: Vec::new(),
         max_secs: None,
         record: None,
+        open_panels: Vec::new(),
+        dp: None,
+        fake_pads: false,
     };
     let mut it = args.iter();
     macro_rules! val {
@@ -196,6 +212,26 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 a.max_secs = Some(s);
             }
             "--record" => a.record = Some(PathBuf::from(val!("--record")?)),
+            "--open-panel" => {
+                let v = val!("--open-panel")?;
+                if v == "無" || v.eq_ignore_ascii_case("none") {
+                    a.open_panels.push(None);
+                } else {
+                    match Page::from_name(v) {
+                        Some(p) => a.open_panels.push(Some(p)),
+                        None => return Err(format!("--open-panel 的頁名要是 手把、手把按鍵、鍵盤、遊戲、顯示（或 none），收到 {v}")),
+                    }
+                }
+            }
+            "--fake-pads" => a.fake_pads = true,
+            "--dp" => {
+                let v = val!("--dp")?;
+                let d: f32 = v.parse().map_err(|_| format!("--dp 不是數字：{v}"))?;
+                if !(0.5..=8.0).contains(&d) {
+                    return Err(format!("--dp 要在 0.5 到 8 之間，收到 {v}"));
+                }
+                a.dp = Some(d);
+            }
             other => return Err(format!("不認得的參數 {other}\n\n{USAGE}")),
         }
     }
@@ -269,6 +305,20 @@ mod tests {
         assert!(p("--orig /o --bogus").is_err());
         assert!(p("--orig").is_err());
         assert!(p("--orig /o --max-secs 0").is_err());
+        assert!(p("--open-panel").is_err());
+        assert!(p("--open-panel 不存在的頁").is_err());
+        assert!(p("--dp 0").is_err() && p("--dp x").is_err() && p("--dp 9").is_err());
+    }
+
+    #[test]
+    fn open_panel_and_dp_for_validation() {
+        let a = p("--open-panel 手把 --open-panel 鍵盤 --open-panel none --open-panel game --dp 2.5 --touch").unwrap();
+        assert_eq!(a.open_panels, vec![Some(Page::Pad), Some(Page::Keyboard), None, Some(Page::Game)]);
+        assert_eq!(a.dp, Some(2.5));
+        assert!(a.touch);
+        let a = p("--open-panel 手把按鍵 --open-panel 顯示 --open-panel 無").unwrap();
+        assert_eq!(a.open_panels, vec![Some(Page::PadKeys), Some(Page::Display), None]);
+        assert!(p("--orig /o").unwrap().open_panels.is_empty());
     }
 
     #[test]

@@ -1,6 +1,20 @@
 //! 本機設定：`settings.txt`，每行 `key=value`。讀不到用預設，壞掉的值略過並回報警告。
+//!
+//! | 鍵 | 值 |
+//! |---|---|
+//! | `tween`、`counter`、`hd`、`toolbar`、`feel` | `on` 或 `off` |
+//! | `scale` | 1 到 8 |
+//! | `opt.<id>` | 遊戲選項（`options::OPTIONS`）。開關是 `on`、`off`，戰場大小是 `100`、`120`、`150` |
+//! | `key.p1.up` 等 | 鍵盤對應，值是 `ui::text::KEYS` 的存檔名稱，空值是未綁定。欄位 `up down left right upleft upright downleft downright fire turn split` |
+//! | `pad.fire` 等 | 手把按鍵，值是兩個按鈕 `A,RT`，`-` 是空。功能 `fire turn split pause confirm menu` |
+//!
+//! 舊版的檔（只有前六個鍵）照樣讀得進來，新欄位用預設。手把指派不存：裝置編號每次啟動都會變。
 
+use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
+use crate::options::{self, Options, FEEL_INDEX, INVINCIBLE_INDEX, OPTIONS};
 use crate::resources::{Env, Os, non_empty};
+use crate::ui::text;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "settings.txt";
@@ -18,15 +32,31 @@ pub struct Settings {
     pub hd: bool,
     /// 視窗倍率（F4），遊戲畫面 320×200 的整數倍。
     pub scale: u32,
-    /// 工具列顯示（F10）。
+    /// 工具列顯示。
     pub toolbar: bool,
     /// 玩家機預測與短按保留（F5）。關掉就是原版時序，模擬不受影響。
     pub feel: bool,
+    /// 兩人的鍵盤對應。
+    pub keys: KeyMap,
+    /// 手把按鍵。
+    pub pad: PadMap,
+    /// 遊戲選項。`feel` 那一格不用，值在 `feel`。
+    pub opts: Options,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { tween: true, counter: false, hd: true, scale: DEFAULT_SCALE, toolbar: true, feel: true }
+        Settings {
+            tween: true,
+            counter: false,
+            hd: true,
+            scale: DEFAULT_SCALE,
+            toolbar: true,
+            feel: true,
+            keys: KeyMap::default(),
+            pad: PadMap::default(),
+            opts: Options::default(),
+        }
     }
 }
 
@@ -48,8 +78,31 @@ impl Settings {
         SCALES.iter().copied().find(|&s| s > cur).unwrap_or(SCALES[0])
     }
 
+    /// 選項 `i` 的目前值。手感的值在 `feel`。
+    pub fn opt_value(&self, i: usize) -> u8 {
+        if i == FEEL_INDEX { self.feel as u8 } else { self.opts.get(i) }
+    }
+
+    pub fn set_opt_value(&mut self, i: usize, v: u8) {
+        if i == FEEL_INDEX {
+            self.feel = v != 0;
+        } else {
+            self.opts.set(i, v);
+        }
+    }
+
+    /// 無敵開著。
+    pub fn invincible(&self) -> bool {
+        self.opts.get(INVINCIBLE_INDEX) != 0
+    }
+
+    /// 有「已實作而且改變規則」的選項開著。沒實作的選項值再怎麼寫都不算，因為它不會生效。
+    pub fn rules_enhanced(&self) -> bool {
+        OPTIONS.iter().enumerate().any(|(i, o)| o.implemented && o.changes_rules && o.is_active(self.opt_value(i)))
+    }
+
     pub fn to_text(&self) -> String {
-        format!(
+        let mut s = format!(
             "# RS-2 remake 設定\ntween={}\ncounter={}\nhd={}\nscale={}\ntoolbar={}\nfeel={}\n",
             b(self.tween),
             b(self.counter),
@@ -57,14 +110,27 @@ impl Settings {
             self.scale,
             b(self.toolbar),
             b(self.feel)
-        )
+        );
+        s.push_str("# 遊戲選項（標開發中的選項，值先存起來，這一版還沒有實作）\n");
+        for (i, o) in OPTIONS.iter().enumerate() {
+            if i != FEEL_INDEX {
+                s.push_str(&format!("opt.{}={}\n", o.id, o.save_value(self.opts.get(i))));
+            }
+        }
+        s.push_str("# 鍵盤（空值是未綁定）\n");
+        s.push_str(&self.keys.to_lines());
+        s.push_str("# 手把按鍵（-是空欄位）\n");
+        s.push_str(&self.pad.to_lines());
+        s
     }
 
     /// 解析文字。壞掉的行或值略過並寫進警告，其餘欄位維持預設。
-    pub fn parse(text: &str) -> (Settings, Vec<String>) {
+    pub fn parse(src: &str) -> (Settings, Vec<String>) {
         let mut s = Settings::default();
         let mut warn = Vec::new();
-        for (i, raw) in text.lines().enumerate() {
+        let mut key_entries: Vec<(usize, Act, Option<sdl2::keyboard::Scancode>)> = Vec::new();
+        let mut pad_entries: Vec<(PadFn, [Option<Btn>; 2])> = Vec::new();
+        for (i, raw) in src.lines().enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -74,9 +140,10 @@ impl Settings {
                 continue;
             };
             let (k, v) = (k.trim(), v.trim());
+            let n = i + 1;
             let mut flag = |slot: &mut bool| match parse_bool(v) {
                 Some(x) => *slot = x,
-                None => warn.push(format!("第 {} 行 {k} 的值 {v:?} 不是 on 或 off，略過", i + 1)),
+                None => warn.push(format!("第 {n} 行 {k} 的值 {v:?} 不是 on 或 off，略過")),
             };
             match k {
                 "tween" => flag(&mut s.tween),
@@ -85,12 +152,45 @@ impl Settings {
                 "toolbar" => flag(&mut s.toolbar),
                 "feel" => flag(&mut s.feel),
                 "scale" => match v.parse::<u32>() {
-                    Ok(n) if (1..=8).contains(&n) => s.scale = n,
-                    _ => warn.push(format!("第 {} 行 scale 的值 {v:?} 不在 1 到 8，略過", i + 1)),
+                    Ok(x) if (1..=8).contains(&x) => s.scale = x,
+                    _ => warn.push(format!("第 {n} 行 scale 的值 {v:?} 不在 1 到 8，略過")),
                 },
-                _ => warn.push(format!("第 {} 行的鍵 {k:?} 不認得，略過", i + 1)),
+                _ if k.starts_with("opt.") => match options::index_of(&k[4..]) {
+                    Some(idx) => match OPTIONS[idx].parse_value(v) {
+                        Some(x) => s.set_opt_value(idx, x),
+                        None => warn.push(format!("第 {n} 行 {k} 的值 {v:?} 不合法，略過")),
+                    },
+                    None => warn.push(format!("第 {n} 行的選項 {k:?} 不認得，略過")),
+                },
+                _ if k.starts_with("key.") => match KeyMap::parse_slot(&k[4..]) {
+                    Some((p, a)) => {
+                        if v.is_empty() {
+                            key_entries.push((p, a, None));
+                        } else {
+                            match text::key_from_name(v) {
+                                Some(key) => key_entries.push((p, a, Some(key))),
+                                None => warn.push(format!("第 {n} 行 {k} 的鍵 {v:?} 不認得或不能綁定，略過")),
+                            }
+                        }
+                    }
+                    None => warn.push(format!("第 {n} 行的鍵盤欄位 {k:?} 不認得，略過")),
+                },
+                _ if k.starts_with("pad.") => match PadFn::from_save_name(&k[4..]) {
+                    Some(f) => match PadMap::parse_value(v) {
+                        Ok(bs) => pad_entries.push((f, bs)),
+                        Err(e) => warn.push(format!("第 {n} 行 {k}：{e}，略過")),
+                    },
+                    None => warn.push(format!("第 {n} 行的手把功能 {k:?} 不認得，略過")),
+                },
+                _ => warn.push(format!("第 {n} 行的鍵 {k:?} 不認得，略過")),
             }
         }
+        let (keys, kw) = KeyMap::from_entries(&key_entries);
+        let (pad, pw) = PadMap::from_entries(&pad_entries);
+        s.keys = keys;
+        s.pad = pad;
+        warn.extend(kw);
+        warn.extend(pw);
         (s, warn)
     }
 
@@ -104,11 +204,15 @@ impl Settings {
         }
     }
 
-    /// 先寫暫存檔再改名，避免寫到一半被中斷留下殘檔。
+    /// 原子寫入：先寫暫存檔並 `sync_all`，再改名蓋過原檔，中途被中斷也不會留下寫一半的設定。
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
         let tmp = dir.join(format!("{FILE_NAME}.tmp"));
-        std::fs::write(&tmp, self.to_text())?;
+        {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(self.to_text().as_bytes())?;
+            f.sync_all()?;
+        }
         std::fs::rename(&tmp, dir.join(FILE_NAME))
     }
 }
@@ -142,6 +246,7 @@ pub fn config_dir(os: Os, env: &Env) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sdl2::keyboard::Scancode as K;
 
     fn tmpdir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("rs2-play-settings-{name}-{}", std::process::id()));
@@ -154,17 +259,20 @@ mod tests {
         let s = Settings::default();
         assert!(s.tween && !s.counter && s.hd && s.toolbar && s.feel);
         assert_eq!(s.scale, 3);
+        assert!(!s.invincible() && !s.rules_enhanced());
+        assert_eq!(s.keys, KeyMap::default());
+        assert_eq!(s.pad, PadMap::default());
     }
 
     #[test]
-    fn text_roundtrip() {
+    fn text_roundtrip_of_the_basic_switches() {
         for tween in [false, true] {
             for counter in [false, true] {
                 for hd in [false, true] {
                     for toolbar in [false, true] {
                         for scale in [1, 2, 3, 4, 5, 8] {
                             for feel in [false, true] {
-                                let s = Settings { tween, counter, hd, scale, toolbar, feel };
+                                let s = Settings { tween, counter, hd, scale, toolbar, feel, ..Settings::default() };
                                 let (back, warn) = Settings::parse(&s.to_text());
                                 assert_eq!(back, s);
                                 assert!(warn.is_empty(), "{warn:?}");
@@ -177,17 +285,78 @@ mod tests {
     }
 
     #[test]
+    fn text_roundtrip_of_options_keys_and_pad() {
+        let mut s = Settings::default();
+        s.set_opt_value(0, 2);
+        s.set_opt_value(1, 1);
+        s.set_opt_value(options::INVINCIBLE_INDEX, 1);
+        s.set_opt_value(4, 0);
+        s.feel = false;
+        s.keys.clear(0, Act::Up);
+        s.keys.bind(0, Act::Fire, K::Space).unwrap();
+        s.keys.bind(1, Act::Split, K::Kp5).unwrap();
+        s.pad.clear(PadFn::Fire, 0);
+        s.pad.bind(PadFn::Fire, 0, Btn::L3).unwrap();
+        let (back, warn) = Settings::parse(&s.to_text());
+        assert!(warn.is_empty(), "{warn:?}");
+        assert_eq!(back, s);
+        assert_eq!(back.opt_value(0), 2);
+        assert!(back.invincible() && back.rules_enhanced());
+        // 文字裡每個選項都有一行，手感只寫一次（舊的 feel= 鍵）。
+        let t = s.to_text();
+        for (i, o) in OPTIONS.iter().enumerate() {
+            let want = format!("opt.{}=", o.id);
+            assert_eq!(t.contains(&want), i != FEEL_INDEX, "{}", o.id);
+        }
+        assert!(t.contains("key.p1.up=\n"), "未綁定寫成空值");
+    }
+
+    #[test]
+    fn old_files_without_the_new_fields_still_load() {
+        let old = "# RS-2 remake 設定\ntween=off\ncounter=on\nhd=off\nscale=4\ntoolbar=off\nfeel=off\n";
+        let (s, w) = Settings::parse(old);
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!s.tween && s.counter && !s.hd && !s.toolbar && !s.feel);
+        assert_eq!(s.scale, 4);
+        assert_eq!(s.keys, KeyMap::default());
+        assert_eq!(s.pad, PadMap::default());
+        assert_eq!(s.opts, Options::default());
+    }
+
+    #[test]
+    fn only_implemented_options_count_as_enhanced_rules() {
+        let mut s = Settings::default();
+        // 沒實作的選項，檔案裡寫成開也不算強化規則，因為它不會生效。
+        s.set_opt_value(1, 1);
+        s.set_opt_value(8, 1);
+        assert!(!s.rules_enhanced());
+        s.set_opt_value(options::INVINCIBLE_INDEX, 1);
+        assert!(s.rules_enhanced() && s.invincible());
+        s.set_opt_value(options::INVINCIBLE_INDEX, 0);
+        assert!(!s.rules_enhanced());
+        // 手感不改變規則。
+        s.feel = false;
+        assert!(!s.rules_enhanced());
+    }
+
+    #[test]
     fn file_roundtrip_and_missing_file() {
         let d = tmpdir("file");
         let (s, w) = Settings::load(&d);
         assert_eq!(s, Settings::default());
         assert!(w.is_empty(), "檔案不存在不算警告：{w:?}");
-        let want = Settings { tween: false, counter: true, hd: false, scale: 5, toolbar: false, feel: false };
+        let mut want = Settings { tween: false, counter: true, hd: false, scale: 5, toolbar: false, feel: false, ..Settings::default() };
+        want.set_opt_value(options::INVINCIBLE_INDEX, 1);
+        want.keys.clear(1, Act::Up);
         want.save(&d).unwrap();
         let (got, w) = Settings::load(&d);
         assert_eq!(got, want);
         assert!(w.is_empty());
-        assert!(!d.join("settings.txt.tmp").exists());
+        assert!(!d.join("settings.txt.tmp").exists(), "原子寫入不留暫存檔");
+        // 再存一次（覆蓋舊檔）。
+        want.counter = false;
+        want.save(&d).unwrap();
+        assert_eq!(Settings::load(&d).0, want);
         std::fs::remove_dir_all(&d).unwrap();
     }
 
@@ -206,6 +375,25 @@ mod tests {
         assert!(w.iter().any(|m| m.contains("scale")));
         assert!(w.iter().any(|m| m.contains("foo")));
         assert!(w.iter().any(|m| m.contains("nonsense")));
+    }
+
+    #[test]
+    fn bad_new_fields_are_skipped_with_warnings_and_keep_the_rest() {
+        let text = "opt.invincible=on\nopt.field_size=130\nopt.nope=on\nkey.p1.up=Banana\nkey.p1.down=W\nkey.p2.down=W\nkey.p3.up=A\nkey.p1.fire=F1\n\
+                    pad.fire=A\npad.turn=B,Q\npad.pause=Start,-\npad.dance=A,B\npad.confirm=Start,-\n";
+        let (s, w) = Settings::parse(text);
+        assert!(s.invincible());
+        assert_eq!(s.opt_value(0), 0, "壞值維持預設");
+        assert_eq!(s.keys.get(0, Act::Up), Some(K::Up), "不認得的鍵名略過，欄位用預設");
+        assert_eq!(s.keys.get(0, Act::Down), Some(K::W));
+        assert_eq!(s.keys.get(1, Act::Down), None, "重複的鍵略過");
+        assert_eq!(s.keys.get(0, Act::Fire), Some(K::RShift), "F1 不能綁，欄位用預設");
+        assert_eq!(s.pad.get(PadFn::Pause, 0), Some(Btn::Start));
+        assert_eq!(s.pad.get(PadFn::Confirm, 0), None, "Start 重複略過");
+        assert_eq!(s.pad.get(PadFn::Fire, 0), Some(Btn::A), "壞行略過，功能用預設");
+        for needle in ["opt.field_size", "opt.nope", "Banana", "p3.up", "F1", "pad.fire", "pad.turn", "pad.dance", "Start"] {
+            assert!(w.iter().any(|m| m.contains(needle)), "缺 {needle} 的警告：{w:?}");
+        }
     }
 
     #[test]

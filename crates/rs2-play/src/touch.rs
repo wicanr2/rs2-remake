@@ -1,9 +1,12 @@
-//! 觸控層：手指事件換成鍵盤事件，交給 `InputMapper`。設計見 `docs/android/touch-design.md`，尺寸的單位是 dp。
+//! 觸控層：手指事件換成遊戲碼，交給 `InputMapper` 的觸控來源計數。設計見 `docs/android/touch-design.md`，尺寸的單位是 dp。
 //! 不依賴 SDL 子系統，好寫單元測試。
+//!
+//! 觸控是第 1 人。方向盤送第 1 人的方向碼；右手兩顆鈕在遊玩中是開火與轉向，其餘時候是確定（Enter）與選單（C）；
+//! 暫停鈕是前端暫停，不送進遊戲；☰ 展開工具列。
 
-use crate::font;
+use crate::keymap::{Act, CODE_CONFIRM, CODE_MENU};
 use crate::pad::PadEvent;
-use sdl2::keyboard::Scancode as K;
+use crate::ui::{font, text};
 use std::collections::HashMap;
 
 /// 方向盤中心的死區（dp）。
@@ -22,6 +25,7 @@ pub enum Role {
     Primary,
     /// 遊玩中是砲座轉向，其餘是選單。
     Secondary,
+    /// 前端暫停。
     Pause,
     /// 展開工具列。
     Menu,
@@ -54,8 +58,8 @@ pub fn layout(win_w: u32, win_h: u32, dp: f32) -> Vec<Control> {
     ]
 }
 
-/// 距離中心 `(dx, dy)` 的方向鍵，最多兩個。八個扇區，每個 45 度。`dead` 以內沒有方向。
-pub fn dpad_keys(dx: f32, dy: f32, dead: f32) -> Vec<K> {
+/// 距離中心 `(dx, dy)` 的方向，最多兩個。八個扇區，每個 45 度。`dead` 以內沒有方向。
+pub fn dpad_acts(dx: f32, dy: f32, dead: f32) -> Vec<Act> {
     if dx * dx + dy * dy < dead * dead {
         return Vec::new();
     }
@@ -63,34 +67,39 @@ pub fn dpad_keys(dx: f32, dy: f32, dead: f32) -> Vec<K> {
     let deg = dy.atan2(dx).to_degrees().rem_euclid(360.0);
     let sector = (((deg + 22.5) / 45.0) as i32).rem_euclid(8);
     match sector {
-        0 => vec![K::Right],
-        1 => vec![K::Right, K::Down],
-        2 => vec![K::Down],
-        3 => vec![K::Left, K::Down],
-        4 => vec![K::Left],
-        5 => vec![K::Left, K::Up],
-        6 => vec![K::Up],
-        _ => vec![K::Right, K::Up],
+        0 => vec![Act::Right],
+        1 => vec![Act::Right, Act::Down],
+        2 => vec![Act::Down],
+        3 => vec![Act::Left, Act::Down],
+        4 => vec![Act::Left],
+        5 => vec![Act::Left, Act::Up],
+        6 => vec![Act::Up],
+        _ => vec![Act::Right, Act::Up],
     }
 }
 
-fn key_of(role: Role, playable: bool) -> Option<K> {
+/// 第 1 人的方向碼。
+fn dir_code(a: Act) -> u8 {
+    a.counted_code(0)
+}
+
+/// 右手兩顆鈕送的碼。暫停與 ☰ 沒有。
+fn code_of(role: Role, playable: bool) -> Option<u8> {
     Some(match (role, playable) {
-        (Role::Primary, true) => K::RShift,
-        (Role::Primary, false) => K::Space,
-        (Role::Secondary, true) => K::Slash,
-        (Role::Secondary, false) => K::C,
-        (Role::Pause, _) => K::Escape,
+        (Role::Primary, true) => Act::Fire.counted_code(0),
+        (Role::Primary, false) => CODE_CONFIRM,
+        (Role::Secondary, true) => Act::Turn.counted_code(0),
+        (Role::Secondary, false) => CODE_MENU,
         _ => return None,
     })
 }
 
 #[derive(Debug)]
 enum Finger {
-    /// 綁在方向盤上，記著目前按的鍵。
-    Dpad(Vec<K>),
-    /// 按著一顆鈕。放開時要放開按下時的那個鍵，就算遊戲狀態已經換了。
-    Key(K),
+    /// 綁在方向盤上，記著目前按的方向。
+    Dpad(Vec<Act>),
+    /// 按著一顆鈕。放開時要放開按下時的那個碼，就算遊戲狀態已經換了。
+    Key(u8),
     /// 按在工具列或沒有控制的地方。
     Idle,
 }
@@ -101,15 +110,17 @@ pub struct Touch {
     pub keys: Vec<PadEvent>,
     /// 按到 ☰。
     pub toggle_toolbar: bool,
+    /// 按到暫停鈕。
+    pub toggle_pause: bool,
 }
 
-/// 手指追蹤。同一個方向鍵可能有兩根手指按著，所以依按住的來源計數，和手把相同的規則。
+/// 手指追蹤。同一個方向可能有兩根手指按著，所以依按住的來源計數，和手把相同的規則。
 #[derive(Debug)]
 pub struct TouchMapper {
     controls: Vec<Control>,
     dead: f32,
     fingers: HashMap<i64, Finger>,
-    held: HashMap<K, u32>,
+    held: HashMap<u8, u32>,
 }
 
 impl TouchMapper {
@@ -129,20 +140,20 @@ impl TouchMapper {
         ev
     }
 
-    fn press(&mut self, k: K, out: &mut Vec<PadEvent>) {
-        let n = self.held.entry(k).or_insert(0);
+    fn press(&mut self, code: u8, out: &mut Vec<PadEvent>) {
+        let n = self.held.entry(code).or_insert(0);
         *n += 1;
         if *n == 1 {
-            out.push(PadEvent::Down(k));
+            out.push(PadEvent::Down(code));
         }
     }
 
-    fn release(&mut self, k: K, out: &mut Vec<PadEvent>) {
-        if let Some(n) = self.held.get_mut(&k) {
+    fn release(&mut self, code: u8, out: &mut Vec<PadEvent>) {
+        if let Some(n) = self.held.get_mut(&code) {
             *n -= 1;
             if *n == 0 {
-                self.held.remove(&k);
-                out.push(PadEvent::Up(k));
+                self.held.remove(&code);
+                out.push(PadEvent::Up(code));
             }
         }
     }
@@ -171,20 +182,24 @@ impl TouchMapper {
         };
         match c.role {
             Role::Dpad => {
-                let keys = dpad_keys(x - c.x, y - c.y, self.dead);
-                for &k in &keys {
-                    self.press(k, &mut t.keys);
+                let acts = dpad_acts(x - c.x, y - c.y, self.dead);
+                for &a in &acts {
+                    self.press(dir_code(a), &mut t.keys);
                 }
-                self.fingers.insert(id, Finger::Dpad(keys));
+                self.fingers.insert(id, Finger::Dpad(acts));
             }
             Role::Menu => {
                 t.toggle_toolbar = true;
                 self.fingers.insert(id, Finger::Idle);
             }
-            role => match key_of(role, playable) {
-                Some(k) => {
-                    self.press(k, &mut t.keys);
-                    self.fingers.insert(id, Finger::Key(k));
+            Role::Pause => {
+                t.toggle_pause = true;
+                self.fingers.insert(id, Finger::Idle);
+            }
+            role => match code_of(role, playable) {
+                Some(code) => {
+                    self.press(code, &mut t.keys);
+                    self.fingers.insert(id, Finger::Key(code));
                 }
                 None => {
                     self.fingers.insert(id, Finger::Idle);
@@ -199,15 +214,15 @@ impl TouchMapper {
         let Some(Finger::Dpad(old)) = self.fingers.get(&id) else { return out };
         let old = old.clone();
         let Some(c) = self.controls.iter().find(|c| c.role == Role::Dpad).copied() else { return out };
-        let new = dpad_keys(x - c.x, y - c.y, self.dead);
+        let new = dpad_acts(x - c.x, y - c.y, self.dead);
         if new == old {
             return out;
         }
-        for &k in old.iter().filter(|k| !new.contains(k)) {
-            self.release(k, &mut out);
+        for &a in old.iter().filter(|a| !new.contains(a)) {
+            self.release(dir_code(a), &mut out);
         }
-        for &k in new.iter().filter(|k| !old.contains(k)) {
-            self.press(k, &mut out);
+        for &a in new.iter().filter(|a| !old.contains(a)) {
+            self.press(dir_code(a), &mut out);
         }
         self.fingers.insert(id, Finger::Dpad(new));
         out
@@ -216,12 +231,12 @@ impl TouchMapper {
     pub fn up(&mut self, id: i64) -> Vec<PadEvent> {
         let mut out = Vec::new();
         match self.fingers.remove(&id) {
-            Some(Finger::Dpad(keys)) => {
-                for k in keys {
-                    self.release(k, &mut out);
+            Some(Finger::Dpad(acts)) => {
+                for a in acts {
+                    self.release(dir_code(a), &mut out);
                 }
             }
-            Some(Finger::Key(k)) => self.release(k, &mut out),
+            Some(Finger::Key(code)) => self.release(code, &mut out),
             _ => {}
         }
         out
@@ -238,14 +253,14 @@ impl TouchMapper {
     }
 }
 
-/// 控制鈕的文字。工具列的字型只有 ASCII。
+/// 控制鈕的文字。
 fn label(role: Role, playable: bool) -> &'static str {
     match (role, playable) {
         (Role::Dpad, _) => "",
-        (Role::Primary, true) => "FIRE",
-        (Role::Primary, false) => "OK",
-        (Role::Secondary, true) => "TURN",
-        (Role::Secondary, false) => "MENU",
+        (Role::Primary, true) => text::TOUCH_FIRE,
+        (Role::Primary, false) => text::TOUCH_OK,
+        (Role::Secondary, true) => text::TOUCH_TURN,
+        (Role::Secondary, false) => text::TOUCH_MENU,
         // 這兩顆畫圖示。
         (Role::Pause, _) | (Role::Menu, _) => "",
     }
@@ -333,12 +348,14 @@ pub fn render_overlay(controls: &[Control], playable: bool, w: usize, h: usize) 
             }
             _ => {}
         }
-        let text = label(c.role, playable);
-        // 字高約半徑的 45%。
-        let fs = ((r * 0.45 / font::GLYPH_H as f32) as usize).max(1);
-        let tw = font::text_width(text, fs) as f32;
-        let th = font::text_height(fs) as f32;
-        font::draw_text(&mut buf, w, h, (c.x - tw / 2.0) as i32, (c.y - th / 2.0) as i32, text, fs, LABEL);
+        let t = label(c.role, playable);
+        if !t.is_empty() {
+            // 字高約半徑的 55%，兩個字的寬度約半徑的 1.1 倍，放得進圓裡。
+            let fh = ((r * 0.55) as i32).max(12);
+            let tw = font::builtin().text_width(t, fh);
+            let full = crate::ui::Rect { x: 0, y: 0, w: w as i32, h: h as i32 };
+            font::builtin().draw(&mut buf, w as i32, h as i32, full, (c.x - tw as f32 / 2.0) as i32, (c.y - fh as f32 / 2.0) as i32, t, fh, LABEL);
+        }
     }
     buf
 }
@@ -351,6 +368,13 @@ mod tests {
     const W: u32 = 2400;
     const H: u32 = 1080;
     const DP: f32 = 2.5;
+
+    const UP: u8 = 0x48;
+    const DOWN: u8 = 0x50;
+    const LEFT: u8 = 0x4B;
+    const RIGHT: u8 = 0x4D;
+    const FIRE: u8 = 0x36;
+    const TURN: u8 = 0x35;
 
     fn map() -> TouchMapper {
         TouchMapper::new(W, H, DP)
@@ -412,42 +436,39 @@ mod tests {
     fn dpad_has_eight_sectors_and_a_dead_zone() {
         let k = |deg: f32| {
             let a = deg.to_radians();
-            dpad_keys(a.cos() * 100.0, a.sin() * 100.0, 10.0)
+            dpad_acts(a.cos() * 100.0, a.sin() * 100.0, 10.0)
         };
-        assert_eq!(k(0.0), vec![K::Right]);
-        assert_eq!(k(45.0), vec![K::Right, K::Down]);
-        assert_eq!(k(90.0), vec![K::Down]);
-        assert_eq!(k(135.0), vec![K::Left, K::Down]);
-        assert_eq!(k(180.0), vec![K::Left]);
-        assert_eq!(k(225.0), vec![K::Left, K::Up]);
-        assert_eq!(k(270.0), vec![K::Up]);
-        assert_eq!(k(315.0), vec![K::Right, K::Up]);
-        assert_eq!(k(22.0), vec![K::Right]);
-        assert_eq!(k(23.0), vec![K::Right, K::Down]);
-        assert_eq!(k(359.0), vec![K::Right]);
-        assert!(dpad_keys(5.0, 5.0, 10.0).is_empty());
+        assert_eq!(k(0.0), vec![Act::Right]);
+        assert_eq!(k(45.0), vec![Act::Right, Act::Down]);
+        assert_eq!(k(90.0), vec![Act::Down]);
+        assert_eq!(k(135.0), vec![Act::Left, Act::Down]);
+        assert_eq!(k(180.0), vec![Act::Left]);
+        assert_eq!(k(225.0), vec![Act::Left, Act::Up]);
+        assert_eq!(k(270.0), vec![Act::Up]);
+        assert_eq!(k(315.0), vec![Act::Right, Act::Up]);
+        assert_eq!(k(22.0), vec![Act::Right]);
+        assert_eq!(k(23.0), vec![Act::Right, Act::Down]);
+        assert_eq!(k(359.0), vec![Act::Right]);
+        assert!(dpad_acts(5.0, 5.0, 10.0).is_empty());
     }
 
     #[test]
     fn dpad_slides_between_directions() {
         let mut m = map();
         let (x, y) = at(&m, Role::Dpad);
-        assert_eq!(m.down(1, x + 100.0, y, true, false).keys, vec![Down(K::Right)]);
+        assert_eq!(m.down(1, x + 100.0, y, true, false).keys, vec![Down(RIGHT)]);
         assert!(m.moved(1, x + 110.0, y).is_empty(), "同一扇區不重送");
         // 滑到右上：多按一個上。
-        assert_eq!(m.moved(1, x + 100.0, y - 100.0), vec![Down(K::Up)]);
+        assert_eq!(m.moved(1, x + 100.0, y - 100.0), vec![Down(UP)]);
         // 滑到左上：先放開右再按左。
-        assert_eq!(m.moved(1, x - 100.0, y - 100.0), vec![Up(K::Right), Down(K::Left)]);
+        assert_eq!(m.moved(1, x - 100.0, y - 100.0), vec![Up(RIGHT), Down(LEFT)]);
         // 滑回中心：全放開。
-        let mut ev = m.moved(1, x, y);
-        ev.sort_by_key(|e| match e {
-            Up(k) | Down(k) => *k as i32,
-        });
+        let ev = m.moved(1, x, y);
         assert_eq!(ev.len(), 2);
-        assert!(ev.contains(&Up(K::Left)) && ev.contains(&Up(K::Up)));
+        assert!(ev.contains(&Up(LEFT)) && ev.contains(&Up(UP)));
         // 手指滑出判定範圍仍然有效。
-        assert_eq!(m.moved(1, x + 1000.0, y), vec![Down(K::Right)]);
-        assert_eq!(m.up(1), vec![Up(K::Right)]);
+        assert_eq!(m.moved(1, x + 1000.0, y), vec![Down(RIGHT)]);
+        assert_eq!(m.up(1), vec![Up(RIGHT)]);
         assert!(m.up(1).is_empty());
     }
 
@@ -455,27 +476,33 @@ mod tests {
     fn buttons_follow_the_game_state() {
         let mut m = map();
         let (x, y) = at(&m, Role::Primary);
-        assert_eq!(m.down(1, x, y, true, false).keys, vec![Down(K::RShift)]);
-        assert_eq!(m.up(1), vec![Up(K::RShift)]);
-        assert_eq!(m.down(1, x, y, false, false).keys, vec![Down(K::Space)]);
-        assert_eq!(m.up(1), vec![Up(K::Space)]);
+        assert_eq!(m.down(1, x, y, true, false).keys, vec![Down(FIRE)]);
+        assert_eq!(m.up(1), vec![Up(FIRE)]);
+        assert_eq!(m.down(1, x, y, false, false).keys, vec![Down(CODE_CONFIRM)]);
+        assert_eq!(m.up(1), vec![Up(CODE_CONFIRM)]);
         let (x, y) = at(&m, Role::Secondary);
-        assert_eq!(m.down(2, x, y, true, false).keys, vec![Down(K::Slash)]);
-        assert_eq!(m.up(2), vec![Up(K::Slash)]);
-        assert_eq!(m.down(2, x, y, false, false).keys, vec![Down(K::C)]);
-        assert_eq!(m.up(2), vec![Up(K::C)]);
-        let (x, y) = at(&m, Role::Pause);
-        assert_eq!(m.down(3, x, y, true, false).keys, vec![Down(K::Escape)]);
-        assert_eq!(m.up(3), vec![Up(K::Escape)]);
+        assert_eq!(m.down(2, x, y, true, false).keys, vec![Down(TURN)]);
+        assert_eq!(m.up(2), vec![Up(TURN)]);
+        assert_eq!(m.down(2, x, y, false, false).keys, vec![Down(CODE_MENU)]);
+        assert_eq!(m.up(2), vec![Up(CODE_MENU)]);
     }
 
     #[test]
-    fn release_uses_the_key_from_the_press() {
+    fn pause_button_is_a_front_end_pause_and_sends_no_key() {
+        let mut m = map();
+        let (x, y) = at(&m, Role::Pause);
+        let t = m.down(3, x, y, true, false);
+        assert!(t.toggle_pause && t.keys.is_empty() && !t.toggle_toolbar, "不送 Esc 給遊戲");
+        assert!(m.up(3).is_empty());
+    }
+
+    #[test]
+    fn release_uses_the_code_from_the_press() {
         let mut m = map();
         let (x, y) = at(&m, Role::Primary);
-        assert_eq!(m.down(1, x, y, false, false).keys, vec![Down(K::Space)]);
-        // 按著的時候進入遊玩，放開的還是當初按的鍵。
-        assert_eq!(m.up(1), vec![Up(K::Space)]);
+        assert_eq!(m.down(1, x, y, false, false).keys, vec![Down(CODE_CONFIRM)]);
+        // 按著的時候進入遊玩，放開的還是當初按的碼。
+        assert_eq!(m.up(1), vec![Up(CODE_CONFIRM)]);
     }
 
     #[test]
@@ -483,11 +510,11 @@ mod tests {
         let mut m = map();
         let (dx, dy) = at(&m, Role::Dpad);
         let (fx, fy) = at(&m, Role::Primary);
-        assert_eq!(m.down(1, dx + 100.0, dy, true, false).keys, vec![Down(K::Right)]);
-        assert_eq!(m.down(2, fx, fy, true, false).keys, vec![Down(K::RShift)]);
-        assert_eq!(m.moved(1, dx, dy + 100.0), vec![Up(K::Right), Down(K::Down)]);
-        assert_eq!(m.up(2), vec![Up(K::RShift)]);
-        assert_eq!(m.up(1), vec![Up(K::Down)]);
+        assert_eq!(m.down(1, dx + 100.0, dy, true, false).keys, vec![Down(RIGHT)]);
+        assert_eq!(m.down(2, fx, fy, true, false).keys, vec![Down(FIRE)]);
+        assert_eq!(m.moved(1, dx, dy + 100.0), vec![Up(RIGHT), Down(DOWN)]);
+        assert_eq!(m.up(2), vec![Up(FIRE)]);
+        assert_eq!(m.up(1), vec![Up(DOWN)]);
     }
 
     #[test]
@@ -499,10 +526,10 @@ mod tests {
         assert!(m.up(1).is_empty());
         let (x, y) = at(&m, Role::Pause);
         let t = m.down(2, x, y, true, true);
-        assert!(!t.toggle_toolbar && t.keys.is_empty(), "工具列蓋著的地方交給工具列");
+        assert!(!t.toggle_toolbar && !t.toggle_pause && t.keys.is_empty(), "工具列蓋著的地方交給工具列");
         // 沒有控制的地方。
         let t = m.down(3, W as f32 / 2.0, H as f32 / 2.0, true, false);
-        assert!(!t.toggle_toolbar && t.keys.is_empty());
+        assert!(!t.toggle_toolbar && !t.toggle_pause && t.keys.is_empty());
         assert!(m.moved(3, 0.0, 0.0).is_empty());
     }
 
@@ -515,10 +542,10 @@ mod tests {
         m.down(2, fx, fy, true, false);
         let ev = m.release_all();
         assert_eq!(ev.len(), 2);
-        assert!(ev.contains(&Up(K::Right)) && ev.contains(&Up(K::RShift)));
+        assert!(ev.contains(&Up(RIGHT)) && ev.contains(&Up(FIRE)));
         assert!(m.release_all().is_empty());
         // 放開之後同樣的手指編號可以再用。
-        assert_eq!(m.down(1, dx + 100.0, dy, true, false).keys, vec![Down(K::Right)]);
+        assert_eq!(m.down(1, dx + 100.0, dy, true, false).keys, vec![Down(RIGHT)]);
     }
 
     #[test]
@@ -534,5 +561,27 @@ mod tests {
         assert!(a[o + 3] > 0);
         // 遊戲狀態改變，文字跟著變。
         assert_ne!(a, render_overlay(&l, false, w, h));
+    }
+
+    #[test]
+    fn overlay_labels_are_chinese_and_stay_inside_their_circles() {
+        let f = font::builtin();
+        for (role, playable) in [(Role::Primary, true), (Role::Primary, false), (Role::Secondary, true), (Role::Secondary, false)] {
+            let t = label(role, playable);
+            assert!(!t.is_empty() && f.missing(t).is_empty(), "{t}");
+        }
+        for (w, h, dp) in [(2400u32, 1080u32, 2.5f32), (1280, 720, 2.0), (960, 432, 1.0)] {
+            for c in layout(w, h, dp) {
+                for playable in [false, true] {
+                    let t = label(c.role, playable);
+                    if t.is_empty() {
+                        continue;
+                    }
+                    let fh = ((c.r * 0.55) as i32).max(12);
+                    let half_diag = (((f.text_width(t, fh) as f32) / 2.0).powi(2) + (fh as f32 / 2.0).powi(2)).sqrt();
+                    assert!(half_diag <= c.r, "{t} 放不進半徑 {} 的圓（{w}x{h}）：{half_diag}", c.r);
+                }
+            }
+        }
     }
 }

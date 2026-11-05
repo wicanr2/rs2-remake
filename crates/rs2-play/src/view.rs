@@ -14,10 +14,10 @@ use std::path::Path;
 pub const GAME_W: u32 = 320;
 pub const GAME_H: u32 = 200;
 
-/// 倍率 `scale` 的視窗大小（工具列顯示時高度加上工具列）。
+/// 倍率 `scale` 的視窗大小（工具列顯示時高度加上工具列與狀態列）。
 pub fn window_size(scale: u32, toolbar_visible: bool) -> (u32, u32) {
     let w = GAME_W * scale;
-    let bar = if toolbar_visible { crate::toolbar::bar_height(w) } else { 0 };
+    let bar = if toolbar_visible { crate::toolbar::desktop_height(w) } else { 0 };
     (w, GAME_H * scale + bar)
 }
 
@@ -50,6 +50,17 @@ pub struct Overlay<'o> {
     pub playable: bool,
 }
 
+/// 設定畫面或暫停標示：一張 RGBA 圖貼在視窗的 `(x, y)`。`key` 不變就不重傳貼圖，內容變了要換 `key`。
+#[derive(Clone, Copy, Debug)]
+pub struct UiLayer<'l> {
+    pub px: &'l [u8],
+    pub w: u32,
+    pub h: u32,
+    pub x: i32,
+    pub y: i32,
+    pub key: u64,
+}
+
 /// 存圖的結果，給日誌用。
 #[derive(Debug, Clone, Copy)]
 pub struct ShotInfo {
@@ -75,9 +86,11 @@ pub struct Presenter<'a> {
     small: Texture<'a>,
     big: Option<Texture<'a>>,
     bar: Option<(Texture<'a>, u32, u32)>,
-    bar_key: Option<(BarState, u32)>,
+    bar_key: Option<(BarState, Toolbar, u32)>,
     overlay: Option<(Texture<'a>, u32, u32)>,
     overlay_key: Option<(bool, u32, u32)>,
+    layer: Option<(Texture<'a>, u32, u32)>,
+    layer_key: Option<(u64, u32, u32)>,
 }
 
 fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: ScaleMode) -> Result<Texture<'a>, String> {
@@ -88,7 +101,17 @@ fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: Scal
 
 impl<'a> Presenter<'a> {
     pub fn new(creator: &'a TextureCreator<WindowContext>) -> Result<Presenter<'a>, String> {
-        Ok(Presenter { creator, small: make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?, big: None, bar: None, bar_key: None, overlay: None, overlay_key: None })
+        Ok(Presenter {
+            creator,
+            small: make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?,
+            big: None,
+            bar: None,
+            bar_key: None,
+            overlay: None,
+            overlay_key: None,
+            layer: None,
+            layer_key: None,
+        })
     }
 
     /// 繪圖裝置重置（Android 切回前景時 GL context 可能重建）：貼圖都要重建。內容每次繪製都會重新上傳。
@@ -99,11 +122,15 @@ impl<'a> Presenter<'a> {
         self.bar_key = None;
         self.overlay = None;
         self.overlay_key = None;
+        self.layer = None;
+        self.layer_key = None;
         Ok(())
     }
 
     /// 畫一幀：工具列在上，遊戲畫面在下；`shot` 有值時在 `present` 之前擷取視窗內容存成 PNG。
     /// `frame` 是 RGBA，`fw × fh` 是 320×200（原版圖，最近鄰放大）或 1280×800（HD，線性縮放）。
+    /// `layer` 是設定畫面或暫停標示，蓋在遊戲畫面與觸控鈕之上、工具列之下。
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         canvas: &mut WindowCanvas,
@@ -113,6 +140,7 @@ impl<'a> Presenter<'a> {
         toolbar: &Toolbar,
         bar_state: &BarState,
         overlay: Option<Overlay<'_>>,
+        layer: Option<UiLayer<'_>>,
         shot: Option<&Path>,
     ) -> Result<Option<ShotInfo>, String> {
         let (ww, wh) = canvas.output_size()?;
@@ -125,12 +153,13 @@ impl<'a> Presenter<'a> {
                 self.bar = Some((make_tex(self.creator, ww, bar_h, ScaleMode::Nearest)?, ww, bar_h));
                 self.bar_key = None;
             }
-            if self.bar_key != Some((*bar_state, ww)) {
+            let fresh = matches!(&self.bar_key, Some((s, t, w)) if s == bar_state && t == toolbar && *w == ww);
+            if !fresh {
                 let px = toolbar.render(ww, bar_state);
                 if let Some((t, _, _)) = self.bar.as_mut() {
                     t.update(None, &px, ww as usize * 4).map_err(|e| format!("更新工具列貼圖失敗：{e}"))?;
                 }
-                self.bar_key = Some((*bar_state, ww));
+                self.bar_key = Some((bar_state.clone(), *toolbar, ww));
             }
         }
         if frame.len() != fw * fh * 4 {
@@ -166,6 +195,30 @@ impl<'a> Presenter<'a> {
                 canvas.copy(t, None, None)?;
             }
         }
+        // 設定畫面或暫停標示：蓋在遊戲畫面與觸控鈕上面。
+        if let Some(l) = layer {
+            if l.px.len() != l.w as usize * l.h as usize * 4 {
+                return Err(format!("介面層緩衝區長度 {} 與 {}x{} 不符", l.px.len(), l.w, l.h));
+            }
+            if l.w > 0 && l.h > 0 {
+                let need_new = !matches!(&self.layer, Some((_, w, h)) if *w == l.w && *h == l.h);
+                if need_new {
+                    let mut t = make_tex(self.creator, l.w, l.h, ScaleMode::Nearest)?;
+                    t.set_blend_mode(BlendMode::Blend);
+                    self.layer = Some((t, l.w, l.h));
+                    self.layer_key = None;
+                }
+                if self.layer_key != Some((l.key, l.w, l.h)) {
+                    if let Some((t, _, _)) = self.layer.as_mut() {
+                        t.update(None, l.px, l.w as usize * 4).map_err(|e| format!("更新介面層貼圖失敗：{e}"))?;
+                    }
+                    self.layer_key = Some((l.key, l.w, l.h));
+                }
+                if let Some((t, _, _)) = self.layer.as_ref() {
+                    canvas.copy(t, None, Rect::new(l.x, l.y, l.w, l.h))?;
+                }
+            }
+        }
         // 工具列最後畫，蓋在觸控層上面。
         if bar_h > 0 {
             if let Some((t, _, _)) = self.bar.as_ref() {
@@ -197,10 +250,14 @@ mod tests {
     #[test]
     fn window_size_adds_the_toolbar_on_top() {
         assert_eq!(window_size(2, false), (640, 400));
-        assert_eq!(window_size(2, true), (640, 413));
-        assert_eq!(window_size(3, true), (960, 626));
-        assert_eq!(window_size(4, true), (1280, 826));
         assert_eq!(window_size(5, false), (1600, 1000));
+        for scale in 2..=5u32 {
+            let bar = crate::toolbar::desktop_height(320 * scale);
+            assert!(bar > 40, "工具列加狀態列至少兩列字高");
+            assert_eq!(window_size(scale, true), (320 * scale, 200 * scale + bar));
+        }
+        // 預設倍率 3：工具列（按鈕列）加狀態列。
+        assert_eq!(window_size(3, true).1, 600 + crate::toolbar::desktop_height(960));
     }
 
     #[test]
@@ -208,7 +265,7 @@ mod tests {
         for scale in 1..=8 {
             for vis in [false, true] {
                 let (w, h) = window_size(scale, vis);
-                let bar = if vis { crate::toolbar::bar_height(w) } else { 0 };
+                let bar = if vis { crate::toolbar::desktop_height(w) } else { 0 };
                 let r = fit_rect(w, h, bar);
                 assert_eq!((r.x, r.y, r.w, r.h), (0, bar as i32, (320 * scale) as i32, (200 * scale) as i32), "scale {scale} bar {bar}");
             }

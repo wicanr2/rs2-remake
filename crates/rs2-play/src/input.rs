@@ -1,9 +1,18 @@
-//! 鍵盤輸入：SDL 掃描碼轉 IBM PC set 1 掃描碼、自動重複、前端熱鍵。
+//! 輸入：SDL 掃描碼轉 IBM PC set 1 掃描碼、自動重複、前端熱鍵，以及鍵盤、手把、觸控三個來源的所有權。
 //!
 //! 規格 001「輸入模型」：`Input.scancodes` 是上一步到這一步之間送達的 set 1 碼，含放開碼（加 80h）與自動重複。
 //! 方向鍵與 Home 等一律送不帶 `E0h` 前綴的碼，原版 INT 9 只看單一位元組。
 //! 時間一律由呼叫端傳入（微秒），這裡不讀時鐘，好寫單元測試。
+//!
+//! 所有權（規格 005「工具列與設定畫面」）：
+//!
+//! - 三個來源各自計數，同一個遊戲碼要等最後一個來源放開才送放開碼。
+//! - `block()`（設定畫面開著、前端暫停）放開全部來源，之後不送碼；`unblock()` 之後每個來源要等自己的按鍵都放開才重新送碼，
+//!   所以設定畫面裡按的鍵、開關設定畫面用的鍵不會進遊戲。
+//! - `release_all()`（視窗失焦）放開全部來源並忘記按著的鍵，不要求先放開。
+//! - 重綁只改實體鍵到遊戲鍵的對應（`keymap::KeyMap`），送進遊戲的永遠是原版的 set 1 碼。
 
+use crate::keymap::{KeyMap, is_game_code, is_pseudo, split_pseudo};
 use sdl2::keyboard::Scancode as K;
 use std::collections::{HashMap, HashSet};
 
@@ -121,8 +130,10 @@ pub enum Hotkey {
     Scale,
     /// F5：玩家機預測與短按保留，關掉就是原版時序。
     Feel,
-    /// F10：工具列。
-    Toolbar,
+    /// F8：設定畫面換頁。
+    Page,
+    /// F10：開關設定畫面。
+    Settings,
     /// F11：全螢幕。
     Fullscreen,
 }
@@ -134,7 +145,8 @@ pub fn hotkey_of(key: K) -> Option<Hotkey> {
         K::F3 => Hotkey::Gfx,
         K::F4 => Hotkey::Scale,
         K::F5 => Hotkey::Feel,
-        K::F10 => Hotkey::Toolbar,
+        K::F8 => Hotkey::Page,
+        K::F10 => Hotkey::Settings,
         K::F11 => Hotkey::Fullscreen,
         _ => return None,
     })
@@ -211,16 +223,39 @@ pub enum KeyResult {
     Ignored,
 }
 
-/// SDL 鍵盤事件到 set 1 掃描碼佇列。
+/// 按鍵的來源。同一個遊戲碼要等所有來源都放開才送放開碼。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    Keyboard = 0,
+    Pad = 1,
+    Touch = 2,
+}
+
+/// 手把與觸控來源在 `phys_codes` 裡的索引。
+fn pt_index(src: Source) -> usize {
+    src as usize - 1
+}
+
+/// 鍵盤、手把、觸控到 set 1 掃描碼佇列。
 ///
 /// 原版的鍵盤中斷隨時都會改按鍵狀態，遊戲一步才看一次，兩步之間按下又放開的鍵看不到。
 /// `hold_short` 開著時，這種鍵的放開碼留到下一步才送，所以至少生效一步。
 #[derive(Debug)]
 pub struct InputMapper {
-    /// 實體鍵 -> 已送出的 make code。
+    keymap: KeyMap,
+    /// 已送進遊戲的實體鍵 -> 送出的碼。
     held: HashMap<K, u8>,
+    /// 按著的實體鍵，不論有沒有送進遊戲，判斷「都放開了」用。
+    phys: HashSet<K>,
     /// 按下時被當成熱鍵吃掉的鍵，放開時也吃掉。
     swallowed: HashSet<K>,
+    /// 手把（0）與觸控（1）按著的碼 -> 實體按住的數量，不論有沒有送進遊戲。
+    phys_codes: [HashMap<u8, u32>; 2],
+    /// 各來源已送進遊戲的數量，索引 `[碼][來源]`。
+    owners: Box<[[u32; 3]; 256]>,
+    /// 各來源現在送不送碼。被 `block()` 停掉後，要等該來源全部放開才重新開始。
+    armed: [bool; 3],
+    blocked: bool,
     queue: Vec<u8>,
     typematic: Typematic,
     hold_short: bool,
@@ -233,8 +268,14 @@ pub struct InputMapper {
 impl Default for InputMapper {
     fn default() -> InputMapper {
         InputMapper {
+            keymap: KeyMap::default(),
             held: HashMap::new(),
+            phys: HashSet::new(),
             swallowed: HashSet::new(),
+            phys_codes: [HashMap::new(), HashMap::new()],
+            owners: Box::new([[0; 3]; 256]),
+            armed: [true; 3],
+            blocked: false,
             queue: Vec::new(),
             typematic: Typematic::default(),
             hold_short: true,
@@ -292,49 +333,179 @@ impl InputMapper {
         s
     }
 
-    /// `os_repeat` 是 SDL 的 `repeat` 旗標。作業系統的重複一律忽略，重複碼由 `Typematic` 自己產生。
-    pub fn key_down(&mut self, key: K, os_repeat: bool, now_us: u64) -> KeyResult {
-        if os_repeat {
-            return KeyResult::Ignored;
-        }
-        if let Some(h) = hotkey_of(key) {
-            self.swallowed.insert(key);
-            return KeyResult::Hotkey(h);
-        }
-        let Some(code) = set1(key) else { return KeyResult::Ignored };
-        if self.held.contains_key(&key) {
-            return KeyResult::Ignored;
-        }
-        self.held.insert(key, code);
-        self.queue.push(code);
-        self.typematic.press(code, now_us);
-        KeyResult::Game
+    /// 換鍵盤對應。已經按著的鍵放開時用按下時的碼，不會因為改對應而卡鍵。
+    pub fn set_keymap(&mut self, km: KeyMap) {
+        self.keymap = km;
     }
 
-    pub fn key_up(&mut self, key: K) {
-        if self.swallowed.remove(&key) {
+    fn total(&self, code: u8) -> u32 {
+        self.owners[code as usize].iter().sum()
+    }
+
+    /// 某個來源把 `code` 送進遊戲。第一個來源按下時才排入按下碼並重新計時自動重複。
+    fn deliver(&mut self, src: Source, code: u8, now_us: u64) {
+        let first = self.total(code) == 0;
+        self.owners[code as usize][src as usize] += 1;
+        if first && !is_pseudo(code) {
+            self.queue.push(code);
+            self.typematic.press(code, now_us);
+        }
+    }
+
+    /// 某個來源放開 `code`。最後一個來源放開才排入放開碼。
+    fn undeliver(&mut self, src: Source, code: u8) {
+        let n = &mut self.owners[code as usize][src as usize];
+        if *n == 0 {
             return;
         }
-        if let Some(code) = self.held.remove(&key) {
+        *n -= 1;
+        if self.total(code) == 0 && !is_pseudo(code) {
             self.queue.push(break_code(code));
             self.typematic.release(code);
         }
     }
 
-    /// 視窗失去焦點：對還按著的鍵補放開碼，免得卡鍵。
-    pub fn release_all(&mut self) {
-        let mut codes: Vec<u8> = self.held.drain().map(|(_, c)| c).collect();
-        codes.sort_unstable();
-        for c in codes {
-            self.queue.push(break_code(c));
+    /// 全部來源已送進遊戲的碼一律放開（放開碼依碼的順序排入），不動「實體上還按著」的記錄。
+    fn drop_delivered(&mut self) {
+        for code in 0..=255u8 {
+            for src in [Source::Keyboard, Source::Pad, Source::Touch] {
+                while self.owners[code as usize][src as usize] > 0 {
+                    self.undeliver(src, code);
+                }
+            }
         }
-        self.swallowed.clear();
+        self.held.clear();
         self.typematic.clear();
     }
 
-    /// 產生到 `now_us` 為止的自動重複碼。
+    fn neutral(&self, src: Source) -> bool {
+        match src {
+            Source::Keyboard => self.phys.is_empty(),
+            s => self.phys_codes[pt_index(s)].is_empty(),
+        }
+    }
+
+    /// 沒被擋住、而且這個來源的按鍵都放開了，就恢復送碼。
+    fn try_arm(&mut self, src: Source) {
+        if !self.blocked && self.neutral(src) {
+            self.armed[src as usize] = true;
+        }
+    }
+
+    /// 現在不送進遊戲（設定畫面開著、前端暫停）。已送出的碼全部放開，之後的按鍵只記錄、不送。
+    pub fn block(&mut self) {
+        self.blocked = true;
+        self.drop_delivered();
+        self.armed = [false; 3];
+    }
+
+    /// 恢復。每個來源要等自己的按鍵都放開才重新送碼，所以在擋住期間按下、還按著的鍵不會進遊戲。
+    pub fn unblock(&mut self) {
+        self.blocked = false;
+        for src in [Source::Keyboard, Source::Pad, Source::Touch] {
+            self.try_arm(src);
+        }
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.blocked
+    }
+
+    /// 這個來源現在有沒有在送碼（沒被擋住，而且已經等到按鍵都放開）。
+    pub fn is_armed(&self, src: Source) -> bool {
+        self.armed[src as usize]
+    }
+
+    /// 分離鍵現在有沒有按著（任何來源）。沒有原版掃描碼，之後給「砲座像 Force」用。
+    pub fn split_held(&self, player: usize) -> bool {
+        self.total(split_pseudo(player.min(1))) > 0
+    }
+
+    /// `os_repeat` 是 SDL 的 `repeat` 旗標。作業系統的重複一律忽略，重複碼由 `Typematic` 自己產生。
+    ///
+    /// 熱鍵不管擋不擋住都回報。其餘的鍵先查綁定，沒綁定的照自然的掃描碼進遊戲，
+    /// 但自然掃描碼是玩家動作碼的鍵（功能已經重綁到別的鍵，或被清空）不送。
+    pub fn key_down(&mut self, key: K, os_repeat: bool, now_us: u64) -> KeyResult {
+        if os_repeat {
+            return KeyResult::Ignored;
+        }
+        if let Some(h) = hotkey_of(key) {
+            self.phys.insert(key);
+            self.swallowed.insert(key);
+            return KeyResult::Hotkey(h);
+        }
+        if !self.phys.insert(key) {
+            return KeyResult::Ignored;
+        }
+        if !self.armed[Source::Keyboard as usize] {
+            return KeyResult::Ignored;
+        }
+        let code = match self.keymap.find(key) {
+            Some((p, act)) => act.counted_code(p),
+            None => match set1(key) {
+                Some(c) if !is_game_code(c) => c,
+                _ => return KeyResult::Ignored,
+            },
+        };
+        self.held.insert(key, code);
+        self.deliver(Source::Keyboard, code, now_us);
+        KeyResult::Game
+    }
+
+    pub fn key_up(&mut self, key: K) {
+        self.phys.remove(&key);
+        if !self.swallowed.remove(&key) {
+            if let Some(code) = self.held.remove(&key) {
+                self.undeliver(Source::Keyboard, code);
+            }
+        }
+        self.try_arm(Source::Keyboard);
+    }
+
+    /// 手把或觸控按下一個遊戲碼（`PadEvent::Down`）。
+    pub fn code_down(&mut self, src: Source, code: u8, now_us: u64) {
+        if src == Source::Keyboard {
+            return;
+        }
+        *self.phys_codes[pt_index(src)].entry(code).or_insert(0) += 1;
+        if self.armed[src as usize] {
+            self.deliver(src, code, now_us);
+        }
+    }
+
+    /// 手把或觸控放開一個遊戲碼（`PadEvent::Up`）。
+    pub fn code_up(&mut self, src: Source, code: u8) {
+        if src == Source::Keyboard {
+            return;
+        }
+        let idx = pt_index(src);
+        let Some(n) = self.phys_codes[idx].get_mut(&code) else { return };
+        *n -= 1;
+        let left = *n;
+        if left == 0 {
+            self.phys_codes[idx].remove(&code);
+        }
+        // 已送進遊戲的數量超過還按著的數量，就是放開了一個送出去的。
+        if self.owners[code as usize][src as usize] > left {
+            self.undeliver(src, code);
+        }
+        self.try_arm(src);
+    }
+
+    /// 視窗失去焦點：全部來源放開並忘記按著的鍵，免得卡鍵。回到前景不要求先放開，因為失焦期間放開的事件收不到。
+    pub fn release_all(&mut self) {
+        self.drop_delivered();
+        self.phys.clear();
+        self.swallowed.clear();
+        self.phys_codes = [HashMap::new(), HashMap::new()];
+        self.armed = [!self.blocked; 3];
+    }
+
+    /// 產生到 `now_us` 為止的自動重複碼。擋住時不重複。
     pub fn poll(&mut self, now_us: u64) {
-        self.typematic.poll(now_us, &mut self.queue);
+        if !self.blocked {
+            self.typematic.poll(now_us, &mut self.queue);
+        }
     }
 
     /// 取出這一步要送的掃描碼，順序就是送達順序，留到下一步的放開碼排在下一次的最前面。
@@ -459,16 +630,17 @@ mod tests {
     }
 
     #[test]
-    fn hotkeys_are_the_toolbar_keys() {
+    fn hotkeys_are_the_front_end_keys() {
         assert_eq!(hotkey_of(K::F1), Some(Hotkey::Tween));
         assert_eq!(hotkey_of(K::F2), Some(Hotkey::Counter));
         assert_eq!(hotkey_of(K::F3), Some(Hotkey::Gfx));
         assert_eq!(hotkey_of(K::F4), Some(Hotkey::Scale));
         assert_eq!(hotkey_of(K::F5), Some(Hotkey::Feel));
-        assert_eq!(hotkey_of(K::F10), Some(Hotkey::Toolbar));
+        assert_eq!(hotkey_of(K::F8), Some(Hotkey::Page));
+        assert_eq!(hotkey_of(K::F10), Some(Hotkey::Settings), "F10 開設定畫面，隱藏工具列改在顯示頁");
         assert_eq!(hotkey_of(K::F11), Some(Hotkey::Fullscreen));
         assert_eq!(hotkey_of(K::F6), None);
-        assert_eq!(hotkey_of(K::Escape), None);
+        assert_eq!(hotkey_of(K::Escape), None, "鍵盤的 Esc 照原版送進遊戲");
     }
 
     fn drain(t: &mut Typematic, now: u64) -> Vec<u8> {
@@ -659,7 +831,7 @@ mod tests {
         assert_eq!(m.key_down(K::F1, true, 10), KeyResult::Ignored);
         m.key_up(K::F1);
         assert!(m.take().is_empty());
-        assert_eq!(m.key_down(K::F10, false, 0), KeyResult::Hotkey(Hotkey::Toolbar));
+        assert_eq!(m.key_down(K::F10, false, 0), KeyResult::Hotkey(Hotkey::Settings));
         // 放開 F1 之後再按會再觸發一次。
         assert_eq!(m.key_down(K::F1, false, 20), KeyResult::Hotkey(Hotkey::Tween));
     }
@@ -699,5 +871,283 @@ mod tests {
         // 放開 Up 之後不會回頭重複 Left（Left 已放開，也不在重複）。兩個鍵都是這段時間才按下，放開碼留到下一步。
         assert_eq!(m.take(), vec![0x4B, 0x48, 0x48]);
         assert_eq!(m.take(), vec![0xCB, 0xC8]);
+    }
+
+    // -----------------------------------------------------------------------
+    // 重綁：只改實體鍵到遊戲鍵的對應，送進遊戲的永遠是原版掃描碼。
+    // -----------------------------------------------------------------------
+
+    use crate::keymap::{Act, CODE_CONFIRM};
+
+    fn drain_all(m: &mut InputMapper) -> Vec<u8> {
+        // 把短按保留的碼也取乾淨。
+        let mut v = m.take();
+        v.extend(m.take());
+        v
+    }
+
+    #[test]
+    fn default_keymap_sends_the_original_codes() {
+        let mut m = InputMapper::new();
+        for (k, c) in [(K::RShift, 0x36u8), (K::Slash, 0x35), (K::T, 0x14), (K::LShift, 0x2A), (K::Z, 0x2C), (K::Home, 0x47), (K::N, 0x31)] {
+            assert_eq!(m.key_down(k, false, 0), KeyResult::Game);
+            assert_eq!(m.take(), vec![c], "{k:?}");
+            m.key_up(k);
+            m.take();
+            m.take();
+        }
+        // 小鍵盤 8 預設同方向鍵上（原版的行為）。
+        assert_eq!(m.key_down(K::Kp8, false, 0), KeyResult::Game);
+        assert_eq!(m.take(), vec![0x48]);
+    }
+
+    #[test]
+    fn rebinding_sends_the_same_original_code_from_the_new_key() {
+        let mut km = KeyMap::default();
+        km.clear(0, Act::Fire);
+        km.bind(0, Act::Fire, K::Space).unwrap();
+        let mut m = InputMapper::new();
+        m.set_keymap(km);
+        assert_eq!(m.key_down(K::Space, false, 0), KeyResult::Game);
+        assert_eq!(m.take(), vec![0x36], "送進遊戲的還是右 Shift 的原版碼");
+        m.key_up(K::Space);
+        assert_eq!(drain_all(&mut m), vec![0xB6]);
+        // 舊鍵不再送：它的功能已經在別的鍵上。
+        assert_eq!(m.key_down(K::RShift, false, 1), KeyResult::Ignored);
+        assert!(drain_all(&mut m).is_empty());
+        m.key_up(K::RShift);
+        assert!(drain_all(&mut m).is_empty(), "沒送過的鍵放開也不送");
+    }
+
+    #[test]
+    fn cleared_binding_blocks_the_natural_key_and_unrelated_keys_still_pass() {
+        let mut km = KeyMap::default();
+        km.clear(1, Act::Up);
+        let mut m = InputMapper::new();
+        m.set_keymap(km);
+        assert_eq!(m.key_down(K::T, false, 0), KeyResult::Ignored, "清空後 T 不再是第 2 人的上");
+        assert!(m.take().is_empty());
+        // Esc、Enter、空白鍵、C、S、Ctrl 照原版送。
+        for (k, c) in [(K::Escape, 0x01u8), (K::Return, 0x1C), (K::Space, 0x39), (K::C, 0x2E), (K::S, 0x1F), (K::LCtrl, 0x1D)] {
+            assert_eq!(m.key_down(k, false, 0), KeyResult::Game);
+            assert_eq!(m.take(), vec![c], "{k:?}");
+        }
+    }
+
+    #[test]
+    fn rebinding_while_a_key_is_held_does_not_stick_it() {
+        let mut m = InputMapper::new();
+        m.key_down(K::RShift, false, 0);
+        assert_eq!(m.take(), vec![0x36]);
+        let mut km = KeyMap::default();
+        km.clear(0, Act::Fire);
+        m.set_keymap(km);
+        m.key_up(K::RShift);
+        assert_eq!(m.take(), vec![0xB6], "放開用按下時的碼");
+    }
+
+    #[test]
+    fn split_key_is_counted_but_never_sent_to_the_game() {
+        let mut m = InputMapper::new();
+        assert!(!m.split_held(0));
+        assert_eq!(m.key_down(K::Period, false, 0), KeyResult::Game);
+        assert!(m.split_held(0) && !m.split_held(1));
+        assert!(drain_all(&mut m).is_empty(), "分離沒有原版掃描碼");
+        m.poll(10_000_000);
+        assert!(drain_all(&mut m).is_empty(), "也不會自動重複");
+        m.key_up(K::Period);
+        assert!(!m.split_held(0));
+        assert!(drain_all(&mut m).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // 三個來源的所有權
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn last_source_to_release_sends_the_break_code() {
+        // 鍵盤先放開，手把還按著：不送放開碼。
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.code_down(Source::Pad, 0x4D, 1);
+        assert_eq!(m.take(), vec![0x4D], "第二個來源按同一個碼不再送按下碼");
+        m.key_up(K::Right);
+        assert!(m.take().is_empty(), "手把還按著");
+        m.code_up(Source::Pad, 0x4D);
+        assert_eq!(m.take(), vec![0xCD], "最後一個來源放開才送放開碼");
+        // 反過來：手把先放開，鍵盤還按著。
+        let mut m = InputMapper::new();
+        m.code_down(Source::Pad, 0x4D, 0);
+        m.key_down(K::Right, false, 1);
+        m.take();
+        m.code_up(Source::Pad, 0x4D);
+        assert!(m.take().is_empty());
+        m.key_up(K::Right);
+        assert_eq!(m.take(), vec![0xCD]);
+    }
+
+    #[test]
+    fn three_sources_on_one_code() {
+        let mut m = InputMapper::new();
+        m.key_down(K::RShift, false, 0);
+        m.code_down(Source::Pad, 0x36, 1);
+        m.code_down(Source::Touch, 0x36, 2);
+        assert_eq!(m.take(), vec![0x36]);
+        m.code_up(Source::Touch, 0x36);
+        m.key_up(K::RShift);
+        assert!(m.take().is_empty());
+        m.code_up(Source::Pad, 0x36);
+        assert_eq!(m.take(), vec![0xB6]);
+        // 兩支手把按同一個碼（兩個確定鈕）也是計數。
+        let mut m = InputMapper::new();
+        m.code_down(Source::Pad, CODE_CONFIRM, 0);
+        m.code_down(Source::Pad, CODE_CONFIRM, 1);
+        m.take();
+        m.code_up(Source::Pad, CODE_CONFIRM);
+        assert!(m.take().is_empty());
+        m.code_up(Source::Pad, CODE_CONFIRM);
+        assert_eq!(m.take(), vec![0x9C]);
+        // 多餘的放開事件沒有作用。
+        m.code_up(Source::Pad, CODE_CONFIRM);
+        m.code_up(Source::Touch, 0x01);
+        assert!(m.take().is_empty());
+    }
+
+    #[test]
+    fn short_press_is_kept_for_pad_and_touch_too() {
+        let mut m = InputMapper::new();
+        m.code_down(Source::Touch, 0x36, 0);
+        m.code_up(Source::Touch, 0x36);
+        assert_eq!(m.take(), vec![0x36], "兩步之間的短按至少生效一步");
+        assert_eq!(m.take(), vec![0xB6]);
+    }
+
+    #[test]
+    fn blocking_releases_every_source_and_stops_sending() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Left, false, 0);
+        m.code_down(Source::Pad, 0x36, 1);
+        m.code_down(Source::Touch, 0x4D, 2);
+        assert_eq!(m.take(), vec![0x4B, 0x36, 0x4D]);
+        m.block();
+        assert!(m.is_blocked() && !m.is_armed(Source::Keyboard));
+        // 放開碼依碼的順序，全部送出去，不留卡住的鍵。
+        assert_eq!(m.take(), vec![0xB6, 0xCB, 0xCD]);
+        // 擋住期間的按鍵不送，自動重複也停。
+        assert_eq!(m.key_down(K::Up, false, 3), KeyResult::Ignored);
+        m.code_down(Source::Pad, 0x36, 4);
+        m.poll(100_000_000);
+        assert!(drain_all(&mut m).is_empty());
+        // 擋住期間熱鍵照樣回報（設定畫面裡要能用 F10、F11）。
+        assert_eq!(m.key_down(K::F11, false, 5), KeyResult::Hotkey(Hotkey::Fullscreen));
+    }
+
+    #[test]
+    fn after_unblocking_keys_still_held_are_not_sent_until_all_are_released() {
+        let mut m = InputMapper::new();
+        m.block();
+        // 設定畫面裡按的鍵：Enter 開始重綁，Right 移動焦點。
+        m.key_down(K::Return, false, 0);
+        m.key_down(K::Right, false, 1);
+        m.unblock();
+        assert!(!m.is_armed(Source::Keyboard));
+        // 還按著的鍵之後放開，不送。
+        m.key_up(K::Return);
+        assert_eq!(m.key_down(K::Up, false, 2), KeyResult::Ignored, "還有一顆沒放開，新按的鍵也不送");
+        m.key_up(K::Right);
+        assert!(!m.is_armed(Source::Keyboard), "Up 還按著");
+        m.key_up(K::Up);
+        assert!(m.is_armed(Source::Keyboard));
+        assert!(drain_all(&mut m).is_empty(), "設定畫面的按鍵沒有任何一個進遊戲");
+        // 全部放開之後恢復。
+        assert_eq!(m.key_down(K::Right, false, 3), KeyResult::Game);
+        assert_eq!(m.take(), vec![0x4D]);
+    }
+
+    #[test]
+    fn closing_with_a_key_that_is_still_down_needs_that_key_released() {
+        // 用 Esc 關設定畫面：按下時已經解除擋住，Esc 還按著。
+        let mut m = InputMapper::new();
+        m.block();
+        m.key_down(K::Escape, false, 0);
+        m.unblock();
+        assert_eq!(m.key_down(K::Left, false, 1), KeyResult::Ignored);
+        m.key_up(K::Left);
+        m.key_up(K::Escape);
+        assert!(m.is_armed(Source::Keyboard));
+        assert!(drain_all(&mut m).is_empty(), "Esc 沒有被當成原版的暫停送進遊戲");
+    }
+
+    #[test]
+    fn unblocking_with_nothing_held_resumes_at_once() {
+        let mut m = InputMapper::new();
+        m.block();
+        m.unblock();
+        assert!(m.is_armed(Source::Keyboard) && m.is_armed(Source::Pad) && m.is_armed(Source::Touch));
+        assert_eq!(m.key_down(K::Right, false, 0), KeyResult::Game);
+    }
+
+    #[test]
+    fn pad_and_touch_sources_wait_for_their_own_release_too() {
+        let mut m = InputMapper::new();
+        m.block();
+        m.code_down(Source::Pad, 0x36, 0);
+        m.code_down(Source::Touch, 0x4D, 0);
+        m.unblock();
+        assert!(!m.is_armed(Source::Pad) && !m.is_armed(Source::Touch));
+        assert!(m.is_armed(Source::Keyboard), "鍵盤沒按著，可以立刻恢復");
+        m.code_down(Source::Pad, 0x35, 1);
+        assert!(drain_all(&mut m).is_empty());
+        m.code_up(Source::Pad, 0x36);
+        m.code_up(Source::Pad, 0x35);
+        assert!(m.is_armed(Source::Pad));
+        m.code_up(Source::Touch, 0x4D);
+        assert!(m.is_armed(Source::Touch));
+        assert!(drain_all(&mut m).is_empty());
+        m.code_down(Source::Pad, 0x36, 2);
+        assert_eq!(m.take(), vec![0x36]);
+    }
+
+    #[test]
+    fn focus_loss_releases_every_source_and_forgets_held_keys() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Left, false, 0);
+        m.code_down(Source::Pad, 0x36, 1);
+        m.take();
+        m.release_all();
+        assert_eq!(m.take(), vec![0xB6, 0xCB]);
+        // 失焦期間放開的事件收不到，所以回來不要求先放開：之後按的鍵直接送。
+        assert!(m.is_armed(Source::Keyboard));
+        m.key_up(K::Left);
+        assert_eq!(m.key_down(K::Left, false, 2), KeyResult::Game);
+        assert_eq!(m.take(), vec![0x4B]);
+        // 手把的舊事件（失焦前按下、之後才收到的放開）不會多送放開碼。
+        m.code_up(Source::Pad, 0x36);
+        assert!(drain_all(&mut m).is_empty());
+    }
+
+    #[test]
+    fn focus_loss_while_blocked_stays_blocked() {
+        let mut m = InputMapper::new();
+        m.block();
+        m.release_all();
+        assert!(m.is_blocked());
+        assert_eq!(m.key_down(K::Right, false, 0), KeyResult::Ignored);
+        m.unblock();
+        m.key_up(K::Right);
+        assert!(m.is_armed(Source::Keyboard));
+    }
+
+    #[test]
+    fn unplugging_a_pad_releases_only_that_source_codes() {
+        // PadMapper::detach 送 Up 事件，這裡確認計數正確：鍵盤同碼還按著時不送放開碼。
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.code_down(Source::Pad, 0x4D, 1);
+        m.take();
+        m.code_up(Source::Pad, 0x4D);
+        assert!(m.take().is_empty());
+        m.key_up(K::Right);
+        assert_eq!(m.take(), vec![0xCD]);
     }
 }

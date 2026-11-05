@@ -110,7 +110,7 @@ echo "玩家機：($x0,$y0) -> ($x1,$y1)"
 # 按住約 1.7 秒，一秒 9.1 步，每步 16 像素。放寬到 5 步，模擬器的觸控事件時間不準。
 [ $((x1 - x0)) -ge 80 ] || fail "按住方向盤卻走不遠（($x0,$y0) -> ($x1,$y1)）"
 shot 06-moved
-adb logcat -d -s rs2:* | grep -E '\[輸入\]|\[手把事件\]' | head -30 | cut -d: -f4- | cut -c1-80
+adb logcat -d -s rs2:* | grep -E '\[輸入\]' | head -30 | cut -d: -f4- | cut -c1-80
 adb logcat -d -s rs2:* | grep '\[perf\]' | tail -4 | cut -d: -f4- | cut -c1-90
 echo "暫停與恢復"
 adb shell input tap $PAUSE_XY
@@ -124,14 +124,12 @@ sleep 2
 shot 08-toolbar
 alive "工具列"
 
-echo "關於頁（工具列第五顆）"
-# 工具列的版面算法同 toolbar.rs：字型倍率 6，字寬 6×6，按鈕邊距 18。
-ABOUT_X=$(python3 -c "
-fs=6;pad=3*fs;x=pad
-for c in (9,9,5,9):
-    x+=c*6*fs-fs+2*pad+pad
-print(x+40)")
-adb shell input tap "$ABOUT_X" 70
+echo "關於頁"
+# 按鈕的位置由 app.rs 寫進 logcat，不在測試裡重算版面。
+about=$(adb logcat -d -s rs2:* | grep '\[工具列\] About ' | tail -1 | grep -oE '[0-9]+ [0-9]+$' || true)
+[ -n "$about" ] || fail "logcat 沒有關於鈕的位置"
+ABOUT_X=${about% *}; ABOUT_Y=${about#* }
+adb shell input tap "$ABOUT_X" "$ABOUT_Y"
 # 切換視窗的途中 mCurrentFocus 會是 null，等到穩定才判定。
 for _ in $(seq 1 20); do
   adb shell dumpsys window | grep -E 'mCurrentFocus' | head -1 > /out/about-focus.txt

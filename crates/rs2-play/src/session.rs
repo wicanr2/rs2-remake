@@ -227,6 +227,12 @@ impl Session {
         self.vga.show_counter = v.counter;
     }
 
+    /// 無敵（規格 005）：呼叫 `Game::set_invincible`（原版作秘技的旗標 `word_273A5`）。
+    /// 呼叫端開著時每步呼叫，從沒開過就不呼叫（原版模式不碰資料段）。
+    pub fn set_invincible(&mut self, on: bool) {
+        self.game.set_invincible(on);
+    }
+
     /// 實際用 HD 圖：選了 HD 而且有 HD 資料夾。
     pub fn hd_effective(&self) -> bool {
         self.view.hd && self.hd_available
@@ -560,6 +566,33 @@ mod tests {
         // 畫面和不按鍵的基準只差這個偏移：關掉預測後回到基準。
         s.set_view(ViewOpts { feel: false, ..VIEW });
         assert_eq!(s.render(1.0).0, &base[..], "關掉預測要回到基準");
+    }
+
+    /// 無敵：開著時旗標每步被寫成 `Y`，關掉寫回 `N`；從沒呼叫過的那一份完全不被碰。
+    #[test]
+    #[ignore]
+    fn d5_invincible_writes_the_cheat_flag_only_when_asked() {
+        let flag = |s: &Session| s.game.state_hash_input()[rs2_core::a(0x273A5) as usize];
+        let mut plain = new_game(VIEW);
+        let mut god = new_game(VIEW);
+        for _ in 0..20 {
+            plain.step(&[]);
+            god.step(&[]);
+        }
+        assert_eq!(plain.dseg_hash(), god.dseg_hash(), "沒呼叫過就和原版相同");
+        let before = flag(&plain);
+        for _ in 0..5 {
+            god.set_invincible(true);
+            god.step(&[]);
+            assert_eq!(flag(&god), b'Y', "開著時每步都是 Y");
+        }
+        god.set_invincible(false);
+        god.step(&[]);
+        assert_eq!(flag(&god), b'N');
+        for _ in 0..5 {
+            plain.step(&[]);
+        }
+        assert_eq!(flag(&plain), before, "沒呼叫的那份旗標沒有被動");
     }
 
     /// 預測、繪製、切換開關都不碰模擬。
