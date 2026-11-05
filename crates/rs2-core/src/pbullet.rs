@@ -1166,46 +1166,4 @@ impl Core {
         self.r.cx = self.ds.r16(a(0x2687E));
         self.r.dx = ax.wrapping_add(0x27);
     }
-
-    /// `sub_16CEA`：在敵彈池（指標表 `32B3h`，20 槽，記錄 15 字組、基底 `32DBh`）找空槽，
-    /// 複製 `word_200F3` 指的樣板，寫入欄 `word_1FE6D`、列 `word_1FE6F`、`列 × 10`。池滿則放棄。
-    /// 結束時 `bx` = 10、`dx` = 乘法高位，這是原版殘值。
-    pub(crate) fn s16cea(&mut self) {
-        self.r.bx = 0;
-        self.r.dx = 0x32DB;
-        self.r.cx = 0x14;
-        loop {
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x32B3));
-            if self.r.ax == 0 {
-                break;
-            }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            self.r.dx = self.r.dx.wrapping_add(0x1E);
-            self.r.cx = self.r.cx.wrapping_sub(1);
-            if self.r.cx == 0 {
-                return;
-            }
-        }
-        // 16D05
-        self.r.ax = self.r.dx;
-        self.ds.w16(self.r.bx.wrapping_add(0x32B3), self.r.ax);
-        self.bump_gen(Pool::EnemyBullet, (self.r.bx >> 1) as u8);
-        let tmpl = self.ds.r16(a(0x200F3));
-        let rec = self.r.dx;
-        self.ds.copy16(rec, tmpl, 0x0F);
-        self.r.cx = 0;
-        self.r.si = tmpl;
-        self.r.di = rec;
-        let ax = self.ds.r16(a(0x1FE6D));
-        self.r.ax = ax;
-        self.ds.w16(rec.wrapping_add(0x12), ax);
-        self.ds.w16(rec.wrapping_add(4), ax);
-        let ax = self.ds.r16(a(0x1FE6F));
-        self.ds.w16(rec.wrapping_add(0x14), ax);
-        self.r.bx = 0x0A;
-        let prod = ax as u32 * 0x0A;
-        self.r.ax = prod as u16;
-        self.r.dx = (prod >> 16) as u16;
-        self.ds.w16(rec.wrapping_add(6), self.r.ax);
-    }
 }

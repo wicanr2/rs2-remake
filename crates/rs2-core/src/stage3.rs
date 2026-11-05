@@ -130,7 +130,7 @@ impl Core {
         self.s14458();
         self.s14f92();
         self.s164bb();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s15232();
@@ -138,7 +138,7 @@ impl Core {
         self.update_effects();
         self.s1100a();
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
         self.r.cx = 2;
@@ -165,7 +165,7 @@ impl Core {
         self.s14458();
         self.s14f92();
         self.s164bb();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s15232();
@@ -174,7 +174,7 @@ impl Core {
         // 13B9Fh 的 cmp word_26872, 0 與 jz $+2 沒有效果。
         self.s1100a();
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.s10ecb().await;
         self.r.cx = 2;
         self.s11097().await;

@@ -2,6 +2,7 @@
 //! 不用原版檔：資料段全 0，只擺這個情境需要的值。
 
 use crate::dseg::a;
+use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
 
 fn game(fixes: Fixes) -> Core {
@@ -10,71 +11,73 @@ fn game(fixes: Fixes) -> Core {
 }
 
 const G2: u16 = 0x2C1C;
-const EB_TABLE: u16 = 0x32B3;
 
-/// 把敵彈槽 `slot` 的 1×1 形狀寫進 G2，回傳寫到的位址。走真正的 `sub_17855`。
+/// 把敵彈槽 `slot` 的 1×1 形狀寫進 G2，回傳寫到的位址。走真正的 `stamp_grid2`。
 fn write_bullet_cell(g: &mut Core, slot: u8, shape: u8) -> u16 {
     let s = 0x7000u16;
     g.ds.w16(s, 1);
     g.ds.w16(s + 2, 1);
     g.ds.w8(s + 4, shape);
-    g.ds.w16(a(0x20111), s);
-    g.ds.w16(a(0x20109), 5);
-    g.ds.w16(a(0x20107), 3);
-    g.ds.w8(a(0x1F7DB), slot);
     // 列表 `列 × 28h`。
     for r in 0..20u16 {
         g.ds.w16(0x1B0A + r * 2, r * 0x28);
     }
-    g.s17855();
+    let bullet = Bullet { shape: s, col: 3, row: 5, ..Bullet::default() };
+    g.stamp_grid2(&bullet, 1, 1, slot);
     G2 + 5 * 0x28 + 3
+}
+
+/// 玩家碰到 `di` 的格：刪掉那一顆敵彈。
+fn hit(g: &mut Core, di: u16) -> Option<u16> {
+    g.remove_hit_bullet(g.ds.r8(di), di)
 }
 
 #[test]
 fn bullet_slot_carry_off_reproduces_wraparound() {
     let mut g = game(Fixes::NONE);
-    for i in 0..20u16 {
-        g.ds.w16(EB_TABLE + i * 2, 0x1234);
+    for s in g.eb.slots.iter_mut() {
+        s.link = 0x1234;
     }
     // 槽 16：格值 01 + 16 = 11h，and 0Fh 減 1 得槽 0。
     let di = write_bullet_cell(&mut g, 16, 0x01);
     assert_eq!(g.ds.r8(di), 0x11);
-    g.r.di = di;
-    g.r.set_al(g.ds.r8(di));
-    g.s14d54();
-    assert_eq!(g.ds.r16(EB_TABLE), 0, "原版刪掉槽 0");
-    assert_eq!(g.ds.r16(EB_TABLE + 32), 0x1234, "原版留下擊中的槽 16");
+    assert_eq!(hit(&mut g, di), Some(0), "原版把槽號 × 2 留在 bx");
+    assert_eq!(g.eb.slots[0].link, 0, "原版刪掉槽 0");
+    assert_eq!(g.eb.slots[16].link, 0x1234, "原版留下擊中的槽 16");
 }
 
 #[test]
 fn bullet_slot_carry_off_slot15_clobbers_record() {
     let mut g = game(Fixes::NONE);
-    g.ds.w16(0x34B1, 0x0A);
-    // 槽 15：格值 01 + 15 = 10h，and 0Fh 減 1 得 FFh，寫到 34B1h。
+    g.eb.slots[15].bullet.row = 0x0A;
+    // 槽 15：格值 01 + 15 = 10h，and 0Fh 減 1 得 FFh，寫到池指標表第 255 項，也就是槽 15 記錄的 w10。
     let di = write_bullet_cell(&mut g, 15, 0x01);
-    g.r.di = di;
-    g.r.set_al(g.ds.r8(di));
-    g.s14d54();
-    assert_eq!(g.ds.r16(0x34B1), 0, "原版把 0 寫到 34B1h");
+    assert_eq!(hit(&mut g, di), Some(0x1FE));
+    assert_eq!(g.eb.slots[15].bullet.row, 0, "原版把 0 寫到 34B1h");
 }
 
 #[test]
 fn bullet_slot_carry_on_removes_the_hit_bullet() {
     let mut g = game(Fixes::ALL);
-    for i in 0..20u16 {
-        g.ds.w16(EB_TABLE + i * 2, 0x1234);
+    for s in g.eb.slots.iter_mut() {
+        s.link = 0x1234;
     }
-    g.ds.w16(0x34B1, 0x0A);
+    g.eb.slots[15].bullet.row = 0x0A;
     for slot in [15u8, 16, 19] {
-        g.ds.w16(EB_TABLE + slot as u16 * 2, 0x1234);
+        g.eb.slots[slot as usize].link = 0x1234;
         let di = write_bullet_cell(&mut g, slot, 0x01);
-        g.r.di = di;
-        g.r.set_al(g.ds.r8(di));
-        g.s14d54();
-        assert_eq!(g.ds.r16(EB_TABLE + slot as u16 * 2), 0, "要刪掉擊中的槽 {slot}");
-        assert_eq!(g.ds.r16(EB_TABLE), 0x1234, "槽 0 不受影響");
-        assert_eq!(g.ds.r16(0x34B1), 0x0A, "34B1h 不受影響");
+        assert_eq!(hit(&mut g, di), Some(slot as u16 * 2));
+        assert_eq!(g.eb.slots[slot as usize].link, 0, "要刪掉擊中的槽 {slot}");
+        assert_eq!(g.eb.slots[0].link, 0x1234, "槽 0 不受影響");
+        assert_eq!(g.eb.slots[15].bullet.row, 0x0A, "槽 15 的記錄不受影響");
     }
+}
+
+#[test]
+fn bullet_slot_carry_on_leaves_bx_alone_when_no_slot_is_recorded() {
+    let mut g = game(Fixes::ALL);
+    assert_eq!(hit(&mut g, G2 + 7), None, "G2 這格沒有另存的槽號");
+    assert_eq!(g.remove_hit_bullet(0x05, 0xFFFF), None, "位址在 G2 之外");
 }
 
 #[test]
@@ -98,7 +101,7 @@ fn bullet_slot_carry_on_clears_with_g2() {
     let mut g = game(Fixes::ALL);
     let di = write_bullet_cell(&mut g, 16, 0x01);
     assert_eq!(g.g2_slots[(di - G2) as usize], 17);
-    g.s178bb();
+    g.clear_grid2();
     assert_eq!(g.g2_slots[(di - G2) as usize], 0);
 }
 

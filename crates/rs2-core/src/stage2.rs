@@ -297,7 +297,7 @@ impl Core {
         self.s1365f();
         self.s13711();
         self.s164bb();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s15232();
@@ -307,7 +307,7 @@ impl Core {
         self.s1375f();
         self.s13443();
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
         self.r.cx = 2;
@@ -326,7 +326,7 @@ impl Core {
         self.s14f92();
         self.s137c6();
         self.s164bb();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s15232();
@@ -337,7 +337,7 @@ impl Core {
         self.s1375f();
         self.s13443();
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
         self.r.cx = 2;

@@ -2,6 +2,7 @@
 
 use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
+use crate::ebullet::EnemyBullets;
 use crate::fx::Effects;
 use crate::regs::Regs;
 use std::cell::RefCell;
@@ -148,6 +149,21 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
     (0x3FB8, 0x3FB9, "word_20B78 特效字母；呼叫端（sub_10CD0、13205、13A51、13DAF、14679、147E1、151A7、1530F、15F8D、167E9、16946、173E1）寫，\
                       只有 sub_17A3A 讀（17A3Ah 起的比較）。重製改成 EffectKind 參數"),
     (0x3FC0, 0x3FC1, "word_20B80 只有 sub_17CB6 寫（17CC8h），沒有任何指令讀"),
+    // ---- 敵彈領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-ebullet.md）。
+    // 池指標表 32B3h、記錄區 32DBh 是狀態，走 Mirror，不在這裡。
+    (0x2C02, 0x2C11, "word_1F7C2 起 8 個字組的轉向表；sub_1744A、1747E、174B2、174E6、1751A、1754E、17582、175B6 寫，只有 sub_175EA 讀。\
+                      重製改成 TURN_TABLES 常數與 turn_toward 參數"),
+    (0x2C12, 0x2C12, "byte_1F7D2 移動碼；sub_17631 寫（17634h），只有 sub_1779B 讀（177A1h）。重製改成 step_bullet 的區域變數"),
+    (0x2C13, 0x2C16, "word_1F7D3、word_1F7D5 瞄準目標的欄與列；sub_172DE 寫，只有 sub_16F9F 讀（sub_171E5 的 1724Ch 起是 retn 之後無跳入的碼）。\
+                      重製改成 aim_target 的回傳值"),
+    (0x2C1B, 0x2C1B, "byte_1F7DB 槽號；sub_17361 歸零並每槽加 1（17367h、17394h），只有 sub_17855 讀（17888h）。重製改成 stamp_grid2 的參數"),
+    (0x32AD, 0x32B2, "word_1FE6D、word_1FE6F 開火起點的欄與列：呼叫端（sub_15DBE、15E68、15FD9、1606A、1617A）寫，只有 sub_16D3B 一族（sub_16CEA、16F9F、172DE）\
+                      讀寫。word_1FE71 本槽釋放旗標：sub_17631 一族（sub_176D0、176F6、1771C、17742、17955、1798E、179C7、17A00）寫，\
+                      只有它們與 sub_17361 讀。重製改成 fire_enemy_bullets 的參數與 move_bullet 的回傳值"),
+    (0x3533, 0x3552, "word_200F3 與工作區 3535h 起 15 個字組（word_200F5 至 word_20111）。sub_1739B 寫滿 15 字組後才由 sub_173C5 一族讀（17631、176B5、\
+                      176D0、176F6、1771C、17742、17768、1779B、177D2、17821、17855、17898、173E1、17955、1798E、179C7、17A00），sub_173B0 複製回記錄；\
+                      word_200F3 另是 sub_16D3B 一族寫、sub_16CEA 讀的樣板位址。重製改成 step_bullet 的區域 Bullet 與 spawn_bullet 的 Template 參數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -244,6 +260,8 @@ pub struct Core {
     pub fixes: Fixes,
     /// 特效池。
     pub(crate) fx: Effects,
+    /// 敵方子彈池。
+    pub(crate) eb: EnemyBullets,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -286,6 +304,7 @@ impl Core {
             r: Regs::default(),
             fixes,
             fx: Effects::default(),
+            eb: EnemyBullets::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,

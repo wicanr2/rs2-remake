@@ -6,6 +6,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::ebullet::turn_toward;
 use crate::fx::EffectKind;
 use crate::game::Core;
 
@@ -240,12 +241,8 @@ impl Core {
             return;
         }
         let bx = self.r.bx;
-        self.r.ax = self.ds.r16(a(0x1F188));
-        self.ds.w16(a(0x1FE6D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F18A)).wrapping_add(2);
-        self.ds.w16(a(0x1FE6F), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F184));
-        self.s16d3b();
+        let (x, y) = (self.ds.r16(a(0x1F188)), self.ds.r16(a(0x1F18A)).wrapping_add(2));
+        self.fire_enemy_bullets(self.ds.r16(a(0x1F184)), x, y);
         self.r.bx = bx;
     }
 
@@ -329,13 +326,8 @@ impl Core {
 
     /// `15E9Ah`（`sub_15E68` 的追蹤路徑，mode `A`）：以 (w9, w10) 求目標朝向，轉一步後當移動碼。
     fn l_15e9a(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1F188));
-        self.ds.w16(a(0x1FE6D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F18A));
-        self.ds.w16(a(0x1FE6F), self.r.ax);
-        self.s16f9f();
-        self.r.dx = self.ds.r16(a(0x1F190));
-        self.s173fe();
+        let target = self.aim_heading(self.ds.r16(a(0x1F188)), self.ds.r16(a(0x1F18A)));
+        self.r.dx = turn_toward(target, self.ds.r16(a(0x1F190)));
         self.ds.w16(a(0x1F190), self.r.dx);
         self.ds.w8(a(0x1E6C8), self.r.dl());
         self.r.ax = self.r.dx;
@@ -490,12 +482,8 @@ impl Core {
             9 => self.s1609c(),
             0x0A => self.s16132(),
             0x0B => {
-                self.r.ax = self.ds.r16(a(0x1F188));
-                self.ds.w16(a(0x1FE6D), self.r.ax);
-                self.r.ax = self.ds.r16(a(0x1F18A)).wrapping_add(2);
-                self.ds.w16(a(0x1FE6F), self.r.ax);
-                self.r.ax = 0x42;
-                self.s16d3b();
+                let (x, y) = (self.ds.r16(a(0x1F188)), self.ds.r16(a(0x1F18A)).wrapping_add(2));
+                self.fire_enemy_bullets(u16::from(b'B'), x, y);
             }
             0x0F => self.ds.w16(a(0x1EDAA), 0x59),
             _ => {}
@@ -508,8 +496,7 @@ impl Core {
         if self.r.al() != 0x0D {
             return;
         }
-        self.r.ax = self.ds.r16(a(0x1F188)).wrapping_add(3);
-        self.ds.w16(a(0x1FE6D), self.r.ax);
+        let x = self.ds.r16(a(0x1F188)).wrapping_add(3);
         self.r.ax = self.ds.r16(a(0x1F18A)).wrapping_add(4);
         if (self.r.ax as i16) <= 0 {
             self.r.set_al(5);
@@ -519,8 +506,7 @@ impl Core {
             self.r.set_al(1);
             return;
         }
-        self.ds.w16(a(0x1FE6F), self.r.ax);
-        self.s16f9f();
+        self.r.ax = self.aim_heading(x, self.r.ax).code();
         let al = self.r.al();
         if al <= 3 || al >= 7 {
             self.r.set_al(1);
@@ -639,12 +625,8 @@ impl Core {
         if self.r.ax <= self.ds.r16(a(0x1F182)) {
             return;
         }
-        self.r.ax = self.ds.r16(a(0x1F188));
-        self.ds.w16(a(0x1FE6D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F18A));
-        self.ds.w16(a(0x1FE6F), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F184));
-        self.s16d3b();
+        let (x, y) = (self.ds.r16(a(0x1F188)), self.ds.r16(a(0x1F18A)));
+        self.fire_enemy_bullets(self.ds.r16(a(0x1F184)), x, y);
     }
 
     /// `sub_161B0`：把碰撞形狀以 `or` 寫進 G3 髒格（`964Ch` 起，每列 50h 位元組，奇數位元組）。

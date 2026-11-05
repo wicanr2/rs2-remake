@@ -746,7 +746,9 @@ impl Core {
                 {
                     self.r.set_al(self.ds.r8(self.r.di));
                     if self.r.al() != 0 && self.r.al() & 0xE0 == 0 {
-                        self.s14d54();
+                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
+                            self.r.bx = bx;
+                        }
                     }
                 }
                 self.r.di = self.r.di.wrapping_add(1);
@@ -866,7 +868,9 @@ impl Core {
                 {
                     self.r.set_al(self.ds.r8(self.r.di));
                     if self.r.al() != 0 {
-                        self.s14d54();
+                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
+                            self.r.bx = bx;
+                        }
                         self.s14cd4();
                     }
                 }
@@ -923,31 +927,6 @@ impl Core {
         } else if al == 0x20 {
             self.ds.w16(a(0x1DAA9), 0x53);
         }
-    }
-
-    /// `sub_14D54`：刪除格值低四位減 1 對應的敵彈（`dseg:32B3h` 起的槽字組清 0）。`bx` 被改寫，`ax` 保留。
-    /// 低四位為 0 時槽號回繞成 FFh，寫到 `34B1h`（`bullet_slot_carry` 缺陷的來源）。
-    pub(crate) fn s14d54(&mut self) {
-        let saved = self.r.ax;
-        if self.fixes.bullet_slot_carry {
-            // 另存的槽號，不受格值回繞影響。
-            let idx = self.r.di.wrapping_sub(0x2C1C) as usize;
-            if let Some(&n) = self.g2_slots.get(idx) {
-                if n != 0 {
-                    self.r.bx = ((n - 1) as u16) << 1;
-                    self.ds.w16(self.r.bx.wrapping_add(0x32B3), 0);
-                }
-            }
-            return;
-        }
-        self.r.set_al(self.r.al() & 0x0F);
-        self.r.set_al(self.r.al().wrapping_sub(1));
-        self.r.set_ah(0);
-        self.r.bx = self.r.ax;
-        self.r.bx <<= 1;
-        self.r.ax = 0;
-        self.ds.w16(self.r.bx.wrapping_add(0x32B3), self.r.ax);
-        self.r.ax = saved;
     }
 
     /// `sub_14D68`：G2 的列位址（玩家 1 本體）。`di` = `2C1Ch` + 列表 + `word_1DACB`，`dx` = 列基底 + 45h。
@@ -1674,7 +1653,9 @@ impl Core {
                 {
                     self.r.set_al(self.ds.r8(self.r.di));
                     if self.r.al() != 0 && self.r.al() & 0xE0 == 0 {
-                        self.s15882();
+                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
+                            self.r.bx = bx;
+                        }
                     }
                 }
                 self.r.di = self.r.di.wrapping_add(1);
@@ -1792,7 +1773,9 @@ impl Core {
                 {
                     self.r.set_al(self.ds.r8(self.r.di));
                     if self.r.al() != 0 {
-                        self.s15882();
+                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
+                            self.r.bx = bx;
+                        }
                         self.s15802();
                     }
                 }
@@ -1849,30 +1832,6 @@ impl Core {
         } else if al == 0x20 {
             self.ds.w16(a(0x1DB0B), 0x53);
         }
-    }
-
-    /// `sub_15882`：刪除格值低四位減 1 對應的敵彈，同 `sub_14D54`（`bx` 被改寫，`ax` 保留）。
-    pub(crate) fn s15882(&mut self) {
-        let saved = self.r.ax;
-        if self.fixes.bullet_slot_carry {
-            // 另存的槽號，不受格值回繞影響。
-            let idx = self.r.di.wrapping_sub(0x2C1C) as usize;
-            if let Some(&n) = self.g2_slots.get(idx) {
-                if n != 0 {
-                    self.r.bx = ((n - 1) as u16) << 1;
-                    self.ds.w16(self.r.bx.wrapping_add(0x32B3), 0);
-                }
-            }
-            return;
-        }
-        self.r.set_al(self.r.al() & 0x0F);
-        self.r.set_al(self.r.al().wrapping_sub(1));
-        self.r.set_ah(0);
-        self.r.bx = self.r.ax;
-        self.r.bx <<= 1;
-        self.r.ax = 0;
-        self.ds.w16(self.r.bx.wrapping_add(0x32B3), self.r.ax);
-        self.r.ax = saved;
     }
 
     /// `sub_15896`：G2 的列位址（玩家 2 本體，`word_1DB39`）。

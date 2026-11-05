@@ -126,7 +126,7 @@ impl Core {
         self.s16302();
         self.s15c92();
         self.s164bb();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s14f92();
@@ -138,7 +138,7 @@ impl Core {
         self.ds.w16(0x0422, c);
         // sub_1117F 只有 MGA 分支。
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.ds.w16(0x9CC0, 0x1B);
         self.ds.w16(0x9CC2, 0xAC);
         self.ds.w16(0x9CC8, 0x1A);
@@ -161,7 +161,7 @@ impl Core {
         self.s164bb();
         self.s164d7();
         self.s15c92();
-        self.s17361();
+        self.update_enemy_bullets();
         self.s1673e();
         self.s14704();
         self.s14f92();
@@ -171,7 +171,7 @@ impl Core {
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
         self.s162b1();
-        self.s178bb();
+        self.clear_grid2();
         self.suspend(Req::Sample(0x10FE3)).await;
         self.r.cx = 2;
         self.s11097().await;
@@ -288,7 +288,7 @@ impl Core {
         self.ds.w16(0x042A, 0);
         self.r.ax = 0;
         self.ds.fill16(0x2294, 0x10, 0);
-        self.ds.fill16(0x32B3, 0x14, 0);
+        self.eb.release_all();
         self.ds.fill16(0x2607, 0x14, 0);
         self.r.cx = 0;
         self.r.di = 0x2607 + 0x28;

@@ -19,6 +19,7 @@
 //! 一律經這裡的具名存取函式。那個領域搬完時，把存取函式換成真正的結構。
 
 use crate::dseg::{Dseg, a};
+use crate::ebullet::{Bullet, Capsule, EnemyBullets, POOL_SIZE as EB_POOL_SIZE, Slot, Template};
 use crate::fx::{Effect, Effects, POOL_SIZE, Script};
 use crate::game::Core;
 
@@ -34,11 +35,13 @@ impl Core {
     /// 所有已搬走的領域從 `self.ds` 讀入。
     pub(crate) fn load_mirrors(&mut self) {
         self.fx.load(&self.ds);
+        self.eb.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
     pub(crate) fn store_mirrors(&mut self) {
         self.fx.store(&mut self.ds);
+        self.eb.store(&mut self.ds);
     }
 }
 
@@ -83,7 +86,117 @@ impl Mirror for Effects {
 
 const _: () = assert!(POOL_SIZE == 30, "池大小與原版三個陣列的長度一致");
 
+// ---- 敵方子彈池 ----
+
+/// 池指標表，20 個字組（`32B3h`）。0 是空槽，使用中是該槽記錄的位址。
+const EB_LINKS: u16 = 0x32B3;
+/// 記錄區，20 筆連續的 15 字組記錄（`32DBh` 起，每筆 1Eh 位元組）。
+const EB_RECORDS: u16 = 0x32DB;
+const EB_RECORD_BYTES: u16 = 0x1E;
+
+const _: () = assert!(EB_POOL_SIZE == 20, "池大小與原版指標表的長度一致");
+const _: () = assert!(EB_RECORDS == EB_LINKS + 2 * EB_POOL_SIZE as u16, "記錄區緊接在指標表之後");
+
+/// 第 `slot` 槽記錄的位址，也就是使用中的槽寫進池指標表的值。
+pub(crate) const fn record_link(slot: usize) -> u16 {
+    EB_RECORDS + EB_RECORD_BYTES * slot as u16
+}
+
+/// 記錄的欄位順序與位移（`Bullet` 的欄位依序對應 `w0` 至 `w14`）：
+///
+/// | 位移 | 欄位 | 位移 | 欄位 |
+/// |---|---|---|---|
+/// | +00h | `heading` | +10h | `library` |
+/// | +02h | `frames` | +12h | `col` |
+/// | +04h | `blit_x` | +14h | `row` |
+/// | +06h | `blit_y` | +16h | `dcol` |
+/// | +08h | `blit_dx` | +18h | `drow` |
+/// | +0Ah | `blit_dy` | +1Ah | `script` |
+/// | +0Ch | `spare` | +1Ch | `shape` |
+/// | +0Eh | `trail` | | |
+impl Bullet {
+    pub(crate) fn from_words(w: [u16; 15]) -> Bullet {
+        Bullet {
+            heading: w[0],
+            frames: w[1],
+            blit_x: w[2],
+            blit_y: w[3],
+            blit_dx: w[4],
+            blit_dy: w[5],
+            spare: w[6],
+            trail: w[7],
+            library: w[8],
+            col: w[9],
+            row: w[10],
+            dcol: w[11],
+            drow: w[12],
+            script: w[13],
+            shape: w[14],
+        }
+    }
+
+    pub(crate) fn to_words(&self) -> [u16; 15] {
+        [
+            self.heading,
+            self.frames,
+            self.blit_x,
+            self.blit_y,
+            self.blit_dx,
+            self.blit_dy,
+            self.spare,
+            self.trail,
+            self.library,
+            self.col,
+            self.row,
+            self.dcol,
+            self.drow,
+            self.script,
+            self.shape,
+        ]
+    }
+
+    fn read(ds: &Dseg, at: u16) -> Bullet {
+        Bullet::from_words(std::array::from_fn(|k| ds.r16(at.wrapping_add(2 * k as u16))))
+    }
+}
+
+impl Mirror for EnemyBullets {
+    fn load(&mut self, ds: &Dseg) {
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            *slot = Slot { link: ds.r16(EB_LINKS + 2 * i as u16), bullet: Bullet::read(ds, record_link(i)) };
+        }
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            ds.w16(EB_LINKS + 2 * i as u16, slot.link);
+            for (k, w) in slot.bullet.to_words().into_iter().enumerate() {
+                ds.w16(record_link(i) + 2 * k as u16, w);
+            }
+        }
+    }
+}
+
+impl EnemyBullets {
+    /// 原版刪除敵彈寫的是「池指標表第 `idx` 項」（`mov [bx+32B3h], 0`，`bx` = 槽號 × 2），沒有檢查 `idx` < 20。
+    /// 記錄區緊接在指標表之後，超出的項就是記錄區的字組：項 20 是槽 0 的 `w0`，之後每 15 項換一槽。
+    /// 玩家碰到格值低四位為 0 的敵彈格時槽號減 1 繞回 FFh，落在項 255，也就是槽 15 的 `w10`（`row`）。
+    pub(crate) fn clear_link_word(&mut self, idx: usize) {
+        if idx < EB_POOL_SIZE {
+            self.slots[idx].link = 0;
+            return;
+        }
+        let word = idx - EB_POOL_SIZE;
+        let Some(slot) = self.slots.get_mut(word / 15) else { return };
+        let mut w = slot.bullet.to_words();
+        w[word % 15] = 0;
+        slot.bullet = Bullet::from_words(w);
+    }
+}
+
 // ---- 尚未搬走的共用資料段 ----
+//
+// 搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、玩家狀態、格網），一律經下面的具名存取函式。
 
 impl Script {
     /// 動畫表在資料段的位移。唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。
@@ -100,15 +213,190 @@ impl Script {
     }
 }
 
+impl Capsule {
+    /// 道具球樣板的起點（朝向 1）。四種各 8 個樣板，連續排列。
+    const fn table_base(self) -> u16 {
+        match self {
+            Capsule::L => 0x3737,
+            Capsule::B => 0x3827,
+            Capsule::K => 0x3917,
+            Capsule::S => 0x3A07,
+        }
+    }
+}
+
+impl Template {
+    /// 敵彈樣板在資料段的位移。唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。
+    /// 樣板表從 `3557h` 起共 72 筆，每筆 1Eh 位元組；八向的樣板依朝向 1 至 8 連續排列。
+    /// `3647h` 至 `3719h` 的 8 筆（形狀 `3F40h`、圖庫索引 0）沒有任何程式引用，不在這裡。
+    pub(crate) const fn table_offset(self) -> u16 {
+        match self {
+            Template::Aimed(h) => 0x3557 + EB_RECORD_BYTES * h.index(),
+            Template::Capsule(c, h) => c.table_base() + EB_RECORD_BYTES * h.index(),
+            Template::Unused => 0x3AF7,
+            Template::Wide(t) => 0x3B15 + EB_RECORD_BYTES * t as u16,
+            Template::Spread(s) => 0x3B6F + EB_RECORD_BYTES * s as u16,
+            Template::WideFlash => 0x3C05,
+            Template::Flash => 0x3C23,
+            Template::Straight(h) => 0x3C41 + EB_RECORD_BYTES * h.index(),
+            Template::SlowSw => 0x3D31,
+            Template::SlowW => 0x3D4F,
+            Template::SlowNw => 0x3D6D,
+            Template::BouncerNw => 0x3D8B,
+            Template::BouncerNe => 0x3DA9,
+        }
+    }
+}
+
+impl Core {
+    /// 讀一筆敵彈樣板（15 個字組）。
+    pub(crate) fn bullet_template(&self, template: Template) -> Bullet {
+        Bullet::read(&self.ds, template.table_offset())
+    }
+
+    /// 唯讀表格的字組與位元組：腳本、圖框表、形狀。
+    pub(crate) fn table_word(&self, ptr: u16) -> u16 {
+        self.ds.r16(ptr)
+    }
+
+    pub(crate) fn table_byte(&self, ptr: u16) -> u8 {
+        self.ds.r8(ptr)
+    }
+}
+
+// ---- 別的領域擁有的共用變數 ----
+
+/// `byte_1CFDD`：存活的玩家，位元 0 是玩家 1，位元 4 是玩家 2。
+const PLAYERS_ALIVE: u16 = a(0x1CFDD);
+/// 玩家在格網上的位置：玩家 1 欄 `word_1DACB`、列 `word_1DAC9`；玩家 2 欄 `word_1DB39`、列 `word_1DB37`。
+const PLAYER_CELLS: [(u16, u16); 2] = [(a(0x1DACB), a(0x1DAC9)), (a(0x1DB39), a(0x1DB37))];
+/// `word_26872`：目前繪製頁的偏移，0 或 8000h。
+const DRAW_PAGE: u16 = a(0x26872);
+
+impl Core {
+    /// 玩家（0 是玩家 1，1 是玩家 2）是否存活。
+    pub(crate) fn player_alive(&self, player: usize) -> bool {
+        let bit = if player == 0 { 0x01 } else { 0x10 };
+        self.ds.r8(PLAYERS_ALIVE) & bit != 0
+    }
+
+    /// 玩家在格網上的位置：(欄, 列)。
+    pub(crate) fn player_cell(&self, player: usize) -> (u16, u16) {
+        let (col, row) = PLAYER_CELLS[player];
+        (self.ds.r16(col), self.ds.r16(row))
+    }
+
+    /// 目前繪製頁的偏移：奇偶幀交替，0 或 8000h。
+    pub(crate) fn draw_page(&self) -> u16 {
+        self.ds.r16(DRAW_PAGE)
+    }
+
+    /// 測試用：設玩家的存活與位置。`None` 表示不存活，位置不動。
+    #[cfg(test)]
+    pub(crate) fn set_players(&mut self, players: [Option<(u16, u16)>; 2]) {
+        let mut alive = 0u8;
+        for (i, p) in players.into_iter().enumerate() {
+            if let Some((col, row)) = p {
+                alive |= if i == 0 { 0x01 } else { 0x10 };
+                self.set_player_cell(i, col, row);
+            }
+        }
+        self.ds.w8(PLAYERS_ALIVE, alive);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_player_cell(&mut self, player: usize, col: u16, row: u16) {
+        let (c, r) = PLAYER_CELLS[player];
+        self.ds.w16(c, col);
+        self.ds.w16(r, row);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_draw_page(&mut self, page: u16) {
+        self.ds.w16(DRAW_PAGE, page);
+    }
+
+    /// 測試用：擺上原版的兩張列表（`列 × 28h`、`列 × 50h + 1`），不用原版檔的測試要它才能算格位址。
+    #[cfg(test)]
+    pub(crate) fn fill_row_tables(&mut self) {
+        for r in 0..20u16 {
+            self.ds.w16(GRID_ROW_BASE_TABLE + 2 * r, r * 0x28);
+            self.ds.w16(GRID_ROW_TABLE + 2 * r, r * 0x50 + 1);
+        }
+        self.ds.w16(GRID_ROW_TABLE + 2 * 20, 0x59);
+    }
+}
+
+// ---- 格網 ----
+
+/// G1 實體格網（`1B32h`，800 位元組）的起點。這裡只用來說明 G2 列表的別名。
+pub(crate) const GRID1_START: u16 = 0x1B32;
+/// G2 敵彈格網（`2C1Ch`，40 欄 × 20 列，每格一位元組，列距 28h）。
+pub(crate) const GRID2_START: u16 = 0x2C1C;
+const GRID2_BYTES: u16 = 0x320;
+/// 敵彈寫 G2 的位址上限（含）。比 G2 的最後一格再多一格。
+const GRID2_LAST_WRITABLE: u16 = GRID2_START + GRID2_BYTES;
+/// 列基底表（`1B0Ah`）：每列一個字組，`列 × 28h`，20 項。
+const GRID_ROW_BASE_TABLE: u16 = 0x1B0A;
+/// 可寫的欄範圍是列基底之後、列基底 + 27h 之前（欄 1 至 38）。
+const GRID2_ROW_END: u16 = 0x27;
+
+const _: () = assert!(
+    GRID_ROW_BASE_TABLE + 2 * GRID_LAST_ROW == GRID1_START,
+    "列基底表的第 20 項（索引 14h）就是 G1 的前兩個位元組"
+);
+
+impl Core {
+    /// 清 G2（原版 `sub_178BB`，每幀末）。修正模式另存的槽號一起清。
+    pub(crate) fn clear_grid2(&mut self) {
+        self.ds.fill16(GRID2_START, GRID2_BYTES / 2, 0);
+        self.g2_slots.fill(0);
+    }
+
+    /// G2 某一列的基底位址（原版 `sub_17898`）。列（無號）大於等於 14h，含負列，改取索引 14h；
+    /// 該項的位址是 G1 的前兩個位元組，所以列基底取到的是 G1 的內容，原版行為。
+    /// 道具球 2×3 在列 18 的移除幀會寫到列 20，走到這個分支。
+    pub(crate) fn grid2_row_base(&self, row: u16) -> u16 {
+        let row = row.min(GRID_LAST_ROW);
+        self.ds.r16(row.wrapping_shl(1).wrapping_add(GRID_ROW_BASE_TABLE)).wrapping_add(GRID2_START)
+    }
+
+    /// `addr` 是否可寫：落在 `2C1Ch` 至 `2F3Ch` 之間，且嚴格在列基底之後（欄 0 不寫）、嚴格在列基底 + 27h 之前。
+    pub(crate) fn grid2_writable(&self, row_base: u16, addr: u16) -> bool {
+        addr <= GRID2_LAST_WRITABLE && addr >= GRID2_START && addr < row_base.wrapping_add(GRID2_ROW_END) && addr > row_base
+    }
+
+    pub(crate) fn grid2_write(&mut self, addr: u16, v: u8) {
+        self.ds.w8(addr, v);
+    }
+
+    /// `addr` 在 G2 裡的索引，`g2_slots` 用。
+    pub(crate) fn grid2_index(&self, addr: u16) -> usize {
+        addr.wrapping_sub(GRID2_START) as usize
+    }
+}
+
 /// G3 格網（碰撞用的髒格，每列 50h 位元組，奇數位元組）的範圍。
 const GRID3_START: u16 = 0x964C;
 const GRID3_END: u16 = 0x9C3C;
+/// 一列 40 格，每格 2 位元組，所以列距 50h，列內可寫的範圍是 `[第一格, 第一格 + 4Eh]`。
+pub(crate) const GRID3_ROW_BYTES: u16 = 0x50;
+const GRID3_ROW_LAST_CELL: u16 = 0x4E;
 /// 列起點表（`21C2h`）：每列一個字組。列 0 至 13h 從 0001h 起每列加 50h，列 14h 是越界列（0059h）。G3 與 G4 共用。
 const GRID_ROW_TABLE: u16 = 0x21C2;
 /// 列號（無號）大於等於這個值一律當作這一列。
 const GRID_LAST_ROW: u16 = 0x14;
 
 impl Core {
+    /// 以 `or` 寫進 G3 的一格，限定在 `first`（該列第一格的位址）起的這一列內。
+    /// 敵彈用這個：超出該列右緣的格略過，不溢進下一列。
+    pub(crate) fn grid3_or_in_row(&mut self, first: u16, addr: u16, v: u8) {
+        if first <= addr && addr <= first.wrapping_add(GRID3_ROW_LAST_CELL) {
+            let old = self.ds.r8(addr);
+            self.ds.w8(addr, old | v);
+        }
+    }
+
     /// G3 的格位址（原版 `sub_17D5F`）：`列` 大於等於 14h 改取 14h，位址 = G3 起點 + 列起點表 + 2 × 欄 + 1。
     /// 全部以 16 位元環繞運算，所以越界的位址由 [`Core::grid3_or`] 擋掉。
     pub(crate) fn grid3_cell_addr(&self, row: u16, col: u16) -> u16 {
@@ -167,5 +455,182 @@ mod tests {
         assert_eq!(c.grid3_cell_addr(5, 7), GRID3_START + 0x0101 + 2 * 7 + 1);
         // 環繞：欄乘 2 超過 16 位元時高位元丟掉。
         assert_eq!(c.grid3_cell_addr(5, 0x8001), GRID3_START + 0x0101 + 2 + 1);
+    }
+
+    #[test]
+    fn grid3_or_in_row_only_writes_inside_the_row() {
+        let mut c = core();
+        let first = GRID3_START + 0x51;
+        c.grid3_or_in_row(first, first, 0x01);
+        c.grid3_or_in_row(first, first, 0x02);
+        c.grid3_or_in_row(first, first + 0x4E, 0x80);
+        assert_eq!((c.ds.r8(first), c.ds.r8(first + 0x4E)), (0x03, 0x80), "列內的格以 or 累積，兩端都算");
+        c.grid3_or_in_row(first, first + 0x50, 0xFF);
+        c.grid3_or_in_row(first, first - 1, 0xFF);
+        assert_eq!((c.ds.r8(first + 0x50), c.ds.r8(first - 1)), (0, 0), "列外不寫，即使仍在 G3 內");
+    }
+
+    fn pseudo_random_image() -> Vec<u8> {
+        let mut image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let mut s = 0x9E37_79B9u32;
+        for b in image[rs2_formats::DSEG_IMAGE_OFFSET..].iter_mut() {
+            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *b = (s >> 24) as u8;
+        }
+        image
+    }
+
+    #[test]
+    fn enemy_bullets_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut eb = EnemyBullets::default();
+        eb.load(&ds);
+        let mut same = ds.clone();
+        eb.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        eb.store(&mut blank);
+        let mut back = EnemyBullets::default();
+        back.load(&blank);
+        assert_eq!(back.slots, eb.slots);
+        assert_ne!(eb.slots, EnemyBullets::default().slots, "測試資料不該全 0");
+    }
+
+    #[test]
+    fn enemy_bullet_fields_land_at_the_documented_offsets() {
+        let mut eb = EnemyBullets::default();
+        for (i, slot) in eb.slots.iter_mut().enumerate() {
+            let w: [u16; 15] = std::array::from_fn(|k| 0x100 * (i as u16 + 1) + k as u16 + 1);
+            *slot = Slot { link: 0x7000 + i as u16, bullet: Bullet::from_words(w) };
+        }
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        eb.store(&mut ds);
+        for i in 0..EB_POOL_SIZE as u16 {
+            assert_eq!(ds.r16(0x32B3 + 2 * i), 0x7000 + i, "槽 {i} 的指標在 32B3h + 2i");
+            let rec = 0x32DB + 0x1E * i;
+            for k in 0..15u16 {
+                assert_eq!(ds.r16(rec + 2 * k), 0x100 * (i + 1) + k + 1, "槽 {i} 的 w{k} 在記錄 +{:02X}h", 2 * k);
+            }
+        }
+        // 具名欄位：w0 heading、w1 frames、w2 blit_x、w3 blit_y、w4 blit_dx、w5 blit_dy、w6 spare、w7 trail、
+        // w8 library、w9 col、w10 row、w11 dcol、w12 drow、w13 script、w14 shape。
+        let b = eb.slots[0].bullet;
+        assert_eq!(
+            [b.heading, b.frames, b.blit_x, b.blit_y, b.blit_dx, b.blit_dy, b.spare, b.trail],
+            [0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x108]
+        );
+        assert_eq!(
+            [b.library, b.col, b.row, b.dcol, b.drow, b.script, b.shape],
+            [0x109, 0x10A, 0x10B, 0x10C, 0x10D, 0x10E, 0x10F]
+        );
+        assert_eq!(Bullet::from_words(b.to_words()), b);
+        assert_eq!(record_link(3), 0x32DB + 3 * 0x1E);
+    }
+
+    #[test]
+    fn clear_link_word_past_the_table_lands_in_the_records() {
+        let mut eb = EnemyBullets::default();
+        for s in eb.slots.iter_mut() {
+            s.link = 0x1234;
+            s.bullet = Bullet::from_words([0xFFFF; 15]);
+        }
+        eb.clear_link_word(3);
+        assert_eq!(eb.slots[3].link, 0);
+        eb.clear_link_word(20);
+        assert_eq!(eb.slots[0].bullet.heading, 0, "項 20 是槽 0 的 w0");
+        eb.clear_link_word(20 + 15 + 14);
+        assert_eq!(eb.slots[1].bullet.shape, 0, "槽 1 的 w14");
+        eb.clear_link_word(255);
+        assert_eq!(eb.slots[15].bullet.row, 0, "項 255 是槽 15 的 w10");
+        // 只動一個字組。
+        let zeros = eb.slots.iter().map(|s| s.bullet.to_words().iter().filter(|&&w| w == 0).count()).sum::<usize>();
+        assert_eq!(zeros, 3);
+        assert_eq!(eb.slots.iter().filter(|s| s.link == 0).count(), 1);
+    }
+
+    #[test]
+    fn template_addresses_match_the_original_tables() {
+        use crate::ebullet::{Heading as H, Spread, Tilt};
+        // docs/re/11-entities-combat.md 第 7.2 節與機器碼 16D3Bh 起的立即值。
+        assert_eq!(Template::Aimed(H::N).table_offset(), 0x3557);
+        assert_eq!(Template::Aimed(H::NW).table_offset(), 0x3629);
+        assert_eq!(Template::Capsule(Capsule::L, H::N).table_offset(), 0x3737);
+        assert_eq!(Template::Capsule(Capsule::B, H::N).table_offset(), 0x3827);
+        assert_eq!(Template::Capsule(Capsule::K, H::N).table_offset(), 0x3917);
+        assert_eq!(Template::Capsule(Capsule::S, H::NW).table_offset(), 0x3A07 + 7 * 0x1E);
+        assert_eq!(Template::Unused.table_offset(), 0x3AF7);
+        assert_eq!(
+            [Tilt::NorthWest, Tilt::West, Tilt::SouthWest].map(|t| Template::Wide(t).table_offset()),
+            [0x3B15, 0x3B33, 0x3B51]
+        );
+        assert_eq!(
+            [Spread::W, Spread::NW, Spread::SW, Spread::N, Spread::S].map(|s| Template::Spread(s).table_offset()),
+            [0x3B6F, 0x3B8D, 0x3BAB, 0x3BC9, 0x3BE7]
+        );
+        assert_eq!(Template::WideFlash.table_offset(), 0x3C05);
+        assert_eq!(Template::Flash.table_offset(), 0x3C23);
+        assert_eq!(
+            [H::N, H::NE, H::E, H::SE, H::S, H::SW, H::W, H::NW].map(|h| Template::Straight(h).table_offset()),
+            [0x3C41, 0x3C5F, 0x3C7D, 0x3C9B, 0x3CB9, 0x3CD7, 0x3CF5, 0x3D13]
+        );
+        assert_eq!(
+            [Template::SlowSw, Template::SlowW, Template::SlowNw].map(|t| t.table_offset()),
+            [0x3D31, 0x3D4F, 0x3D6D]
+        );
+        assert_eq!([Template::BouncerNw, Template::BouncerNe].map(|t| t.table_offset()), [0x3D8B, 0x3DA9]);
+    }
+
+    #[test]
+    fn bullet_template_reads_fifteen_words_at_the_table_offset() {
+        let mut c = core();
+        let at = Template::Flash.table_offset();
+        for k in 0..15u16 {
+            c.ds.w16(at + 2 * k, 0x500 + k);
+        }
+        let b = c.bullet_template(Template::Flash);
+        assert_eq!(b.to_words(), std::array::from_fn(|k| 0x500 + k as u16));
+        assert_eq!(c.bullet_template(Template::WideFlash), Bullet::default());
+    }
+
+    #[test]
+    fn player_accessors_read_the_player_variables() {
+        let mut c = core();
+        c.set_players([Some((3, 4)), Some((5, 6))]);
+        assert_eq!((c.player_alive(0), c.player_alive(1)), (true, true));
+        assert_eq!((c.player_cell(0), c.player_cell(1)), ((3, 4), (5, 6)));
+        c.set_players([None, Some((9, 8))]);
+        assert_eq!((c.player_alive(0), c.player_alive(1)), (false, true));
+        assert_eq!(c.player_cell(1), (9, 8));
+    }
+
+    #[test]
+    fn grid2_writable_excludes_column_0_and_39_but_allows_one_cell_past_g2() {
+        let c = core();
+        let base = GRID2_START + 5 * 0x28;
+        assert!(!c.grid2_writable(base, base), "欄 0 不可寫");
+        assert!(c.grid2_writable(base, base + 1));
+        assert!(c.grid2_writable(base, base + 0x26), "欄 38 可寫");
+        assert!(!c.grid2_writable(base, base + 0x27), "欄 39 不可寫");
+        // 範圍上下限：列基底落在 G2 之外的別名列。
+        let last = GRID2_START + 19 * 0x28;
+        assert!(c.grid2_writable(last, GRID2_START + GRID2_BYTES - 2), "列 19 的欄 38");
+        assert!(!c.grid2_writable(GRID2_START - 5, GRID2_START - 1), "低於 G2 起點不可寫");
+        assert!(c.grid2_writable(GRID2_START + GRID2_BYTES - 0x10, GRID2_START + GRID2_BYTES), "2F3Ch 可寫（G2 之後一格）");
+        assert!(!c.grid2_writable(GRID2_START + GRID2_BYTES - 0x10, GRID2_START + GRID2_BYTES + 1));
+    }
+
+    #[test]
+    fn clear_grid2_zeroes_all_of_g2_and_the_slot_shadow() {
+        let mut c = core();
+        for a in GRID2_START..GRID2_START + GRID2_BYTES {
+            c.ds.w8(a, 0x55);
+        }
+        c.ds.w8(GRID2_START + GRID2_BYTES, 0x66);
+        c.g2_slots.fill(7);
+        c.clear_grid2();
+        assert!((GRID2_START..GRID2_START + GRID2_BYTES).all(|a| c.ds.r8(a) == 0));
+        assert_eq!(c.ds.r8(GRID2_START + GRID2_BYTES), 0x66, "G2 之後的一格不清");
+        assert!(c.g2_slots.iter().all(|&s| s == 0));
     }
 }

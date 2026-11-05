@@ -146,7 +146,7 @@ struct ScriptFrame {
 }
 
 /// 8086 `loop` 先減後判，計數為 0 時跑 65536 圈。形狀的寬高來自表格，不會是 0，但照原版行為寫。
-fn loop_count(n: u16) -> u32 {
+pub(crate) fn loop_count(n: u16) -> u32 {
     if n == 0 { 0x1_0000 } else { n as u32 }
 }
 
@@ -255,7 +255,7 @@ impl Core {
         }
     }
 
-    // ---- 唯讀表格：腳本與形狀。表格階段搬走，現在仍從資料段讀 ----
+    // ---- 唯讀表格：腳本與形狀。表格階段搬走，現在仍從資料段讀（`Core::table_word`、`Core::table_byte` 在 `mirror.rs`）----
 
     fn script_frame(&self, pos: u16) -> ScriptFrame {
         ScriptFrame {
@@ -264,14 +264,6 @@ impl Core {
             dy: self.table_word(pos.wrapping_add(4)),
             shape: self.table_word(pos.wrapping_add(6)),
         }
-    }
-
-    fn table_word(&self, ptr: u16) -> u16 {
-        self.ds.r16(ptr)
-    }
-
-    fn table_byte(&self, ptr: u16) -> u8 {
-        self.ds.r8(ptr)
     }
 }
 
