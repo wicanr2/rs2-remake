@@ -6,22 +6,55 @@
   leak_check.py --selftest <original/rs-2> <S.unpacked.bin>
 有命中就以 1 結束。例外列在 tools/leak_allow.txt，每行「完整字串<TAB>原因」。只放行那段字串本身，檔案其他內容照查，
 密碼表不受例外影響。
+
+README 對照圖（docs/images/）是唯一放行的圖片，規則見 README_IMAGE 與 png_outside_idat。
 """
 import os
 import re
+import struct
 import sys
+import zlib
 
 DENY_EXT = {".png", ".jpg", ".exe", ".zip", ".mid", ".vgm", ".wav", ".bin", ".i64", ".go", ".gob", ".got", ".bdb", ".bdh", ".bdt",
             ".bd1", ".bd2", ".bd3", ".bd4", ".mix", ".lck", ".scn", ".scr", ".joy", ".cfg", ".diz", ".bat", ".pas"}
 # 工具本身的 Go 原始碼（dosgolem patch 內）副檔名是 .patch，不受影響。原版的 .GO 與 Go 原始碼同副檔名，以大小寫與所在目錄區分。
 SOURCE_GO_OK = re.compile(r"^(tools/|crates/).*\.go$")
 MAX_SIZE = 300 * 1024
+# 唯一放行的圖片：README 的對照圖（AGENTS.md 硬規則 4 的例外）。路徑、PNG 結構、大小都要符合。
+# 整個檔案照樣掃原版位元組。密碼表只比對 IDAT 以外的部分：表的比對窗是低熵的短字串，
+# 在壓縮串流裡會碰巧對上，實測 26 MB 的對照圖有 9 張命中，全部落在 IDAT。
+# IDAT 以外只允許必要區塊，所以文字區塊與檔尾都夾帶不了東西。
+README_IMAGE = re.compile(r"^docs/images/(?:game|overview)/[A-Za-z0-9-]+\.png$")
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+MAX_IMAGE = 8 * 1024 * 1024
+PNG_CHUNKS_OK = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
 WIN = 32
 HEXWIN = 24
 HEXRUN = re.compile(rb"(?:\b(?:0x)?[0-9A-Fa-f]{2}h?\b[ ,\t]*){%d,}" % HEXWIN)
 DS = 0xCBC0
 PW_OFF = DS + 0x8BD
 PW_LEN = 26 * 26
+
+
+def png_outside_idat(data):
+    """檢查 PNG 結構。回傳 (錯誤訊息或 None, IDAT 以外的區塊內容)。"""
+    o = len(PNG_SIG)
+    rest = bytearray()
+    while o + 12 <= len(data):
+        n = struct.unpack(">I", data[o:o + 4])[0]
+        t = data[o + 4:o + 8]
+        if o + 12 + n > len(data):
+            return "區塊超出檔尾", b""
+        if zlib.crc32(data[o + 4:o + 8 + n]) != struct.unpack(">I", data[o + 8 + n:o + 12 + n])[0]:
+            return "CRC 不符", b""
+        if t not in PNG_CHUNKS_OK:
+            return "不允許的區塊 " + t.decode("latin-1"), b""
+        if t != b"IDAT":
+            rest += data[o + 8:o + 8 + n]
+        o += 12 + n
+        if t == b"IEND":
+            return (None, bytes(rest)) if o == len(data) else ("IEND 之後還有資料", b"")
+    return "缺 IEND", b""
 
 
 def load_windows(paths):
@@ -44,18 +77,24 @@ def scan(name, data, win, hexwin, pw_raw, pw_letters, allow):
     """allow 是可放行的完整字串（bytes）集合。"""
     hits = []
     ext = os.path.splitext(name)[1].lower()
-    if ext in DENY_EXT and not (ext == ".go" and SOURCE_GO_OK.match(name)):
+    readme_image = bool(README_IMAGE.match(name)) and data.startswith(PNG_SIG)
+    if ext in DENY_EXT and not (ext == ".go" and SOURCE_GO_OK.match(name)) and not readme_image:
         hits.append(("副檔名", ext))
-    if len(data) > MAX_SIZE:
+    if len(data) > (MAX_IMAGE if readme_image else MAX_SIZE):
         hits.append(("過大", len(data)))
+    pw_data = data
+    if readme_image:
+        err, pw_data = png_outside_idat(data)
+        if err:
+            hits.append(("PNG 結構", err))
     # 密碼表無論如何都不放行
-    for i in range(0, len(data) - 11):
-        if data[i:i + 12] in pw_raw:
+    for i in range(0, len(pw_data) - 11):
+        if pw_data[i:i + 12] in pw_raw:
             hits.append(("密碼表原始位元組", i))
             break
     for w in pw_letters:
-        if w in data:
-            hits.append(("密碼表字母形式", w.decode()))
+        if w in pw_data:
+            hits.append(("密碼表字母形式", len(w)))
             break
     for m in HEXRUN.finditer(data):
         vals = bytes(int(x.replace(b"0x", b"").rstrip(b"hH"), 16) for x in re.findall(rb"(?:0x)?[0-9A-Fa-f]{2}h?\b", m.group()))
@@ -104,6 +143,37 @@ def selftest(orig, unp):
     cases.append(("tools/x.go", b"package x\n", False))
     orig_file = sorted(f for f in os.listdir(orig) if f.upper().endswith(".GO"))[0]
     cases.append(("h.md", clean + open(os.path.join(orig, orig_file), "rb").read()[400:460], True))
+    # README 對照圖的例外：只放行這個路徑下結構正確的 PNG，原版位元組照樣掃。
+    def png(*chunks):
+        out = PNG_SIG
+        for t, d in chunks:
+            out += struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+        return out
+
+    def ok_png(idat=b"x", extra=()):
+        return png((b"IHDR", struct.pack(">IIBBBBB", 960, 600, 8, 2, 0, 0, 0)), *extra, (b"IDAT", idat), (b"IEND", b""))
+
+    good = ok_png()
+    secret = table[10:40]
+    cases.append(("docs/images/game/a-hd.png", good, False))
+    cases.append(("docs/images/overview/SHT1.png", ok_png(b"x" * (MAX_SIZE + 1)), False))
+    # 壓縮串流裡的低熵短字串不算命中，這是例外的代價，條件寫在 README_IMAGE 上方。
+    cases.append(("docs/images/game/a.png", ok_png(secret), False))
+    cases.append(("docs/images/game/a-hd.png", b"not a png", True))
+    cases.append(("docs/images/game/a.png", PNG_SIG + b"x", True))
+    cases.append(("docs/images/other/a.png", good, True))
+    cases.append(("docs/images/game/../../a.png", good, True))
+    cases.append(("docs/images/a.png", good, True))
+    cases.append(("workspace/hd/assets/MY/0001.png", good, True))
+    cases.append(("docs/images/game/a.jpg", good, True))
+    cases.append(("docs/images/game/a.png", ok_png(b"x" * (MAX_IMAGE + 1)), True))
+    cases.append(("docs/images/game/a.png", ok_png(exe[0x2000:0x2040]), True))
+    cases.append(("docs/images/game/a.png", good + exe[0x2000:0x2040], True))
+    cases.append(("docs/images/game/a.png", good + secret, True))
+    cases.append(("docs/images/game/a.png", ok_png(extra=[(b"tEXt", b"note")]), True))
+    cases.append(("docs/images/game/a.png", ok_png(extra=[(b"PLTE", secret)]), True))
+    cases.append(("docs/images/game/a.png", ok_png(extra=[(b"PLTE", bytes((v + 0x41) & 0xFF for v in table[5:40]))]), True))
+    cases.append(("docs/images/game/a.png", good[:-1] + bytes([good[-1] ^ 1]), True))
     bad = 0
     for name, data, expect in cases:
         hit = bool(scan(name, data, win, hexwin, pw_raw, pw_letters, set()))
