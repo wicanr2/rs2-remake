@@ -150,7 +150,7 @@ impl Settings {
             b(self.feel),
             self.mode.code()
         );
-        s.push_str("# 遊戲選項（標開發中的選項，值先存起來，這一版還沒有實作）\n");
+        s.push_str("# 遊戲選項（戰場大小是 100、120、150，進關時才生效；其他是 on 或 off）\n");
         for (i, o) in OPTIONS.iter().enumerate() {
             if i != FEEL_INDEX {
                 s.push_str(&format!("opt.{}={}\n", o.id, o.save_value(self.opts.get(i))));

@@ -251,7 +251,7 @@ pub const VAL_SIZE_100: &str = "100%";
 pub const VAL_SIZE_120: &str = "120%";
 pub const VAL_SIZE_150: &str = "150%";
 
-pub const GAME_NOTE1: &str = "標「開發中」的選項值已存進設定，這一版還沒有實作，不能切換，也不會生效。";
+pub const GAME_NOTE1: &str = "戰場大小在下一次進關才生效。CGA、MGA 沒有加大的畫面，戰場固定 100%。";
 pub const GAME_NOTE2: &str = "改變規則的選項開著時，狀態列顯示「強化規則」。全部關閉就是原版規則。";
 
 // ---------------------------------------------------------------------------

@@ -625,3 +625,34 @@ fn field_exits_enemies_leave_through_the_left_edge_instead_of_vanishing_in_view(
         }
     }
 }
+
+/// 進關後的開場畫面（150%，原版圖）：每次欄數從 40 變成 60，存進場後第 4、12、24、40、60 步的畫面，
+/// 確認右下角的大宇資訊橫幅靠右對齊、玩家機與背景在寬畫面裡的位置。關卡字卡在 40 欄的過場裡，不在這些畫面中。
+#[test]
+#[ignore]
+fn field_shots_stage_cards_in_the_wide_field() {
+    let mut s = open(Begin::Title, FieldSize::Wider, view(DisplayMode::Vga));
+    let mut drv = Driver::new();
+    let (mut prev_cols, mut entered, mut stage_no) = (40u16, None::<u32>, 0u32);
+    for n in 0..30_000u32 {
+        let (sc, _) = drv.next(&s);
+        s.set_invincible(true);
+        s.step(&sc);
+        let cols = s.field_cols();
+        if cols != 40 && prev_cols == 40 {
+            entered = Some(n);
+            stage_no += 1;
+        }
+        prev_cols = cols;
+        if let Some(at) = entered {
+            let since = n - at;
+            if [4, 12, 24, 40, 60].contains(&since) {
+                save(&mut s, &format!("card{stage_no}_150sd_{since:03}.png"));
+            }
+        }
+        if stage_no == 4 && entered.is_some_and(|at| n - at > 60) {
+            break;
+        }
+    }
+    assert_eq!(stage_no, 4, "四關都進場過");
+}
