@@ -146,7 +146,7 @@ tools/rust.sh play-build
 tools/rust.sh play              # 有 workspace/hd/assets 就用 HD，加 --no-hd 改原版圖
 ```
 
-從標題開始，按任意鍵進選單或開始遊戲。方向鍵移動，Home、PgUp、End、PgDn 是斜向。右 Shift 開火，`/` 砲座轉向，Esc 暫停，S 切換音效，Ctrl+Q 離開。
+從標題開始，按 C 開選單（難度與玩家數），其他鍵開始遊戲。方向鍵移動，Home、PgUp、End、PgDn 是斜向。右 Shift 開火，`/` 砲座轉向，Esc 暫停，S 切換音效，Ctrl+Q 離開。
 
 F1 切補間，F2 切幀計數，F3 切原版圖與 HD，F4 切視窗倍率，F10 隱藏工具列。加 `--no-audio` 關聲音，`--original-bugs` 保留原版缺陷（預設修正）。
 

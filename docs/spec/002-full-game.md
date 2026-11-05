@@ -91,7 +91,7 @@ E 模式（VGA）的完整遊戲：標題、開場動畫、示範、選單（難
 | B1 | `b1_boot_state`，差異只在 `DS_EXEMPT` |
 | B2 到 B5 | `wait_replay`，20 份收據 19,284 筆，每筆的 `cx`、資料段、四個平面、DAC、顯示起點都相同。`wt_mute` 涵蓋按 S 靜音 |
 | B3 正式路徑 | `b3_flow_from_boot_state`，資料段從 `boot_ds` 起跑，4 份從標題開始的收據都相同 |
-| B6 | `l8_full_flow_equivalence`，19 份收據 18,936 幀，3,635,712,000 像素不同 0。`l9_full_flow_hd_coverage` 缺圖 0 |
+| B6 | `l8_full_flow_equivalence`，20 份收據，三組接收端合計 57,777 幀、3,697,728,000 像素，不同 0。`l9_full_flow_hd_coverage` 20,337 個事件，缺圖 0 |
 | B7 | `b7_play_from_title_to_ending`，907 步從標題到片尾。補間、幀計數、HD 都不改變每步雜湊。只在 Xvfb 與 `SDL_VIDEODRIVER=dummy` 驗過 |
 
 ## 失敗模式

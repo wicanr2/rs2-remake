@@ -95,7 +95,7 @@ codex exec --skip-git-repo-check -s read-only -C <ref> -i <ref.png> [-i <extra.p
 
 ## 接入驗收
 
-`LayerSink` 用同一批繪製命令合成 HD。`l9_full_flow_hd_coverage` 走 19 份收據，缺圖 0。`hd_tour` 用全流程按鍵走過四關與片尾，每關多跑一段，存原版與 HD 對照到 `workspace/rs2/shots/tour/`，四關都目視過，位置、遮罩與配色和原版一致。
+`LayerSink` 用同一批繪製命令合成 HD。`l9_full_flow_hd_coverage` 走 20 份收據，缺圖 0。`hd_tour` 用全流程按鍵走過四關與片尾，每關多跑一段，存原版與 HD 對照到 `workspace/rs2/shots/tour/`，四關都目視過，位置、遮罩與配色和原版一致。
 
 HD 畫布是 RGBA，沒有色號，原版改 DAC 會連已畫好的像素一起變色，這裡這樣對應：
 
