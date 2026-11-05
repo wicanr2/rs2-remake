@@ -1,0 +1,21 @@
+[package]
+name = "rs2-android"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "LicenseRef-RRSAL-1.0"
+publish = false
+
+# 獨立的 workspace，理由同 rs2-play。建置走 tools/package/android_apk.sh。
+[workspace]
+
+[lib]
+# SDLActivity 載入 libmain.so 並呼叫裡面的 SDL_main。
+name = "main"
+crate-type = ["cdylib"]
+
+[dependencies]
+rs2-play = { path = "../rs2-play" }
+
+[profile.release]
+overflow-checks = true

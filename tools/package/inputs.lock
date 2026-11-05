@@ -1,0 +1,15 @@
+# 發行包的外部輸入。格式同 sha256sum，路徑相對 workspace/pkg/inputs。
+# 來源是 ~/cht/dosgolem-rust/third_party（唯讀複製），該處已記錄原始下載網址與雜湊。
+#
+# SDL2 2.26.5 原始碼（zlib 授權）。Linux 版 SDL2 由它在 Docker 內編譯。
+#   https://github.com/libsdl-org/SDL/releases/download/release-2.26.5/SDL2-2.26.5.tar.gz （8085012 位元組）
+ad8fea3da1be64c83c45b1d363a6b4ba8fd60f5bde3b23ec73855709ec5eabf7  SDL2-2.26.5.tar.gz
+# AppImage type2 runtime，提交 75849dc。https://github.com/AppImage/type2-runtime/tree/75849dc （944632 位元組）
+1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf  appimage-runtime/runtime-x86_64
+# runtime 內含元件的授權全文，來源網址與擷取日期見 appimage-runtime/licenses/sources.json
+aa154fc9070614bbe7921f89db11efd1dba7a1f3a41685958110e2230f9c0ca1  appimage-runtime/licenses/runtime-MIT.txt
+f9bc4423732350eb0b3f7ed7e91d530298476f8fec0c6c427a1c04ade22655af  appimage-runtime/licenses/musl-COPYRIGHT.txt
+dc626520dcd53a22f727af3ee42c770e56c97a64fe3adb063799d8ab032fe551  appimage-runtime/licenses/libfuse-LGPL-2.txt
+9e909cc8a8ba27b1a649c964cf9eda37de911f3138c2b64e6d2f01703904ac13  appimage-runtime/licenses/squashfuse-LICENSE.txt
+7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8  appimage-runtime/licenses/zstd-LICENSE.txt
+845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243  appimage-runtime/licenses/zlib-LICENSE.txt
