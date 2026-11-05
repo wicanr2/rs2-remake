@@ -348,6 +348,22 @@ pub struct Sprite {
     pub kind: u16,
 }
 
+/// 戰場加大（規格 005「戰場大小」）時，腳本結束的敵人「飛出畫面」的狀態。
+///
+/// 腳本的長度是原版的：敵人從新右緣進場，走同樣長的路，腳本結束時還在畫面裡，會憑空消失。
+/// 所以寬戰場裡，腳本結束時還有一部分在左右界之內、而且最後一個移動碼有水平分量的敵人（或隨景物左移的敵人），
+/// 沿著最後的方向繼續飛，整個形狀離開左右界才釋放。不屬於原版狀態：欄數 40 時完全不用，原版照舊在腳本結束那一幀釋放。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Linger {
+    /// 每槽最後一次執行的方向碼（1 至 8），沒有是 0。生成時清掉。
+    last: [u8; POOL_SIZE],
+    /// 每槽還能飛的幀數，0 是沒有在飛。上限防止水平步長是 0 的敵人永遠不釋放。
+    left: [u16; POOL_SIZE],
+}
+
+/// 飛出畫面的幀數上限：橫越一次戰場再加這麼多。
+const LINGER_SLACK: u16 = 16;
+
 /// 池的一槽。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Slot {
@@ -594,6 +610,8 @@ impl Core {
         let s = &mut self.en.slots[slot];
         s.link = enemy_record_link(slot);
         s.enemy = enemy;
+        self.linger.last[slot] = 0;
+        self.linger.left[slot] = 0;
         self.bump_gen(Pool::Entity, slot as u8);
         // AI 強化只認得生成表生成的敵人（`ai.rs`）；這一步不碰資料段。
         self.ai.on_spawn(slot, template);
@@ -637,19 +655,25 @@ impl Core {
         };
         let rules = self.rules();
         self.ai.tick_enemy(slot);
+        let lingering = self.linger.left[slot] > 0;
         let code = match enemy.mode() {
             Mode::Chase => {
                 let target = self.aim_heading(enemy.col, enemy.row);
                 enemy.script = turn_toward(target, enemy.script);
                 enemy.script as u8
             }
+            // 戰場加大：腳本結束後飛出畫面的敵人不再讀腳本，沿最後的方向走。
+            Mode::Script | Mode::Scroll if lingering => self.linger.last[slot],
             Mode::Script | Mode::Scroll => {
                 let code = self.read_command(enemy);
                 // 敵人會反應（`ai_react`）：只換這一幀要執行的移動碼，腳本照常前進。
                 if rules.ai_react { self.ai_react(enemy, slot, code) } else { code }
             }
         };
-        let dying = self.apply_motion(enemy, code);
+        let mut dying = self.apply_motion(enemy, code);
+        if self.field_extra() > 0 {
+            dying = self.linger_after_motion(enemy, slot, code, dying, lingering);
+        }
         if enemy.mode() == Mode::Scroll {
             enemy.drift_with_scenery();
         }
@@ -667,6 +691,38 @@ impl Core {
             self.ai_boss_step(enemy, slot);
         }
         Step { flashing, dying }
+    }
+
+    /// 戰場加大時敵人這一幀動作之後的處理（[`Linger`]），回傳這一幀要不要釋放。
+    ///
+    /// - 飛出畫面中：幀數減一，整個形狀離開左右界或幀數用完才釋放。
+    /// - 記下最後一次的方向碼。腳本結束（`ended`）時，如果還有一部分在左右界之內，而且最後的方向有水平分量
+    ///   （或是隨景物左移的敵人），改成飛出畫面，這一幀不釋放。
+    /// - 不套用在 `K` 型（死後要把損壞貼片畫進背景）與子彈字母 `E`（死亡就是過關旗標）的敵人。
+    fn linger_after_motion(&mut self, enemy: &Enemy, slot: usize, code: u8, ended: bool, lingering: bool) -> bool {
+        if lingering {
+            self.linger.left[slot] -= 1;
+            return self.linger.left[slot] == 0 || !self.overlaps_field_columns(enemy);
+        }
+        if heading_from_code(code).is_some() {
+            self.linger.last[slot] = code;
+        }
+        if !ended || enemy.kind() == Kind::Embedded || enemy.bullet == u16::from(b'E') || !self.overlaps_field_columns(enemy) {
+            return ended;
+        }
+        let horizontal = matches!(heading_from_code(self.linger.last[slot]), Some(Heading::NE | Heading::E | Heading::SE | Heading::SW | Heading::W | Heading::NW));
+        if horizontal || enemy.mode() == Mode::Scroll {
+            self.linger.left[slot] = self.field_cols() + LINGER_SLACK;
+            return false;
+        }
+        true
+    }
+
+    /// 敵人的形狀還有一部分在戰場的左右界之內（欄 0 至 `field_cols() - 1`，不看上下）。
+    fn overlaps_field_columns(&self, enemy: &Enemy) -> bool {
+        let width = self.tables().shape(enemy.shape).width as i16;
+        let col = enemy.col as i16;
+        col.wrapping_add(width.max(1)) > 0 && col < self.field_cols() as i16
     }
 
     /// 結算上一幀被打中的傷害（原版 `sub_15F8D`）。
@@ -1263,6 +1319,109 @@ mod tests {
         assert_eq!(c.en.slots[0].enemy.rand_index, 1, "亂數索引照常前進");
     }
 
+    /// 一個欄數為 `cols` 的核心，槽 0 擺 `walker`（腳本 `script`、起點欄 `col`、模式 `mode`、水平步長 `dcol`），
+    /// 一幀一幀更新到槽 0 釋放（最多 `limit` 幀）。回傳釋放時的幀數與最後的欄；沒釋放時幀數是 `limit`。
+    fn run_until_released(cols: u16, script: &[u8], col: u16, mode: u8, dcol: u16, limit: u32) -> (u32, i16) {
+        let mut c = core();
+        if cols != 40 {
+            c.enter_field(cols);
+        }
+        let mut e = walker(&mut c, script, 0);
+        (e.col, e.blit_x, e.mode, e.dcol, e.blit_dx) = (col, col, u16::from(mode), dcol, dcol);
+        place(&mut c, 0, e);
+        for n in 1..=limit {
+            c.update_enemies();
+            if !c.en.slots[0].is_active() {
+                return (n, c.en.slots[0].enemy.col as i16);
+            }
+        }
+        (limit, c.en.slots[0].enemy.col as i16)
+    }
+
+    #[test]
+    fn at_100_percent_a_finished_script_releases_the_enemy_in_view_as_in_the_original() {
+        // 欄 20 往左走三步，第四幀腳本結束就釋放，不管還在不在畫面裡。
+        assert_eq!(run_until_released(40, &[7, 7, 7, CODE_DIE], 20, b'N', 1, 100), (4, 17));
+    }
+
+    #[test]
+    fn a_wide_field_lets_a_left_flying_enemy_leave_through_the_left_edge() {
+        // 同一個腳本：寬戰場裡不在左緣外就繼續往左飛，形狀（寬 1）整個離開欄 0 的那一幀釋放，欄是 -1。
+        for cols in [48u16, 60] {
+            let (frames, col) = run_until_released(cols, &[7, 7, 7, CODE_DIE], 20, b'N', 1, 100);
+            assert_eq!((frames, col), (4 + 18, -1), "{cols} 欄");
+        }
+        // 步長 2：走三步到欄 20，之後每幀兩欄，欄 -2 的那一幀形狀（寬 1）整個在左緣外，釋放。
+        assert_eq!(run_until_released(48, &[7, 7, 7, CODE_DIE], 26, b'N', 2, 100), (4 + 11, -2));
+    }
+
+    #[test]
+    fn a_wide_field_lets_a_right_flying_enemy_leave_through_the_right_edge() {
+        // 往右走兩步到欄 42，腳本結束，繼續飛到欄 48（整個形狀在右界之外）才釋放。
+        assert_eq!(run_until_released(48, &[3, 3, CODE_DIE], 40, b'N', 1, 100), (3 + 6, 48));
+        // 100% 在腳本結束那一幀釋放。
+        assert_eq!(run_until_released(40, &[3, 3, CODE_DIE], 30, b'N', 1, 100), (3, 32));
+    }
+
+    #[test]
+    fn a_wide_field_does_not_extend_vertical_exits_or_enemies_already_outside() {
+        // 最後的方向是上或下：腳本結束就釋放（垂直方向的戰場沒有變）。
+        for code in [1u8, 5] {
+            assert_eq!(run_until_released(60, &[code, CODE_DIE], 30, b'N', 1, 100), (2, 30), "方向碼 {code}");
+        }
+        // 腳本結束時已經整個在左緣外或右界外：釋放。
+        assert_eq!(run_until_released(60, &[7, CODE_DIE], 0u16.wrapping_sub(1), b'N', 1, 100).0, 2);
+        assert_eq!(run_until_released(60, &[3, CODE_DIE], 59, b'N', 1, 100).0, 2);
+        // 沒有移動過（最後方向碼是 0）：沒有方向可飛，釋放。
+        assert_eq!(run_until_released(48, &[0, CODE_DIE], 20, b'N', 1, 100), (2, 20));
+    }
+
+    #[test]
+    fn a_wide_field_keeps_the_stage_clear_marker_and_wreck_enemies_out_of_the_flight() {
+        // 子彈字母 E（死亡就是過關旗標）：腳本結束照原版釋放。
+        let mut c = core();
+        c.enter_field(48);
+        let mut e = walker(&mut c, &[7, CODE_DIE], 0);
+        e.bullet = u16::from(b'E');
+        place(&mut c, 0, e);
+        c.update_enemies();
+        c.update_enemies();
+        assert!(!c.en.slots[0].is_active(), "E 敵人照原版在腳本結束時釋放");
+        assert!(c.stage_cleared(), "過關旗標照常設");
+    }
+
+    #[test]
+    fn a_wide_field_caps_the_flight_when_the_enemy_cannot_leave() {
+        // 水平步長 0：永遠飛不出去，用上限（欄數加 16 幀）釋放。移動 1 幀、腳本結束 1 幀、再飛 cols + 16 幀。
+        assert_eq!(run_until_released(48, &[7, CODE_DIE], 20, b'N', 0, 200), (2 + 48 + 16, 20));
+        assert_eq!(run_until_released(60, &[7, CODE_DIE], 20, b'N', 0, 200), (2 + 60 + 16, 20));
+    }
+
+    #[test]
+    fn a_wide_field_lets_scenery_drifting_enemies_drift_out_after_the_script_ends() {
+        // 模式 Y：每幀隨景物左移一欄。腳本結束時還在畫面裡就繼續漂到左緣外。100% 在腳本結束那一幀釋放。
+        assert_eq!(run_until_released(40, &[CODE_DIE], 10, b'Y', 1, 100), (1, 9));
+        // 每幀先檢查再左移：欄 -1 時檢查到形狀整個在左緣外，那一幀仍左移一欄，存下來的欄是 -2。
+        assert_eq!(run_until_released(48, &[CODE_DIE], 10, b'Y', 1, 100), (12, -2));
+    }
+
+    #[test]
+    fn a_respawn_in_a_slot_forgets_the_flight_of_the_previous_enemy() {
+        let mut c = core();
+        c.enter_field(48);
+        let e = walker(&mut c, &[7, CODE_DIE], 0);
+        place(&mut c, 0, e);
+        c.update_enemies();
+        c.update_enemies();
+        assert!(c.en.slots[0].is_active(), "飛出畫面中");
+        assert!(c.linger.left[0] > 0);
+        // 同一槽重新生成：飛行狀態清掉，照新敵人的腳本走。
+        c.en.slots[0].link = 0;
+        put_template(&mut c, 0x7400, &Enemy { col: 30, row: 3, ..Enemy::default() });
+        c.spawn_row(0x7400, false);
+        assert_eq!((c.linger.left[0], c.linger.last[0]), (0, 0));
+    }
+
     #[test]
     fn scroll_mode_drifts_one_column_left_after_moving() {
         let mut c = core();
@@ -1856,5 +2015,46 @@ mod tests {
         assert_eq!(en.slots[4], Slot { link: 0, enemy: Enemy { hp: 9, ..Enemy::default() }, sprite: Sprite { image: 5, ..Sprite::default() }, flash: YES });
         assert_eq!(en.spare_link, 0);
         assert!(en.slots.iter().all(|s| !s.is_active()));
+    }
+
+    /// 真實時間表的平移統計（規格 005「戰場大小」的生成規則）：每關的列數依 x 分類，頭目列與其他列的數量。
+    /// 需要 `RS2_ORIG`：`tools/rust.sh test -p rs2-game entity::tests::real_ -- --ignored --nocapture`。
+    #[test]
+    #[ignore]
+    fn real_timetables_spawn_shift_statistics() {
+        let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
+        let image = rs2_formats::unpack_s_exe(&std::fs::read(dir.join("S.EXE")).unwrap()).unwrap();
+        let tables = crate::tables::Tables::parse(&image).unwrap();
+        let mut c = core();
+        *c.tables_mut() = tables;
+        c.enter_field(60);
+        let mut grand = [0usize; 5];
+        for (name, table) in [("第一關", Timetable::Stage1), ("第二關", Timetable::Stage2), ("第三關", Timetable::Stage3), ("第四關", Timetable::Stage4), ("片尾", Timetable::Ending)] {
+            // 類別：頭目列、x 在 40 以上（平移）、x 在 0 至 39（等比放大）、x 為負（等比放大）。
+            let (mut boss, mut right, mut inside, mut negative, mut total) = (0, 0, 0, 0, 0);
+            let mut max_x = i16::MIN;
+            let mut right_xs = std::collections::BTreeSet::new();
+            for &(frame, template) in c.tables().timetable(table) {
+                let x = c.tables().enemy_template(template).col as i16;
+                total += 1;
+                max_x = max_x.max(x);
+                if table.is_boss_row(frame) {
+                    boss += 1;
+                } else if x >= 40 {
+                    right += 1;
+                    right_xs.insert(x);
+                } else if x >= 0 {
+                    inside += 1;
+                } else {
+                    negative += 1;
+                }
+            }
+            eprintln!("[spawn] {name}：共 {total} 列，頭目 {boss}、右緣以右（平移）{right}、畫面內（等比）{inside}、負值（等比）{negative}，最大 x {max_x}，右側 x 種類 {right_xs:?}");
+            for (g, v) in grand.iter_mut().zip([total, boss, right, inside, negative]) {
+                *g += v;
+            }
+        }
+        eprintln!("[spawn] 全部：共 {} 列，頭目 {}、平移 {}、等比（畫面內）{}、等比（負值）{}", grand[0], grand[1], grand[2], grand[3], grand[4]);
+        assert!(grand[0] > 100, "時間表有內容");
     }
 }

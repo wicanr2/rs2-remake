@@ -579,3 +579,49 @@ fn field_shots_every_stage_in_all_widths() {
         }
     }
 }
+
+/// 不開火、不死，每一關前 1000 步裡每個敵人被釋放前最後一次在場的欄：`(左緣外, 畫面內, 右緣外)` 各幾個，
+/// 以及畫面內釋放的欄。沒被打死，所以釋放全是腳本結束。
+fn release_spots(f: FieldSize, stage: u8) -> (usize, usize, usize, Vec<i16>) {
+    let mut s = open(Begin::Title, f, view(DisplayMode::Vga));
+    let _drv = reach(&mut s, stage);
+    let n_slots = s.game.state().en.slots.len();
+    let mut was = vec![false; n_slots];
+    let mut last = vec![0i16; n_slots];
+    let mut rel: Vec<i16> = Vec::new();
+    for _ in 0..1000 {
+        s.set_invincible(true);
+        s.step(&[]);
+        for (i, e) in s.game.state().en.slots.iter().enumerate() {
+            let on = e.link != 0;
+            if was[i] && !on {
+                rel.push(last[i]);
+            }
+            if on {
+                last[i] = e.enemy.col as i16;
+            }
+            was[i] = on;
+        }
+    }
+    let c = f.cols() as i16;
+    let mut inside: Vec<i16> = rel.iter().copied().filter(|&x| x >= 0 && x < c).collect();
+    inside.sort();
+    (rel.iter().filter(|&&x| x < 0).count(), inside.len(), rel.iter().filter(|&&x| x >= c).count(), inside)
+}
+
+/// 腳本是原版的長度，敵人從新右緣進場後走同樣長的路：沒有處理的話，腳本結束時還在畫面裡，會憑空消失
+/// （150% 第四關 109 個裡 108 個在畫面內消失）。寬戰場的敵人腳本結束後繼續飛出畫面（`entity::Linger`），
+/// 所以從左緣離開的敵人數量要和 100% 相近（不少於 100% 的四分之三）。
+#[test]
+#[ignore]
+fn field_exits_enemies_leave_through_the_left_edge_instead_of_vanishing_in_view() {
+    for stage in [b'A', b'B', b'C', b'D'] {
+        let (base_left, base_in, base_right, _) = release_spots(FieldSize::Normal, stage);
+        eprintln!("[field] 關 {} 100%：左緣外 {base_left}、畫面內 {base_in}、右緣外 {base_right}", stage as char);
+        for f in [FieldSize::Wide, FieldSize::Wider] {
+            let (left, inside, right, spots) = release_spots(f, stage);
+            eprintln!("[field] 關 {} {} 欄：左緣外 {left}、畫面內 {inside}、右緣外 {right}，畫面內的欄 {spots:?}", stage as char, f.cols());
+            assert!(left * 4 >= base_left * 3, "關 {} {} 欄：從左緣離開 {left} 個，100% 是 {base_left}", stage as char, f.cols());
+        }
+    }
+}

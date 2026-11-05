@@ -385,6 +385,8 @@ pub struct Core {
     pub(crate) gens: [[u32; 40]; POOLS],
     /// `bullet_slot_carry` 開啟時，G2 每格真正的敵彈槽號加 1，0 表示沒有。不屬於原版狀態。
     pub(crate) g2_slots: Vec<u8>,
+    /// 戰場加大時，腳本結束的敵人繼續飛出畫面的狀態（規格 005「戰場大小」）。不屬於原版狀態，欄數 40 時不使用。
+    pub(crate) linger: crate::entity::Linger,
     /// 敵人 AI 強化的狀態（規格 005）。不屬於原版狀態，不進 `State`，全關時不影響模擬。
     pub(crate) ai: AiState,
     pub(crate) port: Rc<RefCell<Port>>,
@@ -447,6 +449,7 @@ impl Core {
             cur_obj: None,
             gens: [[0; 40]; POOLS],
             g2_slots: vec![0; 0x321],
+            linger: Default::default(),
             ai: AiState::default(),
             port: Rc::new(RefCell::new(port)),
         };
