@@ -1376,7 +1376,7 @@ mod tests {
         assert_eq!(c.scratch_select(), SCRATCH_B);
         let blits: Vec<_> = c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
         assert_eq!(blits.len(), 1);
-        assert_eq!((blits[0].op, blits[0].x, blits[0].y, blits[0].index, blits[0].scratch), (Op::S19ADC, 39, 10, 19, SCRATCH_B));
+        assert_eq!((blits[0].op, blits[0].x, blits[0].y, blits[0].index, blits[0].scratch), (Op::StageToScratch, 39, 10, 19, SCRATCH_B));
         assert_eq!(blits[0].obj, None);
         assert!(c.eb.slots.iter().all(|s| !s.is_active()), "K 型不掉道具，即使是載體");
     }
@@ -1622,7 +1622,7 @@ mod tests {
         c.en.slots[2] = Slot { link: 1, sprite: Sprite { image: 7, x: 12, y: 80, kind: u16::from(b'O') }, flash: NO, ..Slot::default() };
         c.draw_enemies();
         let blits: Vec<_> = c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
-        assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), [Op::S18F1A, Op::S18F5D]);
+        assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), [Op::StageCut, Op::StageOverlay]);
         assert_eq!((blits[0].x, blits[0].y, blits[0].index), (12, 80, 7));
         assert_eq!((blits[1].x, blits[1].y, blits[1].index), (12, 81, 7), "平面的 y 加 1");
         assert!(blits.iter().all(|b| b.obj.map(|o| (o.pool, o.slot)) == Some((Pool::Entity, 2))));
@@ -1634,7 +1634,7 @@ mod tests {
         c.en.slots[0] = Slot { link: 1, sprite: Sprite { image: 7, x: 12, y: 80, kind: u16::from(b'O') }, flash: YES, ..Slot::default() };
         c.draw_enemies();
         let ops: Vec<_> = c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(b.op) } else { None }).collect();
-        assert_eq!(ops, [Op::S18F1A, Op::S19025]);
+        assert_eq!(ops, [Op::StageCut, Op::StageFlash]);
     }
 
     #[test]
@@ -1657,7 +1657,7 @@ mod tests {
         c.draw_enemy_overlays();
         let blits: Vec<_> = c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
         assert_eq!(blits.len(), 1);
-        assert_eq!((blits[0].op, blits[0].x, blits[0].y, blits[0].index), (Op::S18FC1, 5, 60, 3));
+        assert_eq!((blits[0].op, blits[0].x, blits[0].y, blits[0].index), (Op::StageOverwrite, 5, 60, 3));
     }
 
     #[test]

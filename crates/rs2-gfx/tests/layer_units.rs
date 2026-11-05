@@ -5,7 +5,7 @@
 //!
 //! 與原版逐像素的對拍在 `rs2-trace` 的 `tests/layer.rs`。
 
-use rs2_core::{BegGroup, BlitCmd, DrawCmd, ObjId, Op, Pool, ShtGroup};
+use rs2_game::{BegGroup, BlitCmd, DrawCmd, ObjId, Op, Pool, ShtGroup};
 use rs2_formats::{BankItem, GoFile};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink, png};
 
@@ -34,60 +34,60 @@ impl Rng {
 }
 
 const ALL_OPS: [Op; 48] = [
-    Op::S18C0A,
-    Op::S18CE2,
-    Op::S18D46,
-    Op::S18D89,
-    Op::S18DCC,
-    Op::S18E30,
-    Op::S18E73,
-    Op::S18EB6,
-    Op::S18F1A,
-    Op::S18F5D,
-    Op::S18FC1,
-    Op::S19025,
-    Op::S19ADC,
-    Op::S19BA4,
-    Op::S19CF9,
-    Op::S19D08,
-    Op::S19DA8,
-    Op::S1A09F,
-    Op::S1A287,
-    Op::S1929F,
-    Op::S1890D,
-    Op::S1152D,
-    Op::S11504,
-    Op::S18894,
-    Op::S18C6E,
-    Op::S19068,
-    Op::S190CC,
-    Op::S19B40,
-    Op::S19C4F,
-    Op::S19E66,
-    Op::S19F3B,
-    Op::S19FF9,
-    Op::S1A144,
-    Op::S1A1E6,
-    Op::S18ACE,
+    Op::MyOverwrite,
+    Op::MyOverlay,
+    Op::MyCut,
+    Op::MyFlash,
+    Op::MyOverlayEffect,
+    Op::MyCutEffect,
+    Op::MyCutPlayerShot,
+    Op::MyOverlayPlayerShot,
+    Op::StageCut,
+    Op::StageOverlay,
+    Op::StageOverwrite,
+    Op::StageFlash,
+    Op::StageToScratch,
+    Op::ScratchReplace,
+    Op::ClearDrawPage,
+    Op::ScratchReplaceShifted,
+    Op::ScratchOr,
+    Op::ScratchAnd,
+    Op::FillRows,
+    Op::BarCell,
+    Op::Number,
+    Op::ClearScratchB,
+    Op::ClearScratchA,
+    Op::ClearBothPages,
+    Op::MyOverwriteInverted,
+    Op::BegOverwrite,
+    Op::BegInverted,
+    Op::BegToScratch,
+    Op::ScratchReplaceMirrored,
+    Op::ScratchOrPairs,
+    Op::ScratchOrMirrored,
+    Op::ScratchLatchPairs,
+    Op::ScratchAndPairs,
+    Op::ScratchAndMirrored,
+    Op::MapToScratch,
     // 重複列出比較常見的，讓新命令與舊命令的比重接近。
-    Op::S19ADC,
-    Op::S19BA4,
-    Op::S19DA8,
-    Op::S1A09F,
-    Op::S19C4F,
-    Op::S19E66,
-    Op::S19FF9,
-    Op::S1A144,
-    Op::S18ACE,
-    Op::S19B40,
-    Op::S19068,
-    Op::S18C6E,
-    Op::S1A1E6,
+    Op::StageToScratch,
+    Op::ScratchReplace,
+    Op::ScratchOr,
+    Op::ScratchAnd,
+    Op::ScratchReplaceMirrored,
+    Op::ScratchOrPairs,
+    Op::ScratchLatchPairs,
+    Op::ScratchAndPairs,
+    Op::MapToScratch,
+    Op::BegToScratch,
+    Op::BegOverwrite,
+    Op::MyOverwriteInverted,
+    Op::ScratchAndMirrored,
 ];
 
-/// 第三關捲動的單一命令（`S17FA0`、`S18031`、`S180C6`）。`S17EBA` 與 `S17EEA`、`S17F26` 與 `S17F5D`
+/// 第三關捲動的單一命令（`ScrollShowA`、`ScrollShowB`、`ScrollShiftBothLeft`）。`ScrollRotateCopy` 與 `ScrollShiftLeft4`、`ScrollRotateColumn` 與 `ScrollMergeSeam`
 /// 成對出現（旋轉殘留不模擬），由 `scroll_group` 產生。
-const SCROLL_SINGLES: [Op; 3] = [Op::S17FA0, Op::S18031, Op::S180C6];
+const SCROLL_SINGLES: [Op; 3] = [Op::ScrollShowA, Op::ScrollShowB, Op::ScrollShiftBothLeft];
 
 fn base_cmd(op: Op) -> BlitCmd {
     BlitCmd {
@@ -106,7 +106,7 @@ fn base_cmd(op: Op) -> BlitCmd {
         text_y: 0,
         sht_group: ShtGroup::Sht1,
         mask_group: ShtGroup::Sht1,
-        beg_group: rs2_core::BegGroup::Beg1,
+        beg_group: rs2_game::BegGroup::Beg1,
         stride_reg: None,
         obj: None,
     }
@@ -275,9 +275,9 @@ fn rand_extra(r: &mut Rng) -> DrawCmd {
     }
 }
 
-/// 第三關捲動：`S17EBA` 接 `S17EEA`、`S17F26` 接 `S17F5D`，前面選好單一平面（原版的 `sub_1882E`）。
+/// 第三關捲動：`ScrollRotateCopy` 接 `ScrollShiftLeft4`、`ScrollRotateColumn` 接 `ScrollMergeSeam`，前面選好單一平面（原版的 `sub_1882E`）。
 fn scroll_group(r: &mut Rng) -> Vec<DrawCmd> {
-    let (first, second) = if r.chance(50) { (Op::S17EBA, Op::S17EEA) } else { (Op::S17F26, Op::S17F5D) };
+    let (first, second) = if r.chance(50) { (Op::ScrollRotateCopy, Op::ScrollShiftLeft4) } else { (Op::ScrollRotateColumn, Op::ScrollMergeSeam) };
     let mut a = base_cmd(first);
     a.x = if r.chance(70) { 0 } else { r.below(8) as u16 };
     a.scratch = if r.chance(70) { 0 } else { 0x8000 };
@@ -324,14 +324,14 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
         lay.set_counter_font(&font);
     }
     let mut tracked: Vec<Tracked> = [
-        (Op::S18F5D, Pool::Entity),
-        (Op::S18F1A, Pool::Entity),
-        (Op::S18CE2, Pool::Player),
-        (Op::S19BA4, Pool::Background),
-        (Op::S19D08, Pool::Scenery),
-        (Op::S19DA8, Pool::Background),
-        (Op::S1A287, Pool::Background),
-        (Op::S1A09F, Pool::Background),
+        (Op::StageOverlay, Pool::Entity),
+        (Op::StageCut, Pool::Entity),
+        (Op::MyOverlay, Pool::Player),
+        (Op::ScratchReplace, Pool::Background),
+        (Op::ScratchReplaceShifted, Pool::Scenery),
+        (Op::ScratchOr, Pool::Background),
+        (Op::FillRows, Pool::Background),
+        (Op::ScratchAnd, Pool::Background),
     ]
     .iter()
     .enumerate()
@@ -351,7 +351,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
     let mut init = set_dac(&mut r);
     for _ in 0..30 {
         let mut c = rand_cmd(&mut r, n as u32, 0);
-        c.op = if r.chance(70) { Op::S19ADC } else { Op::S1152D };
+        c.op = if r.chance(70) { Op::StageToScratch } else { Op::ClearScratchB };
         c.y = r.below(250) as u16;
         c.x = r.below(80) as u16;
         init.push(DrawCmd::Blit(c));
@@ -363,7 +363,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
             *fed += 1;
             match (break_cmd, c) {
                 (Some(Break::DropEvery(k)), _) if *fed % k == 0 => {}
-                (Some(Break::ShiftX), DrawCmd::Blit(b)) if matches!(b.op, Op::S18F5D | Op::S18CE2 | Op::S18FC1 | Op::S18C0A) => {
+                (Some(Break::ShiftX), DrawCmd::Blit(b)) if matches!(b.op, Op::StageOverlay | Op::MyOverlay | Op::StageOverwrite | Op::MyOverwrite) => {
                     let mut b2 = *b;
                     b2.x = b2.x.wrapping_add(1);
                     to_layer.push(DrawCmd::Blit(b2));
@@ -381,7 +381,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
         if r.chance(10) {
             cmds.extend(set_dac(&mut r));
         }
-        let mut clear = base_cmd(Op::S19CF9);
+        let mut clear = base_cmd(Op::ClearDrawPage);
         clear.page = page;
         cmds.push(DrawCmd::Blit(clear));
         // 追蹤中的物件：每幀小幅移動，偶爾換世代或位移太大。
@@ -398,7 +398,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
             if r.chance(8) {
                 t.index = r.below(n as u32) as u16;
             }
-            if t.op == Op::S1A287 {
+            if t.op == Op::FillRows {
                 t.cx = (t.cx as i32 + r.range(-2, 3)).clamp(1, 60) as u16;
             }
             let mut c = base_cmd(t.op);
@@ -407,7 +407,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
             c.index = t.index;
             c.page = page;
             c.shift = t.shift as u16;
-            c.cx = if matches!(t.op, Op::S1A287) { t.cx } else { r.range(1, 40) as u16 };
+            c.cx = if matches!(t.op, Op::FillRows) { t.cx } else { r.range(1, 40) as u16 };
             c.dx = r.below(16) as u16;
             c.obj = Some(t.obj);
             c.sht_group = if r.chance(50) { ShtGroup::Bh1 } else { ShtGroup::Sht1 };
@@ -428,7 +428,7 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
             }
         }
         // 清頁命令維持在最前面，頁才一致。
-        let at = cmds.iter().position(|d| matches!(d, DrawCmd::Blit(b) if b.op == Op::S19CF9 && b.page == page)).unwrap();
+        let at = cmds.iter().position(|d| matches!(d, DrawCmd::Blit(b) if b.op == Op::ClearDrawPage && b.page == page)).unwrap();
         cmds.swap(0, at);
         // 非 blit 命令、第三關捲動的單一命令與成對命令，插在清頁之後的隨機位置（成對命令不拆開）。
         for _ in 0..r.below(4) {
@@ -516,7 +516,7 @@ fn solid_go(h: u16, stride: u16) -> GoFile {
 }
 
 fn sprite_cmd(x: u16, y: u16, page: u16, obj: Option<ObjId>) -> DrawCmd {
-    let mut c = base_cmd(Op::S18F5D);
+    let mut c = base_cmd(Op::StageOverlay);
     c.x = x;
     c.y = y;
     c.page = page;
@@ -525,7 +525,7 @@ fn sprite_cmd(x: u16, y: u16, page: u16, obj: Option<ObjId>) -> DrawCmd {
 }
 
 fn clear_cmd(page: u16) -> DrawCmd {
-    let mut c = base_cmd(Op::S19CF9);
+    let mut c = base_cmd(Op::ClearDrawPage);
     c.page = page;
     DrawCmd::Blit(c)
 }
@@ -634,14 +634,14 @@ fn background_shift_interpolates_across_the_wrap() {
     let mut s = LayerSink::new(Assets { bh1, ..Assets::empty() }, None);
     let mut init = white_palette();
     for x in [0u16, 40] {
-        let mut c = base_cmd(Op::S19ADC);
+        let mut c = base_cmd(Op::StageToScratch);
         c.x = x;
         c.sht_group = ShtGroup::Bh1;
         init.push(DrawCmd::Blit(c));
     }
     s.push_frame(&init);
     let layer = |shift: u16, page: u16| {
-        let mut c = base_cmd(Op::S19BA4);
+        let mut c = base_cmd(Op::ScratchReplace);
         c.cx = 1;
         c.shift = shift;
         c.page = page;
@@ -665,7 +665,7 @@ fn background_shift_interpolates_across_the_wrap() {
 #[test]
 fn frame_counter_is_an_overlay_and_never_enters_memory() {
     let mut s = sprite_sink();
-    let mut c = base_cmd(Op::S1890D);
+    let mut c = base_cmd(Op::Number);
     c.cx = 12345;
     c.text_x = 0x12;
     c.text_y = 0xBF;
@@ -765,7 +765,7 @@ fn hd_missing_and_wrong_size_fall_back_to_scaled_original_with_marker() {
     s.push_frame(&white_palette());
     let mut cmds = vec![clear_cmd(0)];
     for (i, x) in [(0u16, 2u16), (1, 8), (2, 14)] {
-        let mut c = base_cmd(Op::S18F5D);
+        let mut c = base_cmd(Op::StageOverlay);
         c.index = i;
         c.x = x;
         c.y = 10;
@@ -853,7 +853,7 @@ fn hd_fuzz_does_not_panic() {
     let mut init = set_dac(&mut r);
     for _ in 0..20 {
         let mut c = rand_cmd(&mut r, n as u32, 0);
-        c.op = if r.chance(70) { Op::S19ADC } else { Op::S1152D };
+        c.op = if r.chance(70) { Op::StageToScratch } else { Op::ClearScratchB };
         c.y = r.below(250) as u16;
         c.x = r.below(80) as u16;
         init.push(DrawCmd::Blit(c));
@@ -864,7 +864,7 @@ fn hd_fuzz_does_not_panic() {
         let page = if f % 2 == 0 { 0x8000u16 } else { 0 };
         let mut cmds = vec![clear_cmd(page)];
         obj_pos = (obj_pos.0 + 1, obj_pos.1 + 3);
-        for op in [Op::S18F5D, Op::S18F1A, Op::S19BA4, Op::S1A09F, Op::S19D08] {
+        for op in [Op::StageOverlay, Op::StageCut, Op::ScratchReplace, Op::ScratchAnd, Op::ScratchReplaceShifted] {
             let mut c = rand_cmd(&mut r, n as u32, page);
             c.op = op;
             c.x = obj_pos.0 as u16;
@@ -901,7 +901,7 @@ fn hd_fuzz_does_not_panic() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// 受擊閃白：前一幀是遮罩加平面，這一幀只有 `S19025`（SHT 遮罩的反相 OR，填成色號 15）。
+/// 受擊閃白：前一幀是遮罩加平面，這一幀只有 `StageFlash`（SHT 遮罩的反相 OR，填成色號 15）。
 /// 閃白幀仍要內插位置；閃白後的下一幀遮罩與平面共用同一組位移，相對位置不變。
 #[test]
 fn flash_frame_keeps_position_interpolation() {
@@ -921,14 +921,14 @@ fn flash_frame_keeps_position_interpolation() {
         c.obj = oid(1);
         DrawCmd::Blit(c)
     };
-    s.push_frame(&[clear_cmd(0x8000), at(Op::S18F1A, 1, 10, 0x8000), at(Op::S18F5D, 1, 11, 0x8000)]);
-    s.push_frame(&[clear_cmd(0), at(Op::S19025, 3, 14, 0)]);
+    s.push_frame(&[clear_cmd(0x8000), at(Op::StageCut, 1, 10, 0x8000), at(Op::StageOverlay, 1, 11, 0x8000)]);
+    s.push_frame(&[clear_cmd(0), at(Op::StageFlash, 3, 14, 0)]);
     let (img, w, h) = s.render(0.5, INTERP);
     let bb = white_bbox(img, w, h).unwrap();
     let want = if rs2_gfx::INTERP_CROSS_OP { (16, 12) } else { (24, 14) };
     assert_eq!((bb.0, bb.1), want, "閃白幀的位置");
     // 閃白後的下一幀：遮罩與平面一起內插，白色外框的位置在前後兩幀中間。
-    s.push_frame(&[clear_cmd(0x8000), at(Op::S18F1A, 5, 18, 0x8000), at(Op::S18F5D, 5, 19, 0x8000)]);
+    s.push_frame(&[clear_cmd(0x8000), at(Op::StageCut, 5, 18, 0x8000), at(Op::StageOverlay, 5, 19, 0x8000)]);
     let (img, w, h) = s.render(0.5, INTERP);
     let bb = white_bbox(img, w, h).unwrap();
     // 遮罩在 y = 18 AND 掉空頁沒有可見效果，可見的是平面：前一幀閃白 (24,14)，這一幀平面 (40,19)，平面位置 = 遮罩位置加 1 列。
@@ -987,11 +987,11 @@ fn hd_map_tile_is_written_into_scratch_at_four_times_and_copied_out() {
     std::fs::write(dir.join("MAP/0000.png"), solid_png(32, 40, [255, 0, 0, 255])).unwrap();
     let mut s = hd_sink(&dir, map_assets());
     // 圖塊寫在暫存區 A 的欄 2、列 3，再把這 10 列複製到顯示頁 (5, 20)。
-    let mut copy = at(Op::S19BA4, 5, 20);
+    let mut copy = at(Op::ScratchReplace, 5, 20);
     copy.src_x = 2;
     copy.src_y = 3;
     copy.cx = 10;
-    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::S18ACE, 2, 3)), DrawCmd::Blit(copy)]);
+    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::MapToScratch, 2, 3)), DrawCmd::Blit(copy)]);
     let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
     assert_eq!((w, h), (1280, 800));
     assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((160, 80, 191, 119)));
@@ -1011,9 +1011,9 @@ fn hd_beg_and_j_libraries_read_their_own_directories() {
     std::fs::write(dir.join("J2/0000.png"), solid_png(32, 16, [0, 255, 0, 255])).unwrap();
     std::fs::write(dir.join("BEG1/0000.png"), solid_png(32, 16, [0, 0, 255, 255])).unwrap();
     let mut s = hd_sink(&dir, Assets { j2: solid_go(4, 1), beg1: solid_go(4, 1), ..Assets::empty() });
-    let mut a = at(Op::S19068, 3, 10);
+    let mut a = at(Op::BegOverwrite, 3, 10);
     a.beg_group = BegGroup::J2;
-    let mut b = at(Op::S19068, 20, 30);
+    let mut b = at(Op::BegOverwrite, 20, 30);
     b.beg_group = BegGroup::Beg1;
     s.push_frame(&[clear_cmd(0), DrawCmd::Blit(a), DrawCmd::Blit(b)]);
     let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
@@ -1032,7 +1032,7 @@ fn hd_inverted_draw_complements_rgb_and_fills_transparent_with_color_15() {
     rgba[3] = 0;
     std::fs::write(dir.join("MY/0000.png"), png::encode_rgba(32, 8, &rgba)).unwrap();
     let mut s = hd_sink(&dir, Assets { my: solid_go(2, 1), ..Assets::empty() });
-    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::S18C6E, 1, 10))]);
+    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::MyOverwriteInverted, 1, 10))]);
     let (img, w, _) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
     let px = |x: usize, y: usize| [img[(y * w + x) * 4], img[(y * w + x) * 4 + 1], img[(y * w + x) * 4 + 2]];
     assert_eq!(px(32 + 5, 40 + 5), [55, 155, 205]);
@@ -1075,9 +1075,9 @@ fn hd_scroll_pipeline_moves_a_tile_left_by_forty_bytes_and_by_four_pixels() {
     // 欄 40 的圖塊經 sub_180C6 左移 28h 位元組到欄 0，sub_17FA0 從欄 0 起顯示。
     s.push_frame(&[
         clear_cmd(0),
-        DrawCmd::Blit(at(Op::S18ACE, 40, 0)),
-        DrawCmd::Blit(at(Op::S180C6, 0, 0)),
-        DrawCmd::Blit(BlitCmd { page: 0, ..at(Op::S17FA0, 0, 0) }),
+        DrawCmd::Blit(at(Op::MapToScratch, 40, 0)),
+        DrawCmd::Blit(at(Op::ScrollShiftBothLeft, 0, 0)),
+        DrawCmd::Blit(BlitCmd { page: 0, ..at(Op::ScrollShowA, 0, 0) }),
     ]);
     let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
     assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((0, 0, 31, 39)));
@@ -1086,12 +1086,12 @@ fn hd_scroll_pipeline_moves_a_tile_left_by_forty_bytes_and_by_four_pixels() {
     let b = |op: Op| DrawCmd::Blit(at(op, 0, 0));
     s.push_frame(&[
         clear_cmd(0),
-        DrawCmd::Blit(at(Op::S18ACE, 3, 0)),
+        DrawCmd::Blit(at(Op::MapToScratch, 3, 0)),
         DrawCmd::SetMapMask { mask: 8 },
-        b(Op::S17EBA),
-        b(Op::S17EEA),
+        b(Op::ScrollRotateCopy),
+        b(Op::ScrollShiftLeft4),
         DrawCmd::SetMapMask { mask: 0x0F },
-        DrawCmd::Blit(BlitCmd { page: 0, scratch: 0x8000, ..at(Op::S18031, 0, 0) }),
+        DrawCmd::Blit(BlitCmd { page: 0, scratch: 0x8000, ..at(Op::ScrollShowB, 0, 0) }),
     ]);
     let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
     assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((80, 0, 111, 39)), "A 的像素 24～31 在 B 是 20～27");
@@ -1140,15 +1140,15 @@ fn index_engine_tracks_map_mask_and_stale_read_plane_like_vgasink() {
     let assets = rand_assets(&mut r, 4);
     let mut vga = VgaSink::new(assets.clone());
     let mut lay = LayerSink::new(assets, None);
-    let mut c = base_cmd(Op::S19ADC);
+    let mut c = base_cmd(Op::StageToScratch);
     c.cx = 4;
     let seq: Vec<DrawCmd> = vec![
         DrawCmd::Blit(c),
         DrawCmd::SetMapMask { mask: 2 },
         DrawCmd::VramFill { off: 0, words: 300, value: 0xF0F0 },
-        DrawCmd::Blit(BlitCmd { dx: 0x0F, cx: 3, ..base_cmd(Op::S1A287) }),
-        DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::S1A09F) }),
-        DrawCmd::Blit(base_cmd(Op::S11504)),
+        DrawCmd::Blit(BlitCmd { dx: 0x0F, cx: 3, ..base_cmd(Op::FillRows) }),
+        DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::ScratchAnd) }),
+        DrawCmd::Blit(base_cmd(Op::ClearScratchA)),
         DrawCmd::VramFill { off: 0x100, words: 10, value: 0xFFFF },
     ];
     for d in &seq {
@@ -1174,16 +1174,16 @@ fn hidden_frame_counter_still_carries_the_stride_residual() {
         let mut vga = VgaSink::new(assets.clone());
         let mut lay = LayerSink::new(assets.clone(), None);
         // 暫存區填成每列不同的內容，來源起點差一個位元組就看得出來。
-        let mut fill = vec![DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::S19ADC) })];
+        let mut fill = vec![DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::StageToScratch) })];
         for i in 0..6u16 {
-            fill.push(DrawCmd::Blit(BlitCmd { index: i, y: i * 7, x: i * 3, ..base_cmd(Op::S19ADC) }));
+            fill.push(DrawCmd::Blit(BlitCmd { index: i, y: i * 7, x: i * 3, ..base_cmd(Op::StageToScratch) }));
         }
-        let mut counter = base_cmd(Op::S1890D);
+        let mut counter = base_cmd(Op::Number);
         counter.cx = 321;
         counter.text_x = 0x12;
         counter.text_y = 0xBF;
         counter.stride_reg = Some(stride);
-        let mut up = base_cmd(Op::S19C4F);
+        let mut up = base_cmd(Op::ScratchReplaceMirrored);
         up.y = (-6i16) as u16;
         up.cx = 40;
         up.shift = 3;
@@ -1227,7 +1227,7 @@ fn snapshot_start_matches_vgasink() {
     let mut r2 = Rng(77);
     for f in 0..30 {
         let page = if f % 2 == 0 { 0x8000u16 } else { 0 };
-        let mut cmds = vec![DrawCmd::Blit(BlitCmd { page, ..base_cmd(Op::S19CF9) })];
+        let mut cmds = vec![DrawCmd::Blit(BlitCmd { page, ..base_cmd(Op::ClearDrawPage) })];
         for _ in 0..12 {
             let mut c = rand_cmd(&mut r2, 8, page);
             c.stride_reg = if r2.chance(20) { Some(r2.below(0x60) as u16) } else { None };

@@ -1,7 +1,7 @@
 //! EGA 色表：6 位元 rgbRGB 的位元 2、1、0 是紅、綠、藍（2/3 亮度），位元 5、4、3 是紅、綠、藍（1/3 亮度），
 //! 每個通道 `2 × 主 + 副` 個 55h。標準 16 色是開機時 `sub_1007D` 載入的 `00～07,38h～3Fh`。
 
-use rs2_core::DrawCmd;
+use rs2_game::DrawCmd;
 use rs2_gfx::{ATTR_REGS, Assets, VgaSink, ega_rgb16};
 
 #[test]

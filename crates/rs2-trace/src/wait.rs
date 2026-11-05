@@ -19,7 +19,7 @@
 
 use crate::{Inputs, parse_sc};
 use crate::mirror::{Dseg, Mirror, a, ds_exempt};
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, ShtGroup};
+use rs2_game::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, ShtGroup};
 use rs2_gfx::{Assets, BankDump, VgaSink};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};

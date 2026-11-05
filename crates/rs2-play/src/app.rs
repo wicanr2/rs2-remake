@@ -17,7 +17,7 @@ use crate::ui::panel::{self, Cx, Page, Panel, PanelOut};
 use crate::ui::{self, text};
 use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size};
 use rs2_audio::Engine;
-use rs2_core::{Fixes, Start};
+use rs2_game::{Fixes, Start};
 use rs2_gfx::{Assets, HdAssets, MonoAssets};
 use rs2_trace::{Inputs, load_inputs, parse_sc};
 use sdl2::controller::{Axis, GameController};

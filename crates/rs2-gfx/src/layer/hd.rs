@@ -19,7 +19,7 @@ use super::Off;
 use crate::assets::Assets;
 use crate::font::DIGITS;
 use crate::sink::scratch_src;
-use rs2_core::{BlitCmd, Op};
+use rs2_game::{BlitCmd, Op};
 
 pub const S: i32 = SCALE as i32;
 /// 顯示頁寬、高（HD 像素）。
@@ -70,7 +70,7 @@ pub struct HdMem {
     pub scratch: [Canvas; 2],
     pub scr_tag: [Option<ScrTag>; 2],
     /// 序列器 map mask。HD 畫布沒有平面，只有 `0Fh`（全平面）的填色與清除有意義，
-    /// 其他值下的 `VramFill`、`S11504`、`S1152D` 略過（`VgaSink` 與索引色引擎才有逐平面的效果）。
+    /// 其他值下的 `VramFill`、`ClearScratchA`、`ClearScratchB` 略過（`VgaSink` 與索引色引擎才有逐平面的效果）。
     pub map_mask: u8,
 }
 
@@ -623,8 +623,8 @@ fn add_over_bg(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32) {
     }
 }
 
-/// 標題選單選中列（`S18C6E`）在 HD 介面的畫法（規格 005「HD 介面」）：不取反，字樣照常亮著（文字不反相），
-/// 後面墊一條圓角高亮條。高亮條正好是圖的矩形：選單不清畫面，沒選中的列用 `S18C0A` 覆寫自己的矩形，
+/// 標題選單選中列（`MyOverwriteInverted`）在 HD 介面的畫法（規格 005「HD 介面」）：不取反，字樣照常亮著（文字不反相），
+/// 後面墊一條圓角高亮條。高亮條正好是圖的矩形：選單不清畫面，沒選中的列用 `MyOverwrite` 覆寫自己的矩形，
 /// 條若超出矩形，選取移到別列時會留下殘影。
 pub fn menu_highlight(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: &BlitCmd) {
     let x0 = sx(c.x) * 8 * S;
@@ -634,7 +634,7 @@ pub fn menu_highlight(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: 
     }
     if let Some(img) = hd.image(Lib::My, c.index, pal, assets) {
         let page = &mut mem.pages[pg(c)];
-        // 先清成黑，再墊高亮條，最後疊字：和 `S18C0A` 一樣整個矩形都被寫到。
+        // 先清成黑，再墊高亮條，最後疊字：和 `MyOverwrite` 一樣整個矩形都被寫到。
         fill_round_grad(page, x0, y0, img.w as i32, img.h as i32, 0.0, [0, 0, 0], [0, 0, 0], [0, 0, 0]);
         fill_round_grad(page, x0, y0, img.w as i32, img.h as i32, 12.0 * S as f32 / 4.0, [66, 140, 236], [40, 98, 190], [150, 200, 255]);
         add_over_bg(page, &img, x0, y0);
@@ -771,7 +771,7 @@ fn hd_low_nibble(sc: &mut [Canvas; 2], d: usize, from: i32, to: i32) {
     }
 }
 
-/// 第三關捲動的 `S17EBA`、`S17EEA`、`S17F26`、`S17F5D`。原版對四個平面各做一次（`sub_1882E` 選平面 3、2、1、0），
+/// 第三關捲動的 `ScrollRotateCopy`、`ScrollShiftLeft4`、`ScrollRotateColumn`、`ScrollMergeSeam`。原版對四個平面各做一次（`sub_1882E` 選平面 3、2、1、0），
 /// HD 畫布沒有平面，只在選到平面 3（map mask 8）那一次做，其餘三次略過。
 /// 來源暫存區由 `word_2685C` 選（0 是 A），目的是另一個。
 fn hd_scroll_pair(mem: &mut HdMem, c: &BlitCmd) {
@@ -784,22 +784,22 @@ fn hd_scroll_pair(mem: &mut HdMem, c: &BlitCmd) {
     let sc = &mut mem.scratch;
     match c.op {
         // 3E80h 位元組 = 200 列。
-        Op::S17EBA => {
+        Op::ScrollRotateCopy => {
             for i in 0..0x3E80 {
                 hd_swap_byte(sc, s, x + i, d, x + i);
             }
         }
-        Op::S17EEA => {
+        Op::ScrollShiftLeft4 => {
             for i in 0..0x3E80 {
                 hd_low_nibble(sc, d, x + i + 1, x + i);
             }
         }
-        Op::S17F26 => {
+        Op::ScrollRotateColumn => {
             for r in 0..200 {
                 hd_swap_byte(sc, s, x + r * 80, d, x + r * 80);
             }
         }
-        Op::S17F5D => {
+        Op::ScrollMergeSeam => {
             for r in 0..200 {
                 hd_low_nibble(sc, d, x + r * 80, x + r * 80 - 1);
             }
@@ -853,41 +853,41 @@ fn hd_scroll_left(mem: &mut HdMem) {
     }
 }
 
-/// 這個命令結束時原版會呼叫 `sub_18878`（map mask 回 0Fh）。不呼叫的：`S11504`、`S1152D`（清暫存區）、
-/// `S19BA4`、`S19D08`、`S19C4F`、`S19FF9`（閂鎖複製）、`S1A287`、`S1929F`（填色），以及第三關捲動的七個命令
+/// 這個命令結束時原版會呼叫 `sub_18878`（map mask 回 0Fh）。不呼叫的：`ClearScratchA`、`ClearScratchB`（清暫存區）、
+/// `ScratchReplace`、`ScratchReplaceShifted`、`ScratchReplaceMirrored`、`ScratchLatchPairs`（閂鎖複製）、`FillRows`、`BarCell`（填色），以及第三關捲動的七個命令
 /// （`sub_17E73` 等呼叫端自己在最後呼叫 `sub_18878`）。
 fn restores_map_mask(op: Op) -> bool {
     !matches!(
         op,
-        Op::S11504
-            | Op::S1152D
-            | Op::S19BA4
-            | Op::S19D08
-            | Op::S19C4F
-            | Op::S19FF9
-            | Op::S1A287
-            | Op::S1929F
-            | Op::S17EBA
-            | Op::S17EEA
-            | Op::S17F26
-            | Op::S17F5D
-            | Op::S17FA0
-            | Op::S18031
-            | Op::S180C6
+        Op::ClearScratchA
+            | Op::ClearScratchB
+            | Op::ScratchReplace
+            | Op::ScratchReplaceShifted
+            | Op::ScratchReplaceMirrored
+            | Op::ScratchLatchPairs
+            | Op::FillRows
+            | Op::BarCell
+            | Op::ScrollRotateCopy
+            | Op::ScrollShiftLeft4
+            | Op::ScrollRotateColumn
+            | Op::ScrollMergeSeam
+            | Op::ScrollShowA
+            | Op::ScrollShowB
+            | Op::ScrollShiftBothLeft
     )
 }
 
 /// 把圖寫進暫存區的命令用哪個圖庫。
 pub fn scratch_image_lib(c: &BlitCmd) -> Option<Lib> {
     match c.op {
-        Op::S19ADC => Some(Lib::from_sht(c.sht_group)),
-        Op::S19B40 => Some(Lib::from_beg(c.beg_group)),
-        Op::S18ACE => Some(Lib::Map),
+        Op::StageToScratch => Some(Lib::from_sht(c.sht_group)),
+        Op::BegToScratch => Some(Lib::from_beg(c.beg_group)),
+        Op::MapToScratch => Some(Lib::Map),
         _ => None,
     }
 }
 
-/// 套用一個 blit 命令。`S1890D` 的幀計數位置不在這裡處理。
+/// 套用一個 blit 命令。`Number` 的幀計數位置不在這裡處理。
 pub fn apply(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: &BlitCmd, off: Off) {
     let x0 = sx(c.x) * 8 * S + off.ox;
     let y0 = sx(c.y) * S + off.oy;
@@ -928,50 +928,50 @@ pub fn apply(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: 
     };
     // 2 位元組寬（16 像素）的變體。
     let narrow = Shape { bytes: 2, ..Shape::FULL };
-    // 第四關通道上壁等鏡射版。`S19C4F` 沒有 189 列上限，`bx` 遞減；其餘兩個 `bx` 遞增。
+    // 第四關通道上壁等鏡射版。`ScratchReplaceMirrored` 沒有 189 列上限，`bx` 遞減；其餘兩個 `bx` 遞增。
     let mirror = Shape { mirror: true, ylim: PH, ..Shape::FULL };
     let mirror_up = Shape { mirror: true, count_up: true, ..Shape::FULL };
     match c.op {
-        Op::S18C0A => img_op(mem, hd, Lib::My, Mode::Mov),
-        Op::S18CE2 | Op::S18EB6 | Op::S18DCC => img_op(mem, hd, Lib::My, Mode::Or),
-        Op::S18C6E => inv_op(mem, hd, Lib::My),
-        Op::S18D46 | Op::S18E30 | Op::S18E73 => mask_op(mem, hd, Lib::My, false),
-        Op::S18D89 => mask_op(mem, hd, Lib::My, true),
-        Op::S18F1A => mask_op(mem, hd, mask_lib, false),
-        Op::S19025 => mask_op(mem, hd, mask_lib, true),
-        Op::S18F5D => img_op(mem, hd, sht, Mode::Or),
-        Op::S18FC1 => img_op(mem, hd, sht, Mode::Mov),
-        Op::S19068 => img_op(mem, hd, beg, Mode::Mov),
-        Op::S190CC => inv_op(mem, hd, beg),
-        Op::S19ADC => scratch_op(mem, hd, sht),
-        Op::S19B40 => scratch_op(mem, hd, beg),
-        Op::S18ACE => {
+        Op::MyOverwrite => img_op(mem, hd, Lib::My, Mode::Mov),
+        Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect => img_op(mem, hd, Lib::My, Mode::Or),
+        Op::MyOverwriteInverted => inv_op(mem, hd, Lib::My),
+        Op::MyCut | Op::MyCutEffect | Op::MyCutPlayerShot => mask_op(mem, hd, Lib::My, false),
+        Op::MyFlash => mask_op(mem, hd, Lib::My, true),
+        Op::StageCut => mask_op(mem, hd, mask_lib, false),
+        Op::StageFlash => mask_op(mem, hd, mask_lib, true),
+        Op::StageOverlay => img_op(mem, hd, sht, Mode::Or),
+        Op::StageOverwrite => img_op(mem, hd, sht, Mode::Mov),
+        Op::BegOverwrite => img_op(mem, hd, beg, Mode::Mov),
+        Op::BegInverted => inv_op(mem, hd, beg),
+        Op::StageToScratch => scratch_op(mem, hd, sht),
+        Op::BegToScratch => scratch_op(mem, hd, beg),
+        Op::MapToScratch => {
             if let Some(img) = hd.image(Lib::Map, c.index, pal, assets) {
                 scratch_put_tile(&mut mem.scratch[((c.scratch >> 15) & 1) as usize], &img, c);
             }
         }
-        Op::S19BA4 => copy_hd(mem, c, off, CopyMode::Over, false),
-        Op::S19D08 => copy_hd(mem, c, off, CopyMode::Over, true),
-        Op::S19C4F => copy_hd_ex(mem, c, off, CopyMode::Over, mirror),
-        Op::S19DA8 => copy_hd(mem, c, off, CopyMode::Or, false),
-        Op::S19F3B => copy_hd_ex(mem, c, off, CopyMode::Or, mirror_up),
-        Op::S19E66 => copy_hd_ex(mem, c, off, CopyMode::Or, narrow),
-        Op::S19FF9 => copy_hd_ex(mem, c, off, CopyMode::Over, narrow),
-        Op::S1A09F => copy_hd(mem, c, off, CopyMode::And, false),
-        Op::S1A1E6 => copy_hd_ex(mem, c, off, CopyMode::And, mirror_up),
-        Op::S1A144 => copy_hd_ex(mem, c, off, CopyMode::And, narrow),
-        Op::S19CF9 => clear_page_hd(mem, &pal.visible8(), c),
-        Op::S1A287 => fill_hd(mem, &pal.visible8(), c, off),
-        Op::S1929F => bar_hd(mem, &pal.visible8(), c),
-        Op::S11504 => clear_scratch_hd(mem, 0),
-        Op::S1152D => clear_scratch_hd(mem, 1),
-        Op::S18894 => clear_both_pages_hd(mem, &pal.visible8()),
-        Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D => hd_scroll_pair(mem, c),
-        Op::S17FA0 | Op::S18031 => hd_scroll_view(mem, c),
-        Op::S180C6 => hd_scroll_left(mem),
+        Op::ScratchReplace => copy_hd(mem, c, off, CopyMode::Over, false),
+        Op::ScratchReplaceShifted => copy_hd(mem, c, off, CopyMode::Over, true),
+        Op::ScratchReplaceMirrored => copy_hd_ex(mem, c, off, CopyMode::Over, mirror),
+        Op::ScratchOr => copy_hd(mem, c, off, CopyMode::Or, false),
+        Op::ScratchOrMirrored => copy_hd_ex(mem, c, off, CopyMode::Or, mirror_up),
+        Op::ScratchOrPairs => copy_hd_ex(mem, c, off, CopyMode::Or, narrow),
+        Op::ScratchLatchPairs => copy_hd_ex(mem, c, off, CopyMode::Over, narrow),
+        Op::ScratchAnd => copy_hd(mem, c, off, CopyMode::And, false),
+        Op::ScratchAndMirrored => copy_hd_ex(mem, c, off, CopyMode::And, mirror_up),
+        Op::ScratchAndPairs => copy_hd_ex(mem, c, off, CopyMode::And, narrow),
+        Op::ClearDrawPage => clear_page_hd(mem, &pal.visible8(), c),
+        Op::FillRows => fill_hd(mem, &pal.visible8(), c, off),
+        Op::BarCell => bar_hd(mem, &pal.visible8(), c),
+        Op::ClearScratchA => clear_scratch_hd(mem, 0),
+        Op::ClearScratchB => clear_scratch_hd(mem, 1),
+        Op::ClearBothPages => clear_both_pages_hd(mem, &pal.visible8()),
+        Op::ScrollRotateCopy | Op::ScrollShiftLeft4 | Op::ScrollRotateColumn | Op::ScrollMergeSeam => hd_scroll_pair(mem, c),
+        Op::ScrollShowA | Op::ScrollShowB => hd_scroll_view(mem, c),
+        Op::ScrollShiftBothLeft => hd_scroll_left(mem),
         // MGA 專用（`sub_1117F`），E 直接 `retn`。
-        Op::S1117F => {}
-        Op::S1890D => counter(&mut mem.pages, &pal.visible8(), c.text_x, c.text_y, c.cx, true),
+        Op::EndOfFrameCopy => {}
+        Op::Number => counter(&mut mem.pages, &pal.visible8(), c.text_x, c.text_y, c.cx, true),
     }
     if restores_map_mask(c.op) {
         mem.map_mask = 0x0F;
@@ -981,7 +981,7 @@ pub fn apply(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rs2_core::ShtGroup;
+    use rs2_game::ShtGroup;
 
     fn img(w: usize, h: usize, px: &[[u8; 4]]) -> HdImg {
         assert_eq!(px.len(), w * h);
@@ -1066,7 +1066,7 @@ mod tests {
             }
         }
         let mut c = BlitCmd {
-            op: Op::S19BA4,
+            op: Op::ScratchReplace,
             x: 0,
             y: 0,
             index: 0,
@@ -1081,7 +1081,7 @@ mod tests {
             text_y: 0,
             sht_group: ShtGroup::Bh1,
             mask_group: ShtGroup::Sht1,
-            beg_group: rs2_core::BegGroup::Beg1,
+            beg_group: rs2_game::BegGroup::Beg1,
             stride_reg: None,
             obj: None,
         };
@@ -1096,7 +1096,7 @@ mod tests {
         assert_eq!(at(&mem.pages[0], 0, 0), [0, 0, 0, 255]);
         assert_eq!(at(&mem.pages[0], 4, 0)[0], 0);
         // 位移版：shift = -1 位元組（-32 HD 像素）時，目的前 32 欄不寫。
-        c.op = Op::S19D08;
+        c.op = Op::ScratchReplaceShifted;
         c.shift = 0xFFFF;
         let mut m2 = mem.clone();
         m2.pages[0] = Canvas::new(PW as usize, PH as usize, [7, 7, 7, 255]);
@@ -1113,7 +1113,7 @@ mod tests {
         // 來源：欄 0 白不透明、欄 1 黑不透明、欄 2 白透明（等於沒寫）
         mem.scratch[0].px[..12].copy_from_slice(&[255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 0]);
         let c = BlitCmd {
-            op: Op::S1A09F,
+            op: Op::ScratchAnd,
             x: 0,
             y: 0,
             index: 0,
@@ -1128,7 +1128,7 @@ mod tests {
             text_y: 0,
             sht_group: ShtGroup::Bh1,
             mask_group: ShtGroup::Sht1,
-            beg_group: rs2_core::BegGroup::Beg1,
+            beg_group: rs2_game::BegGroup::Beg1,
             stride_reg: None,
             obj: None,
         };

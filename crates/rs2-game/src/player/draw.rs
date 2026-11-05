@@ -265,7 +265,7 @@ mod tests {
         c.pl.ship[0].image = 9;
         c.draw_player(0);
         let cmds = blits(&mut c);
-        assert_eq!(summary(&cmds), vec![(Op::S18D46, 7, 80, 9), (Op::S18CE2, 7, 81, 9)]);
+        assert_eq!(summary(&cmds), vec![(Op::MyCut, 7, 80, 9), (Op::MyOverlay, 7, 81, 9)]);
         assert!(cmds.iter().all(|b| b.obj.map(|o| (o.pool, o.slot)) == Some((Pool::Player, 0))), "物件編號是玩家槽 0");
         assert_eq!(cmds.iter().map(|b| b.stride_reg).collect::<Vec<_>>(), vec![None, None], "碰撞在畫之後，這兩個命令沒有帶形狀寬");
         assert_eq!(stride(&c), Some(5), "碰撞最後掃 G2 的本體形狀，留下寬 5 給下一個命令");
@@ -274,7 +274,7 @@ mod tests {
         c.pl.ship[1].image = 0x10;
         c.draw_player(1);
         let cmds = blits(&mut c);
-        assert_eq!(summary(&cmds), vec![(Op::S18D46, 7, 80, 0x10), (Op::S18CE2, 7, 81, 0x10)]);
+        assert_eq!(summary(&cmds), vec![(Op::MyCut, 7, 80, 0x10), (Op::MyOverlay, 7, 81, 0x10)]);
         assert!(cmds.iter().all(|b| b.obj.map(|o| (o.pool, o.slot)) == Some((Pool::Player, 1))), "玩家 2 是槽 1");
     }
 
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn the_invincible_frames_draw_only_the_mask_flash_on_odd_pages_and_skip_the_collisions() {
-        for (page, want) in [(0u16, vec![Op::S18D46]), (0x8000, vec![Op::S18D46, Op::S18D89])] {
+        for (page, want) in [(0u16, vec![Op::MyCut]), (0x8000, vec![Op::MyCut, Op::MyFlash])] {
             let mut c = fresh();
             place(&mut c, 0, 7, 8);
             c.set_draw_page(page);
@@ -313,7 +313,7 @@ mod tests {
         let cmds = blits(&mut c);
         assert_eq!(
             summary(&cmds),
-            vec![(Op::S18D46, 9, 80, 9), (Op::S18CE2, 9, 81, 9), (Op::S18D46, 5, 78, 0x0D), (Op::S18CE2, 5, 78, 0x0D)],
+            vec![(Op::MyCut, 9, 80, 9), (Op::MyOverlay, 9, 81, 9), (Op::MyCut, 5, 78, 0x0D), (Op::MyOverlay, 5, 78, 0x0D)],
             "尾焰在 x - 4、y - 2，偶數頁用圖 0Dh"
         );
         // 尾焰的髒格：形狀 3 × 3 全 1，左上角欄 5、列 7。列 7 只有尾焰會蓋到（本體的髒格從列 8 起）。
@@ -337,7 +337,7 @@ mod tests {
         c.pl.ship[0].fired = YES;
         c.draw_player(0);
         let s = summary(&blits(&mut c));
-        assert_eq!(s[2..], [(Op::S18D46, 10, 84, 0x11), (Op::S18CE2, 10, 84, 0x11)], "沒有光柱：四平面位置 (7, 81) 加 (3, 3)");
+        assert_eq!(s[2..], [(Op::MyCut, 10, 84, 0x11), (Op::MyOverlay, 10, 84, 0x11)], "沒有光柱：四平面位置 (7, 81) 加 (3, 3)");
         // 光柱在畫：位置 (x, 光柱 y)，閃光跟著光柱的 y。
         let mut c = fresh();
         place(&mut c, 0, 7, 8);
@@ -349,7 +349,7 @@ mod tests {
         let beam_y = 0xFF6Au16;
         assert_eq!(
             s[2..],
-            [(Op::S18D46, 7, beam_y, 8), (Op::S18CE2, 7, beam_y, 8), (Op::S18D46, 10, beam_y + 3, 0x11), (Op::S18CE2, 10, beam_y + 3, 0x11)],
+            [(Op::MyCut, 7, beam_y, 8), (Op::MyOverlay, 7, beam_y, 8), (Op::MyCut, 10, beam_y + 3, 0x11), (Op::MyOverlay, 10, beam_y + 3, 0x11)],
             "原版的閃光接在光柱後面，y 跟光柱"
         );
         // 玩家 2 的閃光：圖 0Ah，位移 (3, 6)。
@@ -358,7 +358,7 @@ mod tests {
         c.pl.ship[1].fired = YES;
         c.draw_player(1);
         let s = summary(&blits(&mut c));
-        assert_eq!(s[2..], [(Op::S18D46, 10, 87, 0x0A), (Op::S18CE2, 10, 87, 0x0A)]);
+        assert_eq!(s[2..], [(Op::MyCut, 10, 87, 0x0A), (Op::MyOverlay, 10, 87, 0x0A)]);
     }
 
     #[test]
@@ -382,7 +382,7 @@ mod tests {
         c.pl.ship[0].pods = super::super::Pods { first: YES, second: NO, facing: FACING_RIGHT, image: 0x20, anim: 4, col: 3, row: 2, blit_x: 30, blit_y: 40 };
         c.draw_player(0);
         let cmds = blits(&mut c);
-        assert_eq!(summary(&cmds)[..2], [(Op::S18D46, 30, 45, 0x20), (Op::S18CE2, 30, 45, 0x20)], "畫更新前的位置，y 加 5");
+        assert_eq!(summary(&cmds)[..2], [(Op::MyCut, 30, 45, 0x20), (Op::MyOverlay, 30, 45, 0x20)], "畫更新前的位置，y 加 5");
         assert_eq!((cmds[0].obj.map(|o| o.pool), cmds[0].obj.map(|o| o.slot)), (Some(Pool::Pod), Some(0)));
         // 更新後：欄 = 本體欄 + 3，列 = 本體列 - 3，朝右不位移，動畫計數 4 + 1 = 5 歸零。
         let pods = c.pl.ship[0].pods;
@@ -399,10 +399,10 @@ mod tests {
             let cmds = blits(&mut c);
             let s = summary(&cmds);
             assert_eq!(s[..4], [
-                (Op::S18D46, 30, 40 + draw_dy, 0x20),
-                (Op::S18CE2, 30, 40 + draw_dy, 0x20),
-                (Op::S18D46, 30, 40 + draw_dy + gap_px, 0x20),
-                (Op::S18CE2, 30, 40 + draw_dy + gap_px, 0x20),
+                (Op::MyCut, 30, 40 + draw_dy, 0x20),
+                (Op::MyOverlay, 30, 40 + draw_dy, 0x20),
+                (Op::MyCut, 30, 40 + draw_dy + gap_px, 0x20),
+                (Op::MyOverlay, 30, 40 + draw_dy + gap_px, 0x20),
             ]);
             let slots: Vec<u8> = cmds[..4].iter().map(|b| b.obj.expect("有物件").slot).collect();
             assert_eq!(slots, vec![first_slot, first_slot, first_slot + 1, first_slot + 1], "玩家 {} 的砲座槽", who + 1);
@@ -457,10 +457,10 @@ mod tests {
         let s = summary(&blits(&mut c));
         // 前四個是砲座本體，接著噴焰：朝右 x + 2、y + 5 + 2，第二座再加 50。
         assert_eq!(s[4..8], [
-            (Op::S18D46, 32, 47, 0x0A),
-            (Op::S18CE2, 32, 47, 0x0A),
-            (Op::S18D46, 32, 97, 0x0A),
-            (Op::S18CE2, 32, 97, 0x0A),
+            (Op::MyCut, 32, 47, 0x0A),
+            (Op::MyOverlay, 32, 47, 0x0A),
+            (Op::MyCut, 32, 97, 0x0A),
+            (Op::MyOverlay, 32, 97, 0x0A),
         ]);
         // 朝左：x - 1。
         let mut c = fresh();
@@ -469,7 +469,7 @@ mod tests {
         c.pl.ship[0].pods = super::super::Pods { first: YES, second: NO, facing: FACING_LEFT, image: 0x20, anim: 0, col: 3, row: 2, blit_x: 30, blit_y: 40 };
         c.draw_player(0);
         let s = summary(&blits(&mut c));
-        assert_eq!(s[2..4], [(Op::S18D46, 29, 47, 0x0A), (Op::S18CE2, 29, 47, 0x0A)]);
+        assert_eq!(s[2..4], [(Op::MyCut, 29, 47, 0x0A), (Op::MyOverlay, 29, 47, 0x0A)]);
     }
 
     #[test]

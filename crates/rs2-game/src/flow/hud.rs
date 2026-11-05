@@ -87,7 +87,7 @@ mod tests {
     }
 
     fn cells(c: &Core) -> Vec<BlitCmd> {
-        c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).filter(|b| b.op == Op::S1929F).collect()
+        c.draws.iter().filter_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).filter(|b| b.op == Op::BarCell).collect()
     }
 
     #[test]
@@ -146,6 +146,6 @@ mod tests {
         c.set_stage_frame(1234);
         c.draw_frame_counter();
         let blit = c.draws.iter().find_map(|d| if let DrawCmd::Blit(b) = d { Some(*b) } else { None }).unwrap();
-        assert_eq!((blit.op, blit.cx, blit.text_x, blit.text_y), (Op::S1890D, 1234, 0x12, 0xBF));
+        assert_eq!((blit.op, blit.cx, blit.text_x, blit.text_y), (Op::Number, 1234, 0x12, 0xBF));
     }
 }

@@ -9,7 +9,7 @@
 //!   `render(alpha)` 取「這一幀開始前」的記憶體當底，複製一份，把這一幀的命令重放上去，
 //!   帶位移的命令依 `alpha` 換成內插後的偏移。提交給下一幀的記憶體永遠由不內插的命令產生，
 //!   所以補間不會污染畫面狀態，同一幀重複 `render` 也不會累積。
-//! - 幀計數（座標 (12h, BFh) 的 `S1890D`）不寫進記憶體，`render` 時才疊上，所以 `show_counter` 可隨時切換。
+//! - 幀計數（座標 (12h, BFh) 的 `Number`）不寫進記憶體，`render` 時才疊上，所以 `show_counter` 可隨時切換。
 
 mod hd;
 mod hd_assets;
@@ -22,7 +22,7 @@ use crate::assets::Assets;
 use crate::sink::{COUNTER_X, COUNTER_Y};
 use hd::{Canvas, HdMem};
 use interp::Delta;
-use rs2_core::{BlitCmd, DrawCmd, Op};
+use rs2_game::{BlitCmd, DrawCmd, Op};
 
 pub use hd_assets::{HdAssets, HdSet, Lib as HdLib};
 pub use interp::{INTERP_CROSS_OP, INTERP_MAX_PX};
@@ -36,7 +36,7 @@ pub(crate) struct Off {
     pub oy: i32,
     /// 暫存區來源欄。
     pub sox: i32,
-    /// `S1A287` 的列數。
+    /// `FillRows` 的列數。
     pub ocx: i32,
 }
 
@@ -46,7 +46,7 @@ pub struct RenderOpts {
     pub interpolate: bool,
     /// 用 HD 圖與 4 倍輸出。
     pub hd: bool,
-    /// 畫幀計數（座標 (12h, BFh) 的 `S1890D`）。
+    /// 畫幀計數（座標 (12h, BFh) 的 `Number`）。
     pub show_counter: bool,
     /// 玩家機預測：相對最新邏輯位置的偏移（HD 像素，邏輯像素的 1/4），索引是玩家編號。
     /// `Some` 時這個玩家的本體、尾焰與砲座不走前後兩幀的補間，一律畫在最新位置加偏移。`None` 照一般補間。
@@ -67,9 +67,9 @@ const PLAYER_OFF_SCALE: i32 = 4;
 fn player_off(player: &[Option<(i32, i32)>; 2], free_pods: &[bool; 2], c: &BlitCmd, scale: i32) -> Option<Off> {
     let o = c.obj?;
     let p = match o.pool {
-        rs2_core::Pool::Player => o.slot as usize,
+        rs2_game::Pool::Player => o.slot as usize,
         // 砲座的位置每幀由玩家機位置算出（`sub_14908` 等），槽 0、1 屬於玩家 1，槽 2、3 屬於玩家 2。
-        rs2_core::Pool::Pod => {
+        rs2_game::Pool::Pod => {
             let p = (o.slot / 2) as usize;
             if free_pods.get(p).copied().unwrap_or(false) {
                 return None;
@@ -145,7 +145,7 @@ pub struct LayerSink {
 
 #[inline]
 fn is_frame_counter(c: &BlitCmd) -> bool {
-    c.op == Op::S1890D && c.text_x == COUNTER_X && c.text_y == COUNTER_Y
+    c.op == Op::Number && c.text_x == COUNTER_X && c.text_y == COUNTER_Y
 }
 
 /// `VramFill` 起點落在暫存區（`1F40h` 起到頁 1 之前、`9F40h` 之後）。
@@ -158,16 +158,16 @@ fn is_scratch_write(d: &DrawCmd) -> bool {
     match d {
         DrawCmd::Blit(c) => matches!(
             c.op,
-            Op::S19ADC
-                | Op::S19B40
-                | Op::S18ACE
-                | Op::S1152D
-                | Op::S11504
-                | Op::S17EBA
-                | Op::S17EEA
-                | Op::S17F26
-                | Op::S17F5D
-                | Op::S180C6
+            Op::StageToScratch
+                | Op::BegToScratch
+                | Op::MapToScratch
+                | Op::ClearScratchB
+                | Op::ClearScratchA
+                | Op::ScrollRotateCopy
+                | Op::ScrollShiftLeft4
+                | Op::ScrollRotateColumn
+                | Op::ScrollMergeSeam
+                | Op::ScrollShiftBothLeft
         ),
         DrawCmd::VramFill { off, .. } => fill_in_scratch(*off),
         _ => false,
@@ -180,18 +180,18 @@ fn is_scratch_copy(d: &DrawCmd) -> bool {
         d,
         DrawCmd::Blit(c) if matches!(
             c.op,
-            Op::S19BA4
-                | Op::S19D08
-                | Op::S19DA8
-                | Op::S1A09F
-                | Op::S19C4F
-                | Op::S19E66
-                | Op::S19F3B
-                | Op::S19FF9
-                | Op::S1A144
-                | Op::S1A1E6
-                | Op::S17FA0
-                | Op::S18031
+            Op::ScratchReplace
+                | Op::ScratchReplaceShifted
+                | Op::ScratchOr
+                | Op::ScratchAnd
+                | Op::ScratchReplaceMirrored
+                | Op::ScratchOrPairs
+                | Op::ScratchOrMirrored
+                | Op::ScratchLatchPairs
+                | Op::ScratchAndPairs
+                | Op::ScratchAndMirrored
+                | Op::ScrollShowA
+                | Op::ScrollShowB
         )
     )
 }
@@ -203,21 +203,21 @@ fn page_of(cmds: &[DrawCmd]) -> Option<u16> {
     for d in cmds {
         match d {
             DrawCmd::Blit(c) => match c.op {
-                Op::S19CF9 => clear = Some(c.page),
-                Op::S19ADC
-                | Op::S19B40
-                | Op::S18ACE
-                | Op::S11504
-                | Op::S1152D
-                | Op::S18894
-                | Op::S1890D
-                | Op::S1929F
-                | Op::S17EBA
-                | Op::S17EEA
-                | Op::S17F26
-                | Op::S17F5D
-                | Op::S180C6
-                | Op::S1117F => {}
+                Op::ClearDrawPage => clear = Some(c.page),
+                Op::StageToScratch
+                | Op::BegToScratch
+                | Op::MapToScratch
+                | Op::ClearScratchA
+                | Op::ClearScratchB
+                | Op::ClearBothPages
+                | Op::Number
+                | Op::BarCell
+                | Op::ScrollRotateCopy
+                | Op::ScrollShiftLeft4
+                | Op::ScrollRotateColumn
+                | Op::ScrollMergeSeam
+                | Op::ScrollShiftBothLeft
+                | Op::EndOfFrameCopy => {}
                 _ => any = Some(c.page),
             },
             DrawCmd::VramFill { off, .. } if *off < 0x1F40 => any = Some(0),
@@ -274,12 +274,12 @@ fn hd_scratch_prepare(
         return m.scr_tag[which].as_ref().map(|t| t.pal.clone());
     }
     match c.op {
-        Op::S11504 => m.scr_tag[0] = None,
-        Op::S1152D => m.scr_tag[1] = None,
-        Op::S19BA4 | Op::S19D08 | Op::S19DA8 | Op::S1A09F | Op::S19C4F | Op::S19E66 | Op::S19F3B | Op::S19FF9 | Op::S1A144 | Op::S1A1E6 => {
+        Op::ClearScratchA => m.scr_tag[0] = None,
+        Op::ClearScratchB => m.scr_tag[1] = None,
+        Op::ScratchReplace | Op::ScratchReplaceShifted | Op::ScratchOr | Op::ScratchAnd | Op::ScratchReplaceMirrored | Op::ScratchOrPairs | Op::ScratchOrMirrored | Op::ScratchLatchPairs | Op::ScratchAndPairs | Op::ScratchAndMirrored => {
             scratch_to_space(m, which, space, hd_pal, before);
         }
-        Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D | Op::S17FA0 | Op::S18031 | Op::S180C6 => {
+        Op::ScrollRotateCopy | Op::ScrollShiftLeft4 | Op::ScrollRotateColumn | Op::ScrollMergeSeam | Op::ScrollShowA | Op::ScrollShowB | Op::ScrollShiftBothLeft => {
             scratch_to_space(m, 0, space, hd_pal, before);
             scratch_to_space(m, 1, space, hd_pal, before);
         }
@@ -422,7 +422,7 @@ impl LayerSink {
                     if is_frame_counter(c) && self.counter_font.is_none() {
                         counter = Some(c.cx);
                         // 不畫，但命令帶的 `word_2687E` 還是要記下：核心把邏輯對它的寫入附在下一個繪製命令上，
-                        // `VgaSink::blit` 在分派前先套用（`sink.rs`），之後 `y < 0` 的列複製（`S19C4F` 等）靠它推進來源指標。
+                        // `VgaSink::blit` 在分派前先套用（`sink.rs`），之後 `y < 0` 的列複製（`ScratchReplaceMirrored` 等）靠它推進來源指標。
                         if let Some(v) = c.stride_reg {
                             self.idx_st.stride_reg = v;
                         }
@@ -436,7 +436,7 @@ impl LayerSink {
                             None if self.hd_space.is_some() => &self.hd_pal,
                             None => &self.pal,
                         };
-                        if self.menu_highlight && c.op == Op::S18C6E {
+                        if self.menu_highlight && c.op == Op::MyOverwriteInverted {
                             hd::menu_highlight(m, h, &self.assets, p, c);
                         } else {
                             hd::apply(m, h, &self.assets, p, c, Off::default());
@@ -616,7 +616,7 @@ impl LayerSink {
                             let dl = cur.deltas[i].filter(|_| opts.interpolate);
                             dl.map(|dl| interp::offsets(&dl, t, hd::S)).unwrap_or_default()
                         });
-                        if menu_highlight && c.op == Op::S18C6E {
+                        if menu_highlight && c.op == Op::MyOverwriteInverted {
                             hd::menu_highlight(&mut tmp, hda, assets, &p, c);
                         } else {
                             hd::apply(&mut tmp, hda, assets, &p, c, off);
@@ -644,7 +644,7 @@ impl LayerSink {
     }
 
     /// 標題選單選中列在 HD 畫面用圓角高亮條代替取反（規格 005「HD 介面」）。預設關。
-    /// 只影響 HD 引擎之後套用的 `S18C6E`；原版圖引擎與 `VgaSink` 不受影響，補間關閉時逐像素等於原版。
+    /// 只影響 HD 引擎之後套用的 `MyOverwriteInverted`；原版圖引擎與 `VgaSink` 不受影響，補間關閉時逐像素等於原版。
     pub fn set_menu_highlight(&mut self, on: bool) {
         self.menu_highlight = on;
     }
@@ -655,7 +655,7 @@ impl LayerSink {
         self.free_pods = free;
     }
 
-    /// 這一幀的幀計數值（座標 (12h, BFh) 的 `S1890D`）。這一幀沒有畫幀計數、或已設 `set_counter_font` 時是 `None`。
+    /// 這一幀的幀計數值（座標 (12h, BFh) 的 `Number`）。這一幀沒有畫幀計數、或已設 `set_counter_font` 時是 `None`。
     /// HD HUD 用它自己畫幀計數。
     pub fn counter_value(&self) -> Option<u16> {
         self.cur.counter
@@ -741,11 +741,11 @@ impl LayerSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rs2_core::{BegGroup, ObjId, Pool, ShtGroup};
+    use rs2_game::{BegGroup, ObjId, Pool, ShtGroup};
 
     fn cmd(pool: Pool, slot: u8) -> BlitCmd {
         BlitCmd {
-            op: Op::S18D46,
+            op: Op::MyCut,
             x: 0,
             y: 0,
             index: 0,

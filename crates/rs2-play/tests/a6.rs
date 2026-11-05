@@ -10,11 +10,11 @@
 //! |---|---|
 //! | 四種組合 | 補間開關 × 幀計數開關，`boss1_kill` 1192 步與 `Start::Demo` 640 步，每步雜湊完全相同 |
 //! | 中途切換 | 跑到一半用 `--toggle-at` 切換補間、幀計數，雜湊與不切換相同 |
-//! | 正對照 | `--original-bugs`：每步整段 `Dseg` 的雜湊與 `rs2-core` 以 `Fixes::NONE` 重播同一份收據的結果相同 |
+//! | 正對照 | `--original-bugs`：每步整段 `Dseg` 的雜湊與 `rs2-game` 以 `Fixes::NONE` 重播同一份收據的結果相同 |
 //! | 負對照 | 改收據一個掃描碼，雜湊必須不同，且不同的第一步不早於被改的那一步 |
 //! | HD | 有 `RS2_HD` 才跑：HD 圖開關與中途切換，雜湊相同 |
 
-use rs2_core::{Fixes, Game, Input, Start};
+use rs2_game::{Fixes, Game, Input, Start};
 use rs2_formats::sha256_hex;
 use rs2_gfx::Assets;
 use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
@@ -112,7 +112,7 @@ fn four_combos(name: &str, base: &[&str], steps: usize) -> usize {
     compared
 }
 
-/// 以 `rs2-core` 直接重播收據，每步整段 `Dseg` 的雜湊。
+/// 以 `rs2-game` 直接重播收據，每步整段 `Dseg` 的雜湊。
 fn core_replay_hashes(start: Start, fixes: Fixes, receipt: &Path, steps: usize) -> Vec<String> {
     let inputs = load_inputs(&env_path("RS2_ORIG")).unwrap();
     let m = inputs.mirror();
@@ -161,7 +161,7 @@ fn a6_midrun_toggles() {
     println!("A6 中途切換：{} 筆相同", plain.hashes.len());
 }
 
-/// 正對照：`--original-bugs` 的每步整段 Dseg 雜湊等於 `rs2-core` 以 `Fixes::NONE` 重播的結果；
+/// 正對照：`--original-bugs` 的每步整段 Dseg 雜湊等於 `rs2-game` 以 `Fixes::NONE` 重播的結果；
 /// 預設（`Fixes::ALL`）也相同（規格 A2b：這兩段收據碰不到缺陷條件）。
 #[test]
 #[ignore]
@@ -175,13 +175,13 @@ fn a6_positive_control_matches_core_replay() {
     assert_eq!(bugs.hashes.len(), want.len());
     let mut compared = 0;
     for (i, (a, b)) in bugs.hashes.iter().zip(&want).enumerate() {
-        assert_eq!(a, b, "第 {} 步：--original-bugs 與 rs2-core 重播的 Dseg 雜湊不同", i + 1);
+        assert_eq!(a, b, "第 {} 步：--original-bugs 與 rs2-game 重播的 Dseg 雜湊不同", i + 1);
         compared += 1;
     }
     assert!(compared > 0);
     let fixed = run("pos-fixes-all", &["--start", "newgame", "--replay", rp, "--headless-steps", &steps]);
     assert_eq!(fixed.hashes, want, "Fixes::ALL 在這段收據上應與原版行為相同");
-    println!("A6 正對照：每步整段 Dseg 雜湊 {compared} 筆與 rs2-core（Fixes::NONE）相同，Fixes::ALL 同");
+    println!("A6 正對照：每步整段 Dseg 雜湊 {compared} 筆與 rs2-game（Fixes::NONE）相同，Fixes::ALL 同");
 }
 
 /// 負對照：改收據一個掃描碼，雜湊要不同。
@@ -344,7 +344,7 @@ fn b7_play_from_title_to_ending() {
     let steps = want.len().to_string();
 
     let r = run("flow-orig", &["--original-bugs", "--replay", rp, "--tween", "off", "--headless-steps", &steps]);
-    assert_eq!(r.hashes, want, "前端與 rs2-core 的 Dseg 雜湊不同");
+    assert_eq!(r.hashes, want, "前端與 rs2-game 的 Dseg 雜湊不同");
     assert_full_path("flow-orig", &r, want.len());
     assert!(r.stderr.contains("ending_"), "沒有走到片尾的調色盤：\n{}", r.stderr);
 
@@ -364,7 +364,7 @@ fn b7_play_from_title_to_ending() {
     println!("B7 全流程：{} 步，前端雜湊與對拍路徑相同，修正全開也走完", want.len());
 }
 
-/// 規格 002 B7：正式入口。不按鍵從標題跑開場與示範，每步整段 `Dseg` 雜湊和 `rs2-core` 相同。
+/// 規格 002 B7：正式入口。不按鍵從標題跑開場與示範，每步整段 `Dseg` 雜湊和 `rs2-game` 相同。
 #[test]
 #[ignore]
 fn b7_title_matches_core() {
@@ -378,7 +378,7 @@ fn b7_title_matches_core() {
         g.step(&Input { scancodes: &[] }, &mut |_g: &Game, _pt: u32| {});
         assert_eq!(&sha256_hex(m.dump(g.state()).bytes()), want, "第 {} 步", i + 1);
     }
-    println!("B7 標題：{} 筆與 rs2-core 相同", r.hashes.len());
+    println!("B7 標題：{} 筆與 rs2-game 相同", r.hashes.len());
 }
 
 /// 規格 002 B7：前端開關不影響模擬，標題入口也一樣。

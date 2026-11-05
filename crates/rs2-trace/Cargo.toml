@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 rs2-formats = { path = "../rs2-formats" }
-rs2-core = { path = "../rs2-core" }
+rs2-game = { path = "../rs2-game" }
 rs2-gfx = { path = "../rs2-gfx" }
 
 [dev-dependencies]

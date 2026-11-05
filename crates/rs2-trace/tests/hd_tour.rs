@@ -2,7 +2,7 @@
 //! 不是驗收，沒有斷言。`tools/rust.sh test -p rs2-trace --test hd_tour -- --ignored --nocapture`。
 //! 輸出 `workspace/rs2/shots/tour/`，含原版美術，不進版控。
 
-use rs2_core::{Fixes, Game, Input};
+use rs2_game::{Fixes, Game, Input};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, png};
 use rs2_trace::load_inputs;
 use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};

@@ -1093,7 +1093,7 @@ mod tests {
         assert_eq!((c.pl.ship[0].hp, c.pl.ship[1].hp), (0xFF, 0xFF));
     }
 
-    /// 需要原版檔（`Game` 要解析表格），由 `tools/rust.sh test -p rs2-core -- --include-ignored` 跑。
+    /// 需要原版檔（`Game` 要解析表格），由 `tools/rust.sh test -p rs2-game -- --include-ignored` 跑。
     #[test]
     #[ignore]
     fn the_public_status_views_read_the_state() {

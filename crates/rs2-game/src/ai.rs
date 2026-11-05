@@ -1394,7 +1394,7 @@ mod tests {
     }
 }
 
-/// 用原版檔跑整關的測試。需要 `RS2_ORIG`，標 `#[ignore]`：`tools/rust.sh test -p rs2-core ai::real -- --ignored --nocapture`。
+/// 用原版檔跑整關的測試。需要 `RS2_ORIG`，標 `#[ignore]`：`tools/rust.sh test -p rs2-game ai::real -- --ignored --nocapture`。
 #[cfg(test)]
 mod real {
     use crate::ebullet::EnemyBullets;

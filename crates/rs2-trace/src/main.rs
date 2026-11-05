@@ -3,7 +3,7 @@
 //!
 //! 原版目錄由環境變數 `RS2_ORIG` 指定。比對遇到第一個不同的幀就停，回報欄位路徑。
 
-use rs2_core::{Fixes, Game, Input, Start};
+use rs2_game::{Fixes, Game, Input, Start};
 use rs2_trace::mirror::{A0_EXEMPT, Mirror};
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu};
 use std::path::PathBuf;

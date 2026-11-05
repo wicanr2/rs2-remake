@@ -4,14 +4,14 @@
 //! 世代不同（`ObjId` 相等才算同一物件）、位移超過 `INTERP_MAX_PX` 的命令都不內插，直接畫目前位置。
 
 use super::Off;
-use rs2_core::{BlitCmd, DrawCmd, ObjId, Op, Pool};
+use rs2_game::{BlitCmd, DrawCmd, ObjId, Op, Pool};
 use std::collections::HashMap;
 
 /// 一幀內位移超過這個像素數就不內插，視為瞬移（生成、消失、換位）。
 /// 腳本碼 0Ah 一幀走 6 欄（48 像素）是合法上限。試玩後定案（規格 001「補間門檻」）。
 pub const INTERP_MAX_PX: i32 = 48;
 
-/// 同一物件在前一幀沒有相同 op 的命令時（受擊閃白的幀：前一幀是遮罩加平面，這一幀只有 `S19025`；閃白後的下一幀相反），
+/// 同一物件在前一幀沒有相同 op 的命令時（受擊閃白的幀：前一幀是遮罩加平面，這一幀只有 `StageFlash`；閃白後的下一幀相反），
 /// 改用「同一物件第一個圖形命令」的位移。沒有這條，閃白期間（玩家被擊中後約 6 幀、每隔一幀）物件會每幀瞬移。
 /// 規格 001 的「閃爍不內插、只有位置內插」要求閃白幀也內插位置，只靠 `(obj, op, 次序)` 配對做不到。
 /// 設成 `false` 就退回只配對相同 op。
@@ -27,7 +27,7 @@ pub struct Delta {
     pub dy: i32,
     /// 來源欄（`src_x + shift`）的位移，只有暫存區複製類命令有。
     pub ds: i32,
-    /// `S1A287` 的列數變化。
+    /// `FillRows` 的列數變化。
     pub dcx: i32,
     /// 背景層的來源欄在循環內時，這是目前的來源欄（位元組），偏移要依循環長度環繞。
     pub wrap_col: Option<i32>,
@@ -37,34 +37,34 @@ pub struct Delta {
 pub fn interpolable(op: Op) -> bool {
     matches!(
         op,
-        Op::S18C0A
-            | Op::S18CE2
-            | Op::S18D46
-            | Op::S18D89
-            | Op::S18DCC
-            | Op::S18E30
-            | Op::S18E73
-            | Op::S18EB6
-            | Op::S18F1A
-            | Op::S18F5D
-            | Op::S18FC1
-            | Op::S19025
-            | Op::S19BA4
-            | Op::S19D08
-            | Op::S19DA8
-            | Op::S1A09F
-            | Op::S1A287
+        Op::MyOverwrite
+            | Op::MyOverlay
+            | Op::MyCut
+            | Op::MyFlash
+            | Op::MyOverlayEffect
+            | Op::MyCutEffect
+            | Op::MyCutPlayerShot
+            | Op::MyOverlayPlayerShot
+            | Op::StageCut
+            | Op::StageOverlay
+            | Op::StageOverwrite
+            | Op::StageFlash
+            | Op::ScratchReplace
+            | Op::ScratchReplaceShifted
+            | Op::ScratchOr
+            | Op::ScratchAnd
+            | Op::FillRows
     )
 }
 
 /// 畫圖庫圖的命令（遮罩、平面、閃白），同一物件的這些命令共用同一組位移。
 fn is_image_op(op: Op) -> bool {
-    interpolable(op) && !matches!(op, Op::S19BA4 | Op::S19D08 | Op::S19DA8 | Op::S1A09F | Op::S1A287)
+    interpolable(op) && !matches!(op, Op::ScratchReplace | Op::ScratchReplaceShifted | Op::ScratchOr | Op::ScratchAnd | Op::FillRows)
 }
 
 /// 從暫存區讀來源欄的命令。其他命令的 `src_x`、`shift` 是上一次背景繪製留下的殘值，不能拿來內插。
 fn is_copy(op: Op) -> bool {
-    matches!(op, Op::S19BA4 | Op::S19D08 | Op::S19DA8 | Op::S1A09F)
+    matches!(op, Op::ScratchReplace | Op::ScratchReplaceShifted | Op::ScratchOr | Op::ScratchAnd)
 }
 
 /// 一對命令的位移。超過門檻或完全沒動回傳 `None`。
@@ -84,7 +84,7 @@ pub fn delta(p: &BlitCmd, c: &BlitCmd, pool: Pool) -> Option<Delta> {
             ds = (cc - pc) * 8;
         }
     }
-    let dcx = if c.op == Op::S1A287 { c.cx as i16 as i32 - p.cx as i16 as i32 } else { 0 };
+    let dcx = if c.op == Op::FillRows { c.cx as i16 as i32 - p.cx as i16 as i32 } else { 0 };
     if dx.abs().max(dy.abs()).max(ds.abs()).max(dcx.abs()) > INTERP_MAX_PX {
         return None;
     }
@@ -174,7 +174,7 @@ pub fn offsets(d: &Delta, t: f32, scale: i32) -> Off {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rs2_core::ShtGroup;
+    use rs2_game::ShtGroup;
 
     fn cmd(op: Op, x: u16, y: u16, obj: Option<ObjId>) -> BlitCmd {
         BlitCmd {
@@ -193,7 +193,7 @@ mod tests {
             text_y: 0,
             sht_group: ShtGroup::Sht1,
             mask_group: ShtGroup::Sht1,
-            beg_group: rs2_core::BegGroup::Beg1,
+            beg_group: rs2_game::BegGroup::Beg1,
             stride_reg: None,
             obj,
         }
@@ -210,8 +210,8 @@ mod tests {
     #[test]
     fn pairs_same_object_and_converts_bytes_to_pixels() {
         let o = oid(Pool::Entity, 3, 1);
-        let prev = [blit(cmd(Op::S18F5D, 10, 50, Some(o)))];
-        let cur = [blit(cmd(Op::S18F5D, 12, 47, Some(o)))];
+        let prev = [blit(cmd(Op::StageOverlay, 10, 50, Some(o)))];
+        let cur = [blit(cmd(Op::StageOverlay, 12, 47, Some(o)))];
         let d = pair(&prev, &cur);
         assert_eq!(d[0], Some(Delta { dx: 16, dy: -3, ..Default::default() }));
     }
@@ -220,10 +220,10 @@ mod tests {
     fn different_generation_is_not_interpolated() {
         let a = oid(Pool::EnemyBullet, 5, 1);
         let b = oid(Pool::EnemyBullet, 5, 2);
-        let prev = [blit(cmd(Op::S18F5D, 10, 50, Some(a)))];
-        let cur = [blit(cmd(Op::S18F5D, 11, 51, Some(b)))];
+        let prev = [blit(cmd(Op::StageOverlay, 10, 50, Some(a)))];
+        let cur = [blit(cmd(Op::StageOverlay, 11, 51, Some(b)))];
         assert_eq!(pair(&prev, &cur)[0], None, "同槽不同世代是另一個物件");
-        let same = [blit(cmd(Op::S18F5D, 11, 51, Some(a)))];
+        let same = [blit(cmd(Op::StageOverlay, 11, 51, Some(a)))];
         assert!(pair(&prev, &same)[0].is_some());
     }
 
@@ -231,11 +231,11 @@ mod tests {
     fn missing_in_previous_or_no_obj_or_other_op_is_not_interpolated() {
         let o = oid(Pool::Entity, 1, 1);
         let other = oid(Pool::Entity, 2, 1);
-        let prev = [blit(cmd(Op::S18F5D, 10, 50, Some(o))), blit(cmd(Op::S18F5D, 3, 3, None))];
+        let prev = [blit(cmd(Op::StageOverlay, 10, 50, Some(o))), blit(cmd(Op::StageOverlay, 3, 3, None))];
         let cur = [
-            blit(cmd(Op::S18F5D, 11, 50, Some(other))),
-            blit(cmd(Op::S18F5D, 4, 3, None)),
-            blit(cmd(Op::S18CE2, 11, 50, Some(o))),
+            blit(cmd(Op::StageOverlay, 11, 50, Some(other))),
+            blit(cmd(Op::StageOverlay, 4, 3, None)),
+            blit(cmd(Op::MyOverlay, 11, 50, Some(o))),
         ];
         assert_eq!(pair_with(&prev, &cur, false), vec![None, None, None]);
     }
@@ -243,8 +243,8 @@ mod tests {
     #[test]
     fn nth_occurrence_pairs_in_order() {
         let o = oid(Pool::Pod, 0, 1);
-        let prev = [blit(cmd(Op::S18F5D, 10, 50, Some(o))), blit(cmd(Op::S18F5D, 20, 80, Some(o)))];
-        let cur = [blit(cmd(Op::S18F5D, 11, 50, Some(o))), blit(cmd(Op::S18F5D, 20, 82, Some(o)))];
+        let prev = [blit(cmd(Op::StageOverlay, 10, 50, Some(o))), blit(cmd(Op::StageOverlay, 20, 80, Some(o)))];
+        let cur = [blit(cmd(Op::StageOverlay, 11, 50, Some(o))), blit(cmd(Op::StageOverlay, 20, 82, Some(o)))];
         let d = pair_with(&prev, &cur, false);
         assert_eq!(d[0].unwrap().dx, 8);
         assert_eq!(d[1].unwrap().dy, 2);
@@ -257,10 +257,10 @@ mod tests {
     fn flash_frames_borrow_the_objects_motion_when_ops_differ() {
         let o = oid(Pool::Entity, 3, 1);
         let other = oid(Pool::Entity, 4, 1);
-        // 前一幀：遮罩 (1,10)、平面 (1,11)。這一幀受擊閃白：只有 S19025 (3,14)。下一幀：遮罩 (5,18)、平面 (5,19)。
-        let a = [blit(cmd(Op::S18F1A, 1, 10, Some(o))), blit(cmd(Op::S18F5D, 1, 11, Some(o)))];
-        let b = [blit(cmd(Op::S19025, 3, 14, Some(o)))];
-        let c = [blit(cmd(Op::S18F1A, 5, 18, Some(o))), blit(cmd(Op::S18F5D, 5, 19, Some(o)))];
+        // 前一幀：遮罩 (1,10)、平面 (1,11)。這一幀受擊閃白：只有 StageFlash (3,14)。下一幀：遮罩 (5,18)、平面 (5,19)。
+        let a = [blit(cmd(Op::StageCut, 1, 10, Some(o))), blit(cmd(Op::StageOverlay, 1, 11, Some(o)))];
+        let b = [blit(cmd(Op::StageFlash, 3, 14, Some(o)))];
+        let c = [blit(cmd(Op::StageCut, 5, 18, Some(o))), blit(cmd(Op::StageOverlay, 5, 19, Some(o)))];
         // 嚴格配對：閃白幀與閃白後的幀都配不到。
         assert_eq!(pair_with(&a, &b, false), vec![None]);
         assert_eq!(pair_with(&b, &c, false), vec![None, None]);
@@ -270,12 +270,12 @@ mod tests {
         assert_eq!(d[0], d[1]);
         assert_eq!(d[0], Some(Delta { dx: 16, dy: 4, ..Default::default() }));
         // 前一幀沒有這個物件，或是別的物件，仍然不內插。
-        assert_eq!(pair_with(&[blit(cmd(Op::S19025, 3, 14, Some(other)))], &c, true), vec![None, None]);
+        assert_eq!(pair_with(&[blit(cmd(Op::StageFlash, 3, 14, Some(other)))], &c, true), vec![None, None]);
         // 位移超過門檻不內插。
-        let far = [blit(cmd(Op::S19025, 20, 14, Some(o)))];
+        let far = [blit(cmd(Op::StageFlash, 20, 14, Some(o)))];
         assert_eq!(pair_with(&a, &far, true), vec![None]);
         // 有相同 op 的前一幀命令時，用它自己的位移，不被物件位移取代。
-        let a2 = [blit(cmd(Op::S18F1A, 1, 10, Some(o))), blit(cmd(Op::S18F5D, 2, 11, Some(o)))];
+        let a2 = [blit(cmd(Op::StageCut, 1, 10, Some(o))), blit(cmd(Op::StageOverlay, 2, 11, Some(o)))];
         let d = pair_with(&a2, &c, true);
         assert_eq!(d[0].unwrap().dx, 32);
         assert_eq!(d[1].unwrap().dx, 24);
@@ -285,10 +285,10 @@ mod tests {
     fn over_threshold_is_not_interpolated() {
         let o = oid(Pool::Entity, 1, 1);
         // 6 欄 = 48 像素在門檻上，7 欄不行。
-        let prev = [blit(cmd(Op::S18F5D, 10, 50, Some(o)))];
-        assert!(pair(&prev, &[blit(cmd(Op::S18F5D, 16, 50, Some(o)))])[0].is_some());
-        assert!(pair(&prev, &[blit(cmd(Op::S18F5D, 17, 50, Some(o)))])[0].is_none());
-        assert!(pair(&prev, &[blit(cmd(Op::S18F5D, 10, 99, Some(o)))])[0].is_none());
+        let prev = [blit(cmd(Op::StageOverlay, 10, 50, Some(o)))];
+        assert!(pair(&prev, &[blit(cmd(Op::StageOverlay, 16, 50, Some(o)))])[0].is_some());
+        assert!(pair(&prev, &[blit(cmd(Op::StageOverlay, 17, 50, Some(o)))])[0].is_none());
+        assert!(pair(&prev, &[blit(cmd(Op::StageOverlay, 10, 99, Some(o)))])[0].is_none());
         // 沒動也不產生位移。
         assert!(pair(&prev, &prev)[0].is_none());
     }
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn non_display_ops_are_never_interpolated() {
         let o = oid(Pool::Entity, 1, 1);
-        for op in [Op::S19ADC, Op::S19CF9, Op::S1929F, Op::S1890D, Op::S1152D] {
+        for op in [Op::StageToScratch, Op::ClearDrawPage, Op::BarCell, Op::Number, Op::ClearScratchB] {
             let prev = [blit(cmd(op, 10, 50, Some(o)))];
             let cur = [blit(cmd(op, 11, 50, Some(o)))];
             assert_eq!(pair_with(&prev, &cur, true)[0], None, "{op:?}");
@@ -307,7 +307,7 @@ mod tests {
     fn background_shift_wraps_by_period() {
         let o = oid(Pool::Background, 1, 0);
         let mk = |shift: u16| {
-            let mut c = cmd(Op::S19BA4, 0, 149, Some(o));
+            let mut c = cmd(Op::ScratchReplace, 0, 149, Some(o));
             c.shift = shift;
             blit(c)
         };
@@ -318,9 +318,9 @@ mod tests {
         assert_eq!((d.ds, d.wrap_col), (16, Some(12)));
         // 一般物件的 shift 不環繞。
         let e = oid(Pool::Entity, 1, 1);
-        let mut c1 = cmd(Op::S19D08, 0, 0, Some(e));
+        let mut c1 = cmd(Op::ScratchReplaceShifted, 0, 0, Some(e));
         c1.shift = 38;
-        let c0 = cmd(Op::S19D08, 0, 0, Some(e));
+        let c0 = cmd(Op::ScratchReplaceShifted, 0, 0, Some(e));
         let d = pair(&[blit(c1)], &[blit(c0)])[0];
         assert_eq!(d, None, "-38 位元組超過門檻");
     }
@@ -328,9 +328,9 @@ mod tests {
     #[test]
     fn non_copy_ops_ignore_stale_source_columns() {
         let o = oid(Pool::Entity, 1, 1);
-        let mut p = cmd(Op::S18F5D, 10, 50, Some(o));
+        let mut p = cmd(Op::StageOverlay, 10, 50, Some(o));
         p.shift = 7;
-        let mut c = cmd(Op::S18F5D, 11, 50, Some(o));
+        let mut c = cmd(Op::StageOverlay, 11, 50, Some(o));
         c.shift = 30;
         let d = pair(&[blit(p)], &[blit(c)])[0].unwrap();
         assert_eq!(d.ds, 0);

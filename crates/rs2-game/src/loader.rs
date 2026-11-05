@@ -13,7 +13,7 @@
 //!
 //! 沒有對應函式的載入：
 //!
-//! - `MAP.GO`（`sub_1AFBC`）：第三關的地圖圖庫有自己的段變數，`Op::S18ACE` 固定讀它，重製沒有狀態要記。
+//! - `MAP.GO`（`sub_1AFBC`）：第三關的地圖圖庫有自己的段變數，`Op::MapToScratch` 固定讀它，重製沒有狀態要記。
 //! - `SHT.SCN`（`sub_1BF71`）：E 模式讀它，單色模式 `1BFAAh` 起把檔名改成 `.SCR` 再讀；解壓在 [`Core::load_map`]，
 //!   資料在 `Core::files`（`Game::set_terrain_scr` 選用哪一份）。
 //! - `sub_1BFCF`（`SHT.SCR` 的另一個載入函式）：唯一呼叫端 `1BF68h` 在 `sub_1BF23` 的 `retn`（`1BF50h`）之後，

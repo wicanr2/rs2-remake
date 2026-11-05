@@ -16,7 +16,7 @@
 //! 要改就直接改預設值）。狀態逐筆等待都比對，取樣只影響縮成 320x200 的畫面比對與統計。
 //! 比對筆數為 0、任何一份收據缺少、真 HD 載入 0 張都算失敗。
 
-use rs2_core::{DrawCmd, Exit, Fixes, Game, Input};
+use rs2_game::{DrawCmd, Exit, Fixes, Game, Input};
 use rs2_gfx::{MonoAssets, MonoHdSink, MonoKind, MonoSink};
 use rs2_trace::mirror::{Mirror, a};
 use rs2_trace::mono::{MonoReceipt, load_mono_receipt};
@@ -299,7 +299,7 @@ impl Run {
     }
 
     /// 最近鄰 HD 的每個區塊必須等於 SD 位元組的放大。MGA 的 2000h 至 3FFFh（及 A000h 至 BFFFh）是 SD 專用的掃描線複本
-    /// （`S1117F`，HD 不動作），不比。
+    /// （`EndOfFrameCopy`，HD 不動作），不比。
     fn check_blocks(&self, n: usize, name: &str) {
         let skip = |off: usize| self.kind == MonoKind::Mga && (0x2000..0x4000).contains(&(off & 0x7FFF));
         let (sv, hv) = (self.sd.vram(), self.nn.vram_blocks());
@@ -591,7 +591,7 @@ const GATE_C4: f64 = 0.17;
 const GATE_REGISTRATION: f64 = 1.0;
 
 const ALL_OPS: [&str; 43] = [
-    "S18C0A", "S18CE2", "S18D46", "S18D89", "S18DCC", "S18E30", "S18E73", "S18EB6", "S18F1A", "S18F5D", "S18FC1", "S19025", "S19ADC", "S19BA4", "S19CF9",
-    "S19D08", "S19DA8", "S1A09F", "S1A287", "S1929F", "S1890D", "S1152D", "S11504", "S18894", "S18C6E", "S19068", "S190CC", "S19B40", "S19C4F", "S19E66",
-    "S19F3B", "S19FF9", "S1A144", "S1A1E6", "S18ACE", "S17EBA", "S17EEA", "S17F26", "S17F5D", "S17FA0", "S18031", "S180C6", "S1117F",
+    "MyOverwrite", "MyOverlay", "MyCut", "MyFlash", "MyOverlayEffect", "MyCutEffect", "MyCutPlayerShot", "MyOverlayPlayerShot", "StageCut", "StageOverlay", "StageOverwrite", "StageFlash", "StageToScratch", "ScratchReplace", "ClearDrawPage",
+    "ScratchReplaceShifted", "ScratchOr", "ScratchAnd", "FillRows", "BarCell", "Number", "ClearScratchB", "ClearScratchA", "ClearBothPages", "MyOverwriteInverted", "BegOverwrite", "BegInverted", "BegToScratch", "ScratchReplaceMirrored", "ScratchOrPairs",
+    "ScratchOrMirrored", "ScratchLatchPairs", "ScratchAndPairs", "ScratchAndMirrored", "MapToScratch", "ScrollRotateCopy", "ScrollShiftLeft4", "ScrollRotateColumn", "ScrollMergeSeam", "ScrollShowA", "ScrollShowB", "ScrollShiftBothLeft", "EndOfFrameCopy",
 ];

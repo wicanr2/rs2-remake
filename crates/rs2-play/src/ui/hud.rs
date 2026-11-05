@@ -1,15 +1,15 @@
 //! HD 模式的遊戲內 HUD（規格 005「HD 介面」「HUD」）。畫在 1280×40 的 RGBA 緩衝區，蓋住 HD 畫面底部 40 像素
 //! （對應原版第 190 到 199 列）。不依賴 SDL 子系統，時間由呼叫端以毫秒傳入，所以動畫可以單元測試。
 //!
-//! 資料全來自 `rs2_core::HudStatus`（`Game::hud_status`）。血條 8 格對應原版 `hp` 字組的 8 個位元：
+//! 資料全來自 `rs2_game::HudStatus`（`Game::hud_status`）。血條 8 格對應原版 `hp` 字組的 8 個位元：
 //! 開局是 `FFh`，每次命中右移一位，所以亮的位元數就是剩下的格數。
 //!
-//! 充能條的刻度對核心的波動砲門檻（`rs2_core::WAVE_LEVEL_1` 至 `WAVE_LEVEL_3`）：滿格是第三級，三等分刻度剛好落在
+//! 充能條的刻度對核心的波動砲門檻（`rs2_game::WAVE_LEVEL_1` 至 `WAVE_LEVEL_3`）：滿格是第三級，三等分刻度剛好落在
 //! 第一、二、三級的門檻上（核心的門檻等距，由核心的單元測試把關）。門檻是初值，規格 005「未決定」，調整時只改核心的常數。
 
 use super::style::{self, Rgba, color, fade, lighten, mix, with_alpha};
 use super::{Align, Canvas, Rect, font, text};
-use rs2_core::HudStatus;
+use rs2_game::HudStatus;
 
 /// HUD 緩衝區的寬高，也是 HD 畫面的寬度與 HUD 的高度。
 pub const W: i32 = 1280;
@@ -22,7 +22,7 @@ pub const FADE_MS: u64 = 200;
 pub const BREATH_MS: u64 = 1000;
 pub const HP_CELLS: usize = 8;
 /// 充能條滿格的計數：核心波動砲第三級的門檻，也是充能計數的上限。
-pub const CHARGE_MAX: u16 = rs2_core::WAVE_CHARGE_FULL;
+pub const CHARGE_MAX: u16 = rs2_game::WAVE_CHARGE_FULL;
 
 const M: i32 = 16;
 const CELL_W: i32 = 20;
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn charge_ticks_sit_on_the_core_wave_thresholds() {
-        use rs2_core::{WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
+        use rs2_game::{WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
         // 三等分刻度（三分之一、三分之二、滿格）就是第一、二、三級的門檻。
         assert_eq!((CHARGE_MAX / 3, CHARGE_MAX * 2 / 3, CHARGE_MAX), (WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3));
         assert_eq!(CHARGE_MAX % 3, 0);

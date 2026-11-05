@@ -7,7 +7,7 @@ pub mod mono;
 pub mod wait;
 
 use mirror::{Dseg, Mirror, a};
-use rs2_core::{Game, GameFiles, State, Tables};
+use rs2_game::{Game, GameFiles, State, Tables};
 use rs2_formats::{EXPECTED, UNPACKED_SHA256, check_hash, unpack_s_exe};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -30,7 +30,7 @@ impl Inputs {
     /// 正式遊戲的開機狀態（標題入口，載入展示錄影）。映像不是已知的原版就 `panic`。
     pub fn boot_state(&self) -> State {
         let tables = Tables::parse(&self.image).expect("解包映像已驗過雜湊");
-        rs2_core::boot_state(std::rc::Rc::new(tables), &self.dm1)
+        rs2_game::boot_state(std::rc::Rc::new(tables), &self.dm1)
     }
 
     /// 交給 `Game::from_state` 的檔案：解包映像、兩份展示錄影、第三關地圖。

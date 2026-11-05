@@ -8,7 +8,7 @@ use super::pal::{Pal, PALETTES};
 use super::recolor::{Colors, Lut};
 use crate::assets::Assets;
 use crate::png;
-use rs2_core::{BegGroup, ShtGroup};
+use rs2_game::{BegGroup, ShtGroup};
 use rs2_formats::{BankItem, GoFile};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

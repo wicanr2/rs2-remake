@@ -15,25 +15,25 @@
 //! - 領域內先寫後讀的工作變數不進狀態，位移列進 [`DS_EXEMPT`] 並寫明讀寫它的函式。
 //! - 池指標（敵人、敵彈、玩家彈）在遊戲裡是槽的記號，原版是記錄的資料段位址；這裡換算。
 
-use rs2_core::boss_scroll::{BossLayer, BossLayers};
-use rs2_core::ebullet::{self, Bullet, EnemyBullets};
-use rs2_core::entity::{self, Enemies, Enemy, Sprite};
-use rs2_core::flow::{Cheat, Clock, Controls, DifficultyBonus, DosBook, FireFlags, Flow, KeyTable, Scenes};
-use rs2_core::fx::{Effect, Effects};
-use rs2_core::grid::Grids;
-use rs2_core::loader::{DEMO_BYTES, DemoTape};
-use rs2_core::menu::Menu;
-use rs2_core::pbullet::{self, PlayerBullet, PlayerBullets};
-use rs2_core::player::{PLAYER_COUNT, Player, Players, Pods};
-use rs2_core::scenery::{Prop, Scenery};
-use rs2_core::sound::{Sound, SpeakerParams};
-use rs2_core::stage1::Backdrop as Stage1Backdrop;
-use rs2_core::stage2::{Backdrop as Stage2Backdrop, Strip};
-use rs2_core::stage3::MapScroll;
-use rs2_core::stage4::Tunnel;
-use rs2_core::title::Title;
-use rs2_core::video::DrawParams;
-use rs2_core::{State, ebullet::Slot as EbSlot, entity::Slot as EnSlot, pbullet::Slot as PbSlot};
+use rs2_game::boss_scroll::{BossLayer, BossLayers};
+use rs2_game::ebullet::{self, Bullet, EnemyBullets};
+use rs2_game::entity::{self, Enemies, Enemy, Sprite};
+use rs2_game::flow::{Cheat, Clock, Controls, DifficultyBonus, DosBook, FireFlags, Flow, KeyTable, Scenes};
+use rs2_game::fx::{Effect, Effects};
+use rs2_game::grid::Grids;
+use rs2_game::loader::{DEMO_BYTES, DemoTape};
+use rs2_game::menu::Menu;
+use rs2_game::pbullet::{self, PlayerBullet, PlayerBullets};
+use rs2_game::player::{PLAYER_COUNT, Player, Players, Pods};
+use rs2_game::scenery::{Prop, Scenery};
+use rs2_game::sound::{Sound, SpeakerParams};
+use rs2_game::stage1::Backdrop as Stage1Backdrop;
+use rs2_game::stage2::{Backdrop as Stage2Backdrop, Strip};
+use rs2_game::stage3::MapScroll;
+use rs2_game::stage4::Tunnel;
+use rs2_game::title::Title;
+use rs2_game::video::DrawParams;
+use rs2_game::{State, ebullet::Slot as EbSlot, entity::Slot as EnSlot, pbullet::Slot as PbSlot};
 use rs2_formats::DSEG_IMAGE_OFFSET;
 
 /// IDA 線性位址換成 `dseg` 偏移：`dseg:X` = 線性 `1CBC0h + X`。
@@ -221,7 +221,7 @@ impl Layout for Effects {
     }
 }
 
-const _: () = assert!(rs2_core::fx::POOL_SIZE == 30, "池大小與原版三個陣列的長度一致");
+const _: () = assert!(rs2_game::fx::POOL_SIZE == 30, "池大小與原版三個陣列的長度一致");
 
 // ---- 敵方子彈池 ----
 
@@ -334,7 +334,7 @@ const _: () = assert!(EN_SPRITE_X == EN_SPRITE_IMAGE + 0x20 && EN_SPRITE_Y == EN
 const _: () = assert!(EN_SPRITE_KIND == EN_SPRITE_Y + 0x20 && EN_FLASH == EN_SPRITE_KIND + 0x20, "繪製陣列各 16 個字組");
 const _: () = assert!(EN_LAST_SPRITE == EN_FLASH + 0x20 && EN_LINKS == EN_LAST_SPRITE + 8, "繪製值緊接在閃爍陣列之後，指標表緊接在它之後");
 
-/// 死亡旗標 `word_1EDAA`（`21EAh`）。它的位址同時是列起點表的越界列（見 `rs2-core` 的 `grid.rs`）。
+/// 死亡旗標 `word_1EDAA`（`21EAh`）。它的位址同時是列起點表的越界列（見 `rs2-game` 的 `grid.rs`）。
 const ENEMY_DEATH_FLAG: u16 = a(0x1EDAA);
 /// 傷害寫到指標 0 加 20h 的字組（`dseg:0020h`）。
 const ENEMY_STRAY_DAMAGE: u16 = 0x0020;
@@ -410,9 +410,9 @@ const SC_IMAGE: u16 = 0x19C8;
 /// 群組表（`19DCh`）：每列 `(幀, 景物記錄位址)`，幀為 0 結束。
 const SC_GROUPS: u16 = 0x19DC;
 
-const _: () = assert!(rs2_core::scenery::POOL_SIZE == 10, "池大小與原版四個陣列的長度一致");
-const _: () = assert!(SC_X == SC_DX + 2 * rs2_core::scenery::POOL_SIZE as u16 && SC_Y == SC_X + 2 * rs2_core::scenery::POOL_SIZE as u16, "四個陣列連續");
-const _: () = assert!(SC_IMAGE == SC_Y + 2 * rs2_core::scenery::POOL_SIZE as u16 && SC_GROUPS == SC_IMAGE + 2 * rs2_core::scenery::POOL_SIZE as u16, "群組表緊接在陣列之後");
+const _: () = assert!(rs2_game::scenery::POOL_SIZE == 10, "池大小與原版四個陣列的長度一致");
+const _: () = assert!(SC_X == SC_DX + 2 * rs2_game::scenery::POOL_SIZE as u16 && SC_Y == SC_X + 2 * rs2_game::scenery::POOL_SIZE as u16, "四個陣列連續");
+const _: () = assert!(SC_IMAGE == SC_Y + 2 * rs2_game::scenery::POOL_SIZE as u16 && SC_GROUPS == SC_IMAGE + 2 * rs2_game::scenery::POOL_SIZE as u16, "群組表緊接在陣列之後");
 
 impl Layout for Scenery {
     fn load(&mut self, ds: &Dseg) {

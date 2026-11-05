@@ -272,7 +272,7 @@ mod tests {
         c.advance_window();
         assert_eq!(c.scenes.map.window, 0);
         let ops: Vec<Op> = c.draws.iter().filter_map(|d| if let crate::draw::DrawCmd::Blit(b) = d { Some(b.op) } else { None }).collect();
-        assert_eq!(ops, [Op::S180C6]);
+        assert_eq!(ops, [Op::ScrollShiftBothLeft]);
         c.draws.clear();
         c.advance_window();
         assert_eq!(c.scenes.map.window, 1);
@@ -288,7 +288,7 @@ mod tests {
         let ops: Vec<Op> = blits.iter().map(|b| b.op).collect();
         assert_eq!(
             ops,
-            [Op::S17F26, Op::S17F5D, Op::S17F26, Op::S17F5D, Op::S17F26, Op::S17F5D, Op::S17F26, Op::S17F5D, Op::S18031]
+            [Op::ScrollRotateColumn, Op::ScrollMergeSeam, Op::ScrollRotateColumn, Op::ScrollMergeSeam, Op::ScrollRotateColumn, Op::ScrollMergeSeam, Op::ScrollRotateColumn, Op::ScrollMergeSeam, Op::ScrollShowB]
         );
         assert!(blits[..8].iter().all(|b| b.x == 5 + 40), "新欄是視窗左緣加 40");
         assert_eq!((blits[8].x, blits[8].scratch), (5, SCRATCH_B), "顯示 B 從視窗左緣起");

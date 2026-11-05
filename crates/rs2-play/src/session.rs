@@ -21,7 +21,7 @@
 //! - PC 喇叭附帶音。原版只有 E 的特效 blit 驅動喇叭，CGA、MGA 沒有，所以單色模式不產生 `AudioMsg::Speaker`。
 
 use rs2_audio::{SfxKind, SpkEv};
-use rs2_core::{AudioCmd, DrawCmd, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Rules, Start};
+use rs2_game::{AudioCmd, DrawCmd, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Rules, Start};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, MonoAssets, MonoHdSink, MonoKind, MonoSink, RenderOpts, VgaSink};

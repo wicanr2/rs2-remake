@@ -1,7 +1,7 @@
 //! 規格 001 的驗收。需要原版檔與收據，由 `tools/rust.sh verify` 帶 `--include-ignored` 跑。
 //! 比對筆數為 0 視為失敗，免得缺檔時看起來像通過。
 
-use rs2_core::{Fixes, Game, Input, Start};
+use rs2_game::{Fixes, Game, Input, Start};
 use rs2_formats::{EXPECTED, parse_go, sha256_hex};
 use rs2_trace::mirror::A0_EXEMPT;
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu};

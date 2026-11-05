@@ -1,7 +1,7 @@
 //! `State::power_on` 的每個欄位都要等於原版映像裡該變數的初值：從映像的資料段讀出狀態，和 `power_on` 逐領域比。
 //! 需要原版檔：`tools/rust.sh test -p rs2-trace --test power_on -- --ignored --nocapture`
 
-use rs2_core::{State, Tables};
+use rs2_game::{State, Tables};
 use rs2_trace::load_inputs;
 use std::path::PathBuf;
 

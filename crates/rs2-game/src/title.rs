@@ -205,7 +205,7 @@ mod rotation {
 }
 
 /// 冒煙測試：標題流程在無輸入與少量輸入下的等待序列，和機器碼的呼叫順序一致。
-/// 需要原版檔，由 `tools/rust.sh test -p rs2-core smoke -- --ignored --nocapture` 跑。
+/// 需要原版檔，由 `tools/rust.sh test -p rs2-game smoke -- --ignored --nocapture` 跑。
 /// 這不取代 `rs2-trace` 的全流程對拍（規格 002 B2）。
 #[cfg(test)]
 mod smoke {

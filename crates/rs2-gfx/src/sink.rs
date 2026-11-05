@@ -1,4 +1,4 @@
-//! `VgaSink`：把 `rs2-core` 記下的 blit 命令套到平面記憶體，逐像素重現原版 E 模式（byte_1CF74 = `E`）。
+//! `VgaSink`：把 `rs2-game` 記下的 blit 命令套到平面記憶體，逐像素重現原版 E 模式（byte_1CF74 = `E`）。
 //!
 //! 每個 `Op` 對應的原版函式與底層都在函式的文件註解寫明位址。CGA、MGA、純 EGA、單色分支不移植。
 //! 規格見 `docs/spec/001-rust-first-stage.md`「繪製模型」，變體表見 `docs/re/12-stages-presentation.md` 第 2 節。
@@ -8,7 +8,7 @@
 use crate::assets::Assets;
 use crate::font::DIGITS;
 use crate::vga::{PLANE_SIZE, Vga};
-use rs2_core::{BlitCmd, DrawCmd, Op, ShtGroup};
+use rs2_game::{BlitCmd, DrawCmd, Op, ShtGroup};
 use rs2_formats::{BankItem, GoFile, sha256_hex};
 
 /// 色號經屬性暫存器後的 DAC 索引（`sub_1007D` 設定：`00～07,38h～3Fh`）。
@@ -482,49 +482,49 @@ impl VgaSink {
         let beg = assets.beg(c.beg_group);
         match c.op {
             // MY 4 平面。
-            Op::S18C0A => planes4(vga, st, &assets.my, c, Put::Mov),
-            Op::S18CE2 | Op::S18EB6 | Op::S18DCC => planes4(vga, st, &assets.my, c, Put::Or),
+            Op::MyOverwrite => planes4(vga, st, &assets.my, c, Put::Mov),
+            Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect => planes4(vga, st, &assets.my, c, Put::Or),
             // `loc_19534`：資料取反後寫入，GC 函式沿用（取代）。
-            Op::S18C6E => planes4(vga, st, &assets.my, c, Put::MaskInv),
+            Op::MyOverwriteInverted => planes4(vga, st, &assets.my, c, Put::MaskInv),
             // MY 遮罩。
-            Op::S18D46 | Op::S18E30 | Op::S18E73 => mask_op(vga, st, assets.my.mask.as_deref(), c, Put::MaskAnd),
-            Op::S18D89 => mask_op(vga, st, assets.my.mask.as_deref(), c, Put::MaskInv),
-            Op::S18F1A => mask_op(vga, st, sht_mask, c, Put::MaskAnd),
-            Op::S19025 => mask_op(vga, st, sht_mask, c, Put::MaskInv),
-            Op::S18F5D => planes4(vga, st, sht, c, Put::Or),
-            Op::S18FC1 => planes4(vga, st, sht, c, Put::Mov),
+            Op::MyCut | Op::MyCutEffect | Op::MyCutPlayerShot => mask_op(vga, st, assets.my.mask.as_deref(), c, Put::MaskAnd),
+            Op::MyFlash => mask_op(vga, st, assets.my.mask.as_deref(), c, Put::MaskInv),
+            Op::StageCut => mask_op(vga, st, sht_mask, c, Put::MaskAnd),
+            Op::StageFlash => mask_op(vga, st, sht_mask, c, Put::MaskInv),
+            Op::StageOverlay => planes4(vga, st, sht, c, Put::Or),
+            Op::StageOverwrite => planes4(vga, st, sht, c, Put::Mov),
             // BEG1／J 4 平面（`word_1CF46～4C`）。
-            Op::S19068 => planes4(vga, st, beg, c, Put::Mov),
-            Op::S190CC => planes4(vga, st, beg, c, Put::MaskInv),
-            Op::S19ADC => scratch4(vga, st, sht, c),
-            Op::S19B40 => scratch4(vga, st, beg, c),
-            Op::S18ACE => map_tiles(vga, st, &assets.map, c),
-            Op::S19BA4 => copy_rows(vga, st, c),
-            Op::S19D08 => copy_rows_shift(vga, st, c),
-            Op::S19C4F => copy_rows_mirror(vga, st, c),
-            Op::S19CF9 => clear_page(vga, c),
-            Op::S19DA8 => or_rows(vga, st, c, false),
-            Op::S19F3B => or_rows(vga, st, c, true),
-            Op::S19E66 => or_word_rows(vga, st, c),
-            Op::S19FF9 => latch2_rows(vga, st, c),
-            Op::S1A09F => and_rows(vga, st, c, false),
-            Op::S1A1E6 => and_rows(vga, st, c, true),
-            Op::S1A144 => and2_rows(vga, st, c),
-            Op::S1A287 => fill_rows(vga, st, c),
-            Op::S1929F => bar_cell(vga, st, c),
-            Op::S11504 => clear_scratch(vga, 0),
-            Op::S1152D => clear_scratch(vga, 0x8000),
-            Op::S18894 => clear_both_pages(vga),
+            Op::BegOverwrite => planes4(vga, st, beg, c, Put::Mov),
+            Op::BegInverted => planes4(vga, st, beg, c, Put::MaskInv),
+            Op::StageToScratch => scratch4(vga, st, sht, c),
+            Op::BegToScratch => scratch4(vga, st, beg, c),
+            Op::MapToScratch => map_tiles(vga, st, &assets.map, c),
+            Op::ScratchReplace => copy_rows(vga, st, c),
+            Op::ScratchReplaceShifted => copy_rows_shift(vga, st, c),
+            Op::ScratchReplaceMirrored => copy_rows_mirror(vga, st, c),
+            Op::ClearDrawPage => clear_page(vga, c),
+            Op::ScratchOr => or_rows(vga, st, c, false),
+            Op::ScratchOrMirrored => or_rows(vga, st, c, true),
+            Op::ScratchOrPairs => or_word_rows(vga, st, c),
+            Op::ScratchLatchPairs => latch2_rows(vga, st, c),
+            Op::ScratchAnd => and_rows(vga, st, c, false),
+            Op::ScratchAndMirrored => and_rows(vga, st, c, true),
+            Op::ScratchAndPairs => and2_rows(vga, st, c),
+            Op::FillRows => fill_rows(vga, st, c),
+            Op::BarCell => bar_cell(vga, st, c),
+            Op::ClearScratchA => clear_scratch(vga, 0),
+            Op::ClearScratchB => clear_scratch(vga, 0x8000),
+            Op::ClearBothPages => clear_both_pages(vga),
             // 第三關地圖捲動（語意見 `workspace/progress/ops-needed.md`，機器碼 `sub_17EBA` 起）。
-            Op::S17EBA => scroll_rot_copy(vga, c),
-            Op::S17EEA => scroll_shift_merge(vga, c),
-            Op::S17F26 => scroll_col_rot(vga, c),
-            Op::S17F5D => scroll_col_merge(vga, c),
-            Op::S17FA0 | Op::S18031 => scroll_view(vga, c),
-            Op::S180C6 => scroll_left(vga),
+            Op::ScrollRotateCopy => scroll_rot_copy(vga, c),
+            Op::ScrollShiftLeft4 => scroll_shift_merge(vga, c),
+            Op::ScrollRotateColumn => scroll_col_rot(vga, c),
+            Op::ScrollMergeSeam => scroll_col_merge(vga, c),
+            Op::ScrollShowA | Op::ScrollShowB => scroll_view(vga, c),
+            Op::ScrollShiftBothLeft => scroll_left(vga),
             // MGA 專用（`sub_1117F`），E 直接 `retn`。
-            Op::S1117F => {}
-            Op::S1890D => {
+            Op::EndOfFrameCopy => {}
+            Op::Number => {
                 // 沒設 BIOS 字型時，幀計數由工具列開關控制；設了就永遠畫（對拍用）。
                 // 其他位置的數字是 sub_16C7D 的擊中計數，照原版畫。
                 let is_frame_counter = c.text_x == COUNTER_X && c.text_y == COUNTER_Y;
@@ -928,7 +928,7 @@ fn scroll_src(c: &BlitCmd) -> u16 {
 
 /// `sub_17EBA`：GC 寫入模式 0、資料旋轉 4（`0403h`）、位元遮罩 FFh。`rep movsb` 3E80h 位元組（200 列）
 /// 從來源（暫存區 A）到來源 + 8000h（暫存區 B），讀取平面與寫入平面是前一個 `sub_1882E` 選的單一平面。
-/// 每個位元組旋轉 4 位元（高低半位元組對調）。結束時資料旋轉維持 4，由緊接的 `S17EEA` 改回 0。
+/// 每個位元組旋轉 4 位元（高低半位元組對調）。結束時資料旋轉維持 4，由緊接的 `ScrollShiftLeft4` 改回 0。
 fn scroll_rot_copy(vga: &mut Vga, c: &BlitCmd) {
     vga.gc(5, 0);
     vga.gc(3, 0x04);
@@ -962,7 +962,7 @@ fn scroll_shift_merge(vga: &mut Vga, c: &BlitCmd) {
 }
 
 /// `sub_17F26`：同 `sub_17EBA` 的設定，但只複製一欄：200 列各 `movsb` 一個位元組（旋轉 4），列距 80。
-/// 結束時資料旋轉維持 4，由緊接的 `S17F5D` 改回 0。
+/// 結束時資料旋轉維持 4，由緊接的 `ScrollMergeSeam` 改回 0。
 fn scroll_col_rot(vga: &mut Vga, c: &BlitCmd) {
     vga.gc(5, 0);
     vga.gc(3, 0x04);

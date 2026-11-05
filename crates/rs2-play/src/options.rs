@@ -6,7 +6,7 @@
 //!
 //! 現在已實作：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）、`hit_feedback`（打擊回饋，只在 HD 畫面生效），
 //! 以及射擊與操控的四項：`wave_charge`（波動砲充能）、`auto_fire`（按住連射）、`force_pod`（砲座像 Force）、
-//! `fine_step`（細步移動）。四項的行為在 `rs2-core` 的 `player/enhanced.rs`，由 `Settings::rules()` 交給核心。
+//! `fine_step`（細步移動）。四項的行為在 `rs2-game` 的 `player/enhanced.rs`，由 `Settings::rules()` 交給核心。
 //! 以及 AI 的四項 `ai_aim`、`ai_fire`、`ai_react`、`ai_boss`（核心的 `ai.rs`，由 `Settings::rules()` 交給 `Game::set_rules`）。
 
 use crate::ui::text;

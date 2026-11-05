@@ -77,7 +77,7 @@ impl Core {
 }
 
 /// 冒煙測試：片尾的兩次按鍵等待、每幀 1 tick 的迴圈、Q 離開。需要原版檔，
-/// 由 `tools/rust.sh test -p rs2-core ending_smoke -- --ignored --nocapture` 跑。
+/// 由 `tools/rust.sh test -p rs2-game ending_smoke -- --ignored --nocapture` 跑。
 #[cfg(test)]
 mod ending_smoke {
     use crate::game::{Entry, Exit, Fixes, Game, GameFiles, Input, State};

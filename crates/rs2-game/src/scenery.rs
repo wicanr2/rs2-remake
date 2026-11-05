@@ -172,7 +172,7 @@ mod tests {
         c.sc.props[3] = Prop { image: 0x10, x: 13, y: 4, dx: 1 };
         c.draw_scenery();
         let seen: Vec<(Op, u16)> = blits(&c).iter().map(|b| (b.op, b.index)).collect();
-        let want = [0x10, 0x10, 0x0F, 0x0E].into_iter().flat_map(|i| [(Op::S18F1A, i), (Op::S18F5D, i)]).collect::<Vec<_>>();
+        let want = [0x10, 0x10, 0x0F, 0x0E].into_iter().flat_map(|i| [(Op::StageCut, i), (Op::StageOverlay, i)]).collect::<Vec<_>>();
         assert_eq!(seen, want, "每個景物遮罩加平面，層序 10h、0Fh、0Eh");
         assert_eq!(blits(&c).iter().map(|b| b.x).step_by(2).collect::<Vec<_>>(), [11, 13, 12, 10]);
     }

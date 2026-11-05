@@ -14,7 +14,7 @@
 //! 比對筆數為 0、收據缺 `.end`、收據筆數與 `.end` 不符，都算失敗。
 //! 環境變數：`RS2_FUZZ` 給子字串時只跑名稱含它的收據；`RS2_DS_REPORT` 有值時資料段差異改為印出（含豁免）不判失敗，供探索用。
 
-use rs2_core::{Exit, Fixes, Game, Input, Start};
+use rs2_game::{Exit, Fixes, Game, Input, Start};
 use rs2_trace::mirror::{A0_EXEMPT, a};
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu, Inputs};
 use std::collections::BTreeMap;

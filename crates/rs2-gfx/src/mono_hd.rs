@@ -1,7 +1,7 @@
 //! `MonoHdSink`：單色顯示模式 C（CGA）與 H（MGA）的 HD 接收端。
 //!
-//! 吃 [`MonoSink`](crate::MonoSink) 同一批繪製命令（`rs2_core::DrawCmd`），輸出 1280×800 RGBA，是邏輯畫面 320×200 的 4 倍。
-//! CGA 與 MGA 的 HD 畫面相同：MGA 的 640×300（垂直 1.5 倍）只是 SD 呈現，HD 不重現，`S1117F` 在 HD 不動作。
+//! 吃 [`MonoSink`](crate::MonoSink) 同一批繪製命令（`rs2_game::DrawCmd`），輸出 1280×800 RGBA，是邏輯畫面 320×200 的 4 倍。
+//! CGA 與 MGA 的 HD 畫面相同：MGA 的 640×300（垂直 1.5 倍）只是 SD 呈現，HD 不重現，`EndOfFrameCopy` 在 HD 不動作。
 //!
 //! # 設計
 //!
@@ -38,14 +38,14 @@
 //! | `applied()`、`anomalies()`、`anomaly_log()` | 同 `MonoSink` |
 //! | `vram_blocks()`、`scratch_a_blocks()`、`scratch_b_blocks()`、`MonoHdSink::nn_block(byte)` | 對拍用的內部狀態與位元組的最近鄰放大 |
 //!
-//! 與 `MonoSink` 的差別只有三處：`S1117F` 不動作；輸出是 1280×800 而非 640×200／640×300；圖來源是 HD 圖。
+//! 與 `MonoSink` 的差別只有三處：`EndOfFrameCopy` 不動作；輸出是 1280×800 而非 640×200／640×300；圖來源是 HD 圖。
 //! 第三關橫向捲動的解析度與 SD 相同（位元組，16 個 HD 像素一步）。
 
 use crate::font::DIGITS;
 use crate::mono::{Item, MonoAssets, MonoBank, MonoKind, Put, SCRATCH_SIZE};
 use crate::png;
 use crate::sink::{COUNTER_X, COUNTER_Y};
-use rs2_core::{BegGroup, BlitCmd, DrawCmd, Op, ShtGroup};
+use rs2_game::{BegGroup, BlitCmd, DrawCmd, Op, ShtGroup};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -227,7 +227,7 @@ pub struct MonoHdSink {
     /// 幀計數預設不畫。設了 BIOS 字型（`set_counter_font`）之後永遠畫。
     pub show_counter: bool,
     counter_font: Option<Vec<u8>>,
-    /// 第三關進場的 `S17FA0` 之前的顯示頁內容，見 `stage3_view`。
+    /// 第三關進場的 `ScrollShowA` 之前的顯示頁內容，見 `stage3_view`。
     undo: Option<(usize, Vec<u64>)>,
     /// `(庫檔名, 索引)` 到 HD 區塊。`None` 是沒有可用的 HD 圖。
     cache: HashMap<(&'static str, u16), Option<Blocks>>,
@@ -572,7 +572,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::to_scratch`（`S19ADC`、`S19B40`）：圖庫項寫進背景暫存區，不裁切。
+    /// 同 `MonoSink::to_scratch`（`StageToScratch`、`BegToScratch`）：圖庫項寫進背景暫存區，不裁切。
     fn to_scratch(&mut self, name: &'static str, bank: &MonoBank, c: &BlitCmd) {
         let Some((it, img)) = self.src(name, bank, c.index) else {
             self.anomaly(format!("{:?} 圖號 {} 超出圖庫", c.op, c.index));
@@ -608,11 +608,11 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::map_tile`（`S18ACE`）：MAP 圖塊寫進暫存區，固定 10 列、每列連續 2 個位元組。
+    /// 同 `MonoSink::map_tile`（`MapToScratch`）：MAP 圖塊寫進暫存區，固定 10 列、每列連續 2 個位元組。
     fn map_tile(&mut self, c: &BlitCmd) {
         let assets = Arc::clone(&self.assets);
         let Some((it, img)) = self.src("MAP.BDB", &assets.map, c.index) else {
-            self.anomaly(format!("S18ACE 圖號 {} 超出 MAP.BDB", c.index));
+            self.anomaly(format!("MapToScratch 圖號 {} 超出 MAP.BDB", c.index));
             return;
         };
         let s = Self::pick(c);
@@ -621,7 +621,7 @@ impl MonoHdSink {
         for _ in 0..10 {
             for k in 0..2u16 {
                 let b = img.blk(src).unwrap_or_else(|| {
-                    self.anomaly(format!("S18ACE 圖號 {} 圖塊資料不足 20 位元組", c.index));
+                    self.anomaly(format!("MapToScratch 圖號 {} 圖塊資料不足 20 位元組", c.index));
                     0
                 });
                 self.sput(s, di.wrapping_add(k), b);
@@ -668,7 +668,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::rows80_shift`（`S19D08`）。
+    /// 同 `MonoSink::rows80_shift`（`ScratchReplaceShifted`）。
     fn rows80_shift(&mut self, c: &BlitCmd) {
         let s = Self::pick(c);
         let page = self.page(c.page);
@@ -698,7 +698,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::rows2`（`S19E66`、`S19FF9`、`S1A144`）：每列只處理 2 個字組。
+    /// 同 `MonoSink::rows2`（`ScratchOrPairs`、`ScratchLatchPairs`、`ScratchAndPairs`）：每列只處理 2 個字組。
     fn rows2(&mut self, c: &BlitCmd, put: Put) {
         let s = Self::pick(c);
         let page = self.page(c.page);
@@ -727,7 +727,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::fill_rows`（`S1A287`）：整列填字組 `dx`（`dx == 1` 時 0AAAAh），每個位元組以最近鄰放大。
+    /// 同 `MonoSink::fill_rows`（`FillRows`）：整列填字組 `dx`（`dx == 1` 時 0AAAAh），每個位元組以最近鄰放大。
     fn fill_rows(&mut self, c: &BlitCmd) {
         let page = self.page(c.page);
         let color = if c.dx == 1 { 0xAAAA } else { c.dx };
@@ -754,7 +754,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::bar_cell`（`S1929F`）：血條的一格，7 列，目前頁與另一頁各寫一個字組。
+    /// 同 `MonoSink::bar_cell`（`BarCell`）：血條的一格，7 列，目前頁與另一頁各寫一個字組。
     fn bar_cell(&mut self, c: &BlitCmd) {
         let page = self.page(c.page);
         let color = if c.dx == 0x0B { 0xAAAA } else { c.dx };
@@ -801,7 +801,7 @@ impl MonoHdSink {
         }
     }
 
-    /// 同 `MonoSink::clear_both`（`S18894`）：兩頁一起清。
+    /// 同 `MonoSink::clear_both`（`ClearBothPages`）：兩頁一起清。
     fn clear_both(&mut self) {
         match self.kind {
             MonoKind::Cga => self.clear_vmem(0, 0x3FFF),
@@ -852,8 +852,8 @@ impl MonoHdSink {
 
     // ---- 第三關捲動 ----
 
-    /// 同 `MonoSink::stage3_view`（`S17FA0`、`S18031`）：暫存區 A 從 `word_25BC4 × 2`（`S18031` 再加 1）位元組起、
-    /// 190 列、每列 80 位元組，複製到目前頁。進場時 `S17FA0` 後面接 `S17EBA`，要把這次複製退回。
+    /// 同 `MonoSink::stage3_view`（`ScrollShowA`、`ScrollShowB`）：暫存區 A 從 `word_25BC4 × 2`（`ScrollShowB` 再加 1）位元組起、
+    /// 190 列、每列 80 位元組，複製到目前頁。進場時 `ScrollShowA` 後面接 `ScrollRotateCopy`，要把這次複製退回。
     fn stage3_view(&mut self, c: &BlitCmd, odd: bool) {
         let page = self.page(c.page);
         let col = c.x.wrapping_shl(1).wrapping_add(odd as u16);
@@ -892,7 +892,7 @@ impl MonoHdSink {
 
     // ---- 命令分派 ----
 
-    /// 依序套用一個命令。命令與 `MonoSink::apply` 相同；`S1117F`（MGA 的掃描線複製）在 HD 不動作。
+    /// 依序套用一個命令。命令與 `MonoSink::apply` 相同；`EndOfFrameCopy`（MGA 的掃描線複製）在 HD 不動作。
     pub fn apply(&mut self, cmd: &DrawCmd) {
         match cmd {
             DrawCmd::Blit(c) => self.blit_op(c),
@@ -905,62 +905,62 @@ impl MonoHdSink {
     fn blit_op(&mut self, c: &BlitCmd) {
         let assets = Arc::clone(&self.assets);
         let pending = self.undo.take();
-        if c.op == Op::S17EBA {
+        if c.op == Op::ScrollRotateCopy {
             if let Some((base, data)) = pending {
                 self.vmem[base..base + data.len()].copy_from_slice(&data);
             }
         }
         let x2 = |c: &BlitCmd| c.x.wrapping_mul(2);
         match c.op {
-            Op::S18C0A => self.blit("MY.BDB", &assets.my, c, Put::Set),
-            Op::S18C6E => self.blit("MY.BDB", &assets.my, c, Put::SetInv),
-            Op::S18CE2 | Op::S18DCC | Op::S18EB6 => self.blit("MY.BDB", &assets.my, c, Put::Or),
-            Op::S18D46 | Op::S18E30 | Op::S18E73 => self.blit("MYB.BDT", &assets.my_mask, c, Put::And),
-            Op::S18D89 => self.blit("MYB.BDT", &assets.my_mask, c, Put::OrInv),
-            Op::S18F1A => match (assets.sht_mask(c.mask_group), sht_mask_name(c.mask_group)) {
+            Op::MyOverwrite => self.blit("MY.BDB", &assets.my, c, Put::Set),
+            Op::MyOverwriteInverted => self.blit("MY.BDB", &assets.my, c, Put::SetInv),
+            Op::MyOverlay | Op::MyOverlayEffect | Op::MyOverlayPlayerShot => self.blit("MY.BDB", &assets.my, c, Put::Or),
+            Op::MyCut | Op::MyCutEffect | Op::MyCutPlayerShot => self.blit("MYB.BDT", &assets.my_mask, c, Put::And),
+            Op::MyFlash => self.blit("MYB.BDT", &assets.my_mask, c, Put::OrInv),
+            Op::StageCut => match (assets.sht_mask(c.mask_group), sht_mask_name(c.mask_group)) {
                 (Some(m), Some(n)) => self.blit(n, m, c, Put::And),
-                _ => self.anomaly(format!("S18F1A 沒有遮罩庫（{:?}）", c.mask_group)),
+                _ => self.anomaly(format!("StageCut 沒有遮罩庫（{:?}）", c.mask_group)),
             },
-            Op::S19025 => match (assets.sht_mask(c.mask_group), sht_mask_name(c.mask_group)) {
+            Op::StageFlash => match (assets.sht_mask(c.mask_group), sht_mask_name(c.mask_group)) {
                 (Some(m), Some(n)) => self.blit(n, m, c, Put::OrInv),
-                _ => self.anomaly(format!("S19025 沒有遮罩庫（{:?}）", c.mask_group)),
+                _ => self.anomaly(format!("StageFlash 沒有遮罩庫（{:?}）", c.mask_group)),
             },
-            Op::S18F5D => self.blit(sht_name(c.sht_group), assets.sht(c.sht_group), c, Put::Or),
-            Op::S18FC1 => self.blit(sht_name(c.sht_group), assets.sht(c.sht_group), c, Put::Set),
-            Op::S19068 => self.blit(beg_name(c.beg_group), assets.beg(c.beg_group), c, Put::Set),
-            Op::S190CC => self.blit(beg_name(c.beg_group), assets.beg(c.beg_group), c, Put::OrInv),
-            Op::S19ADC => self.to_scratch(sht_name(c.sht_group), assets.sht(c.sht_group), c),
-            Op::S19B40 => self.to_scratch(beg_name(c.beg_group), assets.beg(c.beg_group), c),
-            Op::S18ACE => self.map_tile(c),
-            Op::S19BA4 => self.rows80(c, Put::Set, false, c.x, true),
-            Op::S19C4F => self.rows80(c, Put::Set, true, c.x, true),
-            Op::S19D08 => self.rows80_shift(c),
-            Op::S19DA8 => self.rows80(c, Put::Or, false, c.x, true),
-            Op::S19F3B => self.rows80(c, Put::Or, true, c.x, true),
-            Op::S1A09F => self.rows80(c, Put::And, false, x2(c), true),
-            Op::S1A1E6 => self.rows80(c, Put::And, true, x2(c), false),
-            Op::S19E66 => self.rows2(c, Put::Or),
-            Op::S19FF9 => self.rows2(c, Put::Set),
-            Op::S1A144 => self.rows2(c, Put::And),
-            Op::S1A287 => self.fill_rows(c),
-            Op::S1929F => self.bar_cell(c),
-            Op::S19CF9 => self.clear_page(c),
-            Op::S18894 => self.clear_both(),
-            Op::S11504 => self.clear_scratch(Scratch::A),
-            Op::S1152D => self.clear_scratch(Scratch::B),
+            Op::StageOverlay => self.blit(sht_name(c.sht_group), assets.sht(c.sht_group), c, Put::Or),
+            Op::StageOverwrite => self.blit(sht_name(c.sht_group), assets.sht(c.sht_group), c, Put::Set),
+            Op::BegOverwrite => self.blit(beg_name(c.beg_group), assets.beg(c.beg_group), c, Put::Set),
+            Op::BegInverted => self.blit(beg_name(c.beg_group), assets.beg(c.beg_group), c, Put::OrInv),
+            Op::StageToScratch => self.to_scratch(sht_name(c.sht_group), assets.sht(c.sht_group), c),
+            Op::BegToScratch => self.to_scratch(beg_name(c.beg_group), assets.beg(c.beg_group), c),
+            Op::MapToScratch => self.map_tile(c),
+            Op::ScratchReplace => self.rows80(c, Put::Set, false, c.x, true),
+            Op::ScratchReplaceMirrored => self.rows80(c, Put::Set, true, c.x, true),
+            Op::ScratchReplaceShifted => self.rows80_shift(c),
+            Op::ScratchOr => self.rows80(c, Put::Or, false, c.x, true),
+            Op::ScratchOrMirrored => self.rows80(c, Put::Or, true, c.x, true),
+            Op::ScratchAnd => self.rows80(c, Put::And, false, x2(c), true),
+            Op::ScratchAndMirrored => self.rows80(c, Put::And, true, x2(c), false),
+            Op::ScratchOrPairs => self.rows2(c, Put::Or),
+            Op::ScratchLatchPairs => self.rows2(c, Put::Set),
+            Op::ScratchAndPairs => self.rows2(c, Put::And),
+            Op::FillRows => self.fill_rows(c),
+            Op::BarCell => self.bar_cell(c),
+            Op::ClearDrawPage => self.clear_page(c),
+            Op::ClearBothPages => self.clear_both(),
+            Op::ClearScratchA => self.clear_scratch(Scratch::A),
+            Op::ClearScratchB => self.clear_scratch(Scratch::B),
             // MGA 的 3 條掃描線複製只是 SD 呈現的需要，HD 不重現。
-            Op::S1117F => {}
-            Op::S1890D => {
+            Op::EndOfFrameCopy => {}
+            Op::Number => {
                 let is_frame_counter = c.text_x == COUNTER_X && c.text_y == COUNTER_Y;
                 if self.counter_font.is_some() || !is_frame_counter || self.show_counter {
                     self.counter(c.text_x, c.text_y, c.cx);
                 }
             }
-            Op::S17FA0 => self.stage3_view(c, false),
-            Op::S18031 => self.stage3_view(c, true),
-            Op::S180C6 => self.stage3_wrap(),
+            Op::ScrollShowA => self.stage3_view(c, false),
+            Op::ScrollShowB => self.stage3_view(c, true),
+            Op::ScrollShiftBothLeft => self.stage3_wrap(),
             // E 專用：暫存區 B 的逐平面維護，單色沒有。
-            Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D => {}
+            Op::ScrollRotateCopy | Op::ScrollShiftLeft4 | Op::ScrollRotateColumn | Op::ScrollMergeSeam => {}
         }
     }
 
@@ -1171,15 +1171,15 @@ mod tests {
         for kind in [MonoKind::Cga, MonoKind::Mga] {
             let cases: [(Op, u16, fn(usize, usize) -> bool); 5] = [
                 // (運算, 圖號, 預期：底圖是 f 時的結果)
-                (Op::S18CE2, 1, |x, y| pat_f(x, y) | pat_g(x, y)),
-                (Op::S18C6E, 1, |x, y| !pat_g(x, y)),
-                (Op::S18D89, 0, |x, y| pat_f(x, y) | !pat_m(x, y)),
-                (Op::S18D46, 0, |x, y| pat_f(x, y) & pat_m(x, y)),
-                (Op::S18C0A, 1, |x, y| pat_g(x, y)),
+                (Op::MyOverlay, 1, |x, y| pat_f(x, y) | pat_g(x, y)),
+                (Op::MyOverwriteInverted, 1, |x, y| !pat_g(x, y)),
+                (Op::MyFlash, 0, |x, y| pat_f(x, y) | !pat_m(x, y)),
+                (Op::MyCut, 0, |x, y| pat_f(x, y) & pat_m(x, y)),
+                (Op::MyOverwrite, 1, |x, y| pat_g(x, y)),
             ];
             for (op, index, want) in cases {
                 let (mut s, _t) = pattern_sink(kind, &format!("ops-{op:?}-{kind:?}"));
-                s.apply(&at_cmd(Op::S18C0A, 0));
+                s.apply(&at_cmd(Op::MyOverwrite, 0));
                 let buf = render(&s, 0);
                 for y in 0..4 {
                     for x in 0..32 {
@@ -1206,7 +1206,7 @@ mod tests {
     fn pages_are_separate_and_rows_use_the_logical_row_table() {
         for kind in [MonoKind::Cga, MonoKind::Mga] {
             let (mut s, _t) = pattern_sink(kind, &format!("pages-{kind:?}"));
-            let mut c = cmd(Op::S18C0A);
+            let mut c = cmd(Op::MyOverwrite);
             c.x = 3;
             c.y = 1;
             c.page = 0x8000;
@@ -1229,7 +1229,7 @@ mod tests {
     #[test]
     fn rows_past_190_and_words_outside_the_row_are_skipped() {
         let (mut s, _t) = pattern_sink(MonoKind::Cga, "clip");
-        let mut c = cmd(Op::S18C0A);
+        let mut c = cmd(Op::MyOverwrite);
         c.y = 191;
         s.apply(&DrawCmd::Blit(c));
         assert!(s.vram_blocks().iter().all(|&b| b == 0), "列 191 不畫");
@@ -1238,12 +1238,12 @@ mod tests {
         assert_ne!(s.vram_blocks()[95 * 0x50], 0, "列 190 要畫（偶數列，在 95 × 50h）");
         // x = 40 → 位元組 80，超出列尾：整個字組不寫。
         let (mut s, _t) = pattern_sink(MonoKind::Cga, "clip2");
-        let mut c = cmd(Op::S18C0A);
+        let mut c = cmd(Op::MyOverwrite);
         c.x = 40;
         s.apply(&DrawCmd::Blit(c));
         assert!(s.vram_blocks().iter().all(|&b| b == 0));
         // y < 0：上緣被裁掉，1 列的圖整個不畫。
-        let mut c = cmd(Op::S18C0A);
+        let mut c = cmd(Op::MyOverwrite);
         c.y = 0xFFFF;
         s.apply(&DrawCmd::Blit(c));
         assert!(s.vram_blocks().iter().all(|&b| b == 0));
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn index_out_of_the_bank_is_an_anomaly_like_the_original() {
         let (mut s, _t) = pattern_sink(MonoKind::Cga, "oob");
-        let mut c = cmd(Op::S18C0A);
+        let mut c = cmd(Op::MyOverwrite);
         c.index = 0x7000;
         s.apply(&DrawCmd::Blit(c));
         assert_eq!(s.anomalies(), 1);
@@ -1266,7 +1266,7 @@ mod tests {
         let assets = MonoAssets { my: bank_n(&[(1, 2, vec![0xAA, 0x55])]), ..MonoAssets::default() };
         let mut s = MonoHdSink::new(Arc::new(assets), Path::new("/nonexistent-rs2-hd"));
         assert_eq!(s.missing().len(), 1, "資料夾不存在記一筆");
-        s.apply(&DrawCmd::Blit(cmd(Op::S18C0A)));
+        s.apply(&DrawCmd::Blit(cmd(Op::MyOverwrite)));
         assert_eq!(&s.vram_blocks()[0..2], &[nn_block(0xAA), nn_block(0x55)]);
         assert_eq!(s.hd_loaded(), 0);
         assert_eq!(s.anomalies(), 0);
@@ -1280,8 +1280,8 @@ mod tests {
         let mut s = MonoHdSink::new(Arc::new(assets), &t.0);
         assert!(s.missing().is_empty());
         for _ in 0..3 {
-            s.apply(&at_cmd(Op::S18C0A, 0));
-            s.apply(&at_cmd(Op::S18C0A, 1));
+            s.apply(&at_cmd(Op::MyOverwrite, 0));
+            s.apply(&at_cmd(Op::MyOverwrite, 1));
         }
         assert_eq!(s.missing().len(), 2, "{:?}", s.missing());
         assert_eq!(s.missing()[0], "MY.BDB/0000.png");
@@ -1301,7 +1301,7 @@ mod tests {
         let assets = MonoAssets { sht, ..MonoAssets::default() };
         let mut s = MonoHdSink::with_kind(MonoKind::Mga, Arc::new(assets), &t.0);
         // 圖寫進暫存區 B 的第 3 列、位元組欄 4。
-        let mut c = cmd(Op::S19ADC);
+        let mut c = cmd(Op::StageToScratch);
         c.x = 2;
         c.y = 3;
         c.scratch = 0x8000;
@@ -1311,7 +1311,7 @@ mod tests {
         assert_eq!(s.scratch_b_blocks()[off], block_from_pattern(0));
         assert_eq!(s.scratch_b_blocks()[off + 1], block_from_pattern(1));
         // 從 A 搬：沒東西。
-        let mut copy = cmd(Op::S19BA4);
+        let mut copy = cmd(Op::ScratchReplace);
         copy.cx = 1;
         copy.src_y = 3;
         s.apply(&DrawCmd::Blit(copy));
@@ -1326,7 +1326,7 @@ mod tests {
             }
         }
         // 清暫存區 B。
-        s.apply(&DrawCmd::Blit(cmd(Op::S1152D)));
+        s.apply(&DrawCmd::Blit(cmd(Op::ClearScratchB)));
         assert_eq!(s.scratch_b_blocks()[off], 0, "清暫存區 B 的前 7FFEh 位元組，列 3 在範圍內");
     }
 
@@ -1347,11 +1347,11 @@ mod tests {
     fn clears_follow_the_original_extents() {
         let mut c = MonoHdSink::new(Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
         c.vmem.iter_mut().for_each(|b| *b = 1);
-        c.apply(&DrawCmd::Blit(cmd(Op::S18894)));
+        c.apply(&DrawCmd::Blit(cmd(Op::ClearBothPages)));
         assert_eq!((c.vmem[0], c.vmem[0x7FFD], c.vmem[0x7FFE]), (0, 0, 1), "CGA 3FFFh 個字組");
         let mut h = MonoHdSink::with_kind(MonoKind::Mga, Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
         h.vmem.iter_mut().for_each(|b| *b = 1);
-        let mut p = cmd(Op::S19CF9);
+        let mut p = cmd(Op::ClearDrawPage);
         p.page = 0x8000;
         h.apply(&DrawCmd::Blit(p));
         assert_eq!((h.vmem[0x7FFF], h.vmem[0x8000], h.vmem[0xFFFD], h.vmem[0xFFFE]), (1, 0, 0, 1));
@@ -1367,15 +1367,15 @@ mod tests {
     fn stage3_entry_display_copy_is_undone_and_wrap_shifts_scratch() {
         let mut s = MonoHdSink::new(Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
         s.sa[0] = 0xABCD;
-        s.apply(&DrawCmd::Blit(cmd(Op::S17FA0)));
+        s.apply(&DrawCmd::Blit(cmd(Op::ScrollShowA)));
         assert_eq!(s.vmem[0], 0xABCD);
-        s.apply(&DrawCmd::Blit(cmd(Op::S17EBA)));
-        assert_eq!(s.vmem[0], 0, "進場：S17FA0 後面接 S17EBA，單色沒有這一步顯示");
-        s.apply(&DrawCmd::Blit(cmd(Op::S17FA0)));
-        s.apply(&DrawCmd::Blit(cmd(Op::S17F26)));
-        assert_eq!(s.vmem[0], 0xABCD, "捲動：S17FA0 後面不接 S17EBA，保留");
+        s.apply(&DrawCmd::Blit(cmd(Op::ScrollRotateCopy)));
+        assert_eq!(s.vmem[0], 0, "進場：ScrollShowA 後面接 ScrollRotateCopy，單色沒有這一步顯示");
+        s.apply(&DrawCmd::Blit(cmd(Op::ScrollShowA)));
+        s.apply(&DrawCmd::Blit(cmd(Op::ScrollRotateColumn)));
+        assert_eq!(s.vmem[0], 0xABCD, "捲動：ScrollShowA 後面不接 ScrollRotateCopy，保留");
         s.sa[0x50] = 0x99;
-        s.apply(&DrawCmd::Blit(cmd(Op::S180C6)));
+        s.apply(&DrawCmd::Blit(cmd(Op::ScrollShiftBothLeft)));
         assert_eq!(s.sa[0], 0x99);
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
         for kind in [MonoKind::Cga, MonoKind::Mga] {
             let mut s = MonoHdSink::with_kind(kind, Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
             s.set_counter_font(&font);
-            let mut c = cmd(Op::S1890D);
+            let mut c = cmd(Op::Number);
             c.text_x = COUNTER_X;
             c.text_y = COUNTER_Y;
             c.cx = 1; // 00001
@@ -1416,7 +1416,7 @@ mod tests {
     #[test]
     fn counter_is_off_by_default_without_a_font() {
         let mut s = MonoHdSink::new(Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
-        let mut c = cmd(Op::S1890D);
+        let mut c = cmd(Op::Number);
         c.text_x = COUNTER_X;
         c.text_y = COUNTER_Y;
         c.cx = 12345;
@@ -1431,14 +1431,14 @@ mod tests {
     fn fill_and_bar_write_the_nn_pattern_and_the_other_page() {
         for kind in [MonoKind::Cga, MonoKind::Mga] {
             let mut s = MonoHdSink::with_kind(kind, Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
-            let mut f = cmd(Op::S1A287);
+            let mut f = cmd(Op::FillRows);
             f.cx = 2;
             f.dx = 1; // 0AAAAh
             s.apply(&DrawCmd::Blit(f));
             assert_eq!(s.vmem[0], nn_block(0xAA));
             assert_eq!(s.vmem[79], nn_block(0xAA));
             assert_eq!(s.vmem[s.row(1) as usize], nn_block(0xAA));
-            let mut b = cmd(Op::S1929F);
+            let mut b = cmd(Op::BarCell);
             b.x = 1;
             b.y = 10;
             b.dx = 0x0B;
@@ -1457,7 +1457,7 @@ mod tests {
     fn hercules_scanline_copy_does_nothing_in_hd() {
         let mut h = MonoHdSink::with_kind(MonoKind::Mga, Arc::new(MonoAssets::default()), Path::new("/nonexistent-rs2-hd"));
         h.vmem[0] = 0x1234;
-        h.apply(&DrawCmd::Blit(cmd(Op::S1117F)));
+        h.apply(&DrawCmd::Blit(cmd(Op::EndOfFrameCopy)));
         assert_eq!(h.vmem[0x2000], 0);
         assert_eq!(h.applied(), 1);
     }
@@ -1468,7 +1468,7 @@ mod tests {
         for kind in [MonoKind::Cga, MonoKind::Mga] {
             let (mut s, _t) = pattern_sink(kind, &format!("same-{kind:?}"));
             for i in 0..10u16 {
-                let mut c = cmd(Op::S18C0A);
+                let mut c = cmd(Op::MyOverwrite);
                 c.x = i * 3;
                 c.y = i * 17;
                 c.index = i % 2;
@@ -1509,49 +1509,49 @@ mod tests {
     }
 
     const ALL_OPS: [Op; 43] = [
-        Op::S18C0A,
-        Op::S18CE2,
-        Op::S18D46,
-        Op::S18D89,
-        Op::S18DCC,
-        Op::S18E30,
-        Op::S18E73,
-        Op::S18EB6,
-        Op::S18F1A,
-        Op::S18F5D,
-        Op::S18FC1,
-        Op::S19025,
-        Op::S19ADC,
-        Op::S19BA4,
-        Op::S19CF9,
-        Op::S19D08,
-        Op::S19DA8,
-        Op::S1A09F,
-        Op::S1A287,
-        Op::S1929F,
-        Op::S1890D,
-        Op::S1152D,
-        Op::S11504,
-        Op::S18894,
-        Op::S18C6E,
-        Op::S19068,
-        Op::S190CC,
-        Op::S19B40,
-        Op::S19C4F,
-        Op::S19E66,
-        Op::S19F3B,
-        Op::S19FF9,
-        Op::S1A144,
-        Op::S1A1E6,
-        Op::S18ACE,
-        Op::S17EBA,
-        Op::S17EEA,
-        Op::S17F26,
-        Op::S17F5D,
-        Op::S17FA0,
-        Op::S18031,
-        Op::S180C6,
-        Op::S1117F,
+        Op::MyOverwrite,
+        Op::MyOverlay,
+        Op::MyCut,
+        Op::MyFlash,
+        Op::MyOverlayEffect,
+        Op::MyCutEffect,
+        Op::MyCutPlayerShot,
+        Op::MyOverlayPlayerShot,
+        Op::StageCut,
+        Op::StageOverlay,
+        Op::StageOverwrite,
+        Op::StageFlash,
+        Op::StageToScratch,
+        Op::ScratchReplace,
+        Op::ClearDrawPage,
+        Op::ScratchReplaceShifted,
+        Op::ScratchOr,
+        Op::ScratchAnd,
+        Op::FillRows,
+        Op::BarCell,
+        Op::Number,
+        Op::ClearScratchB,
+        Op::ClearScratchA,
+        Op::ClearBothPages,
+        Op::MyOverwriteInverted,
+        Op::BegOverwrite,
+        Op::BegInverted,
+        Op::BegToScratch,
+        Op::ScratchReplaceMirrored,
+        Op::ScratchOrPairs,
+        Op::ScratchOrMirrored,
+        Op::ScratchLatchPairs,
+        Op::ScratchAndPairs,
+        Op::ScratchAndMirrored,
+        Op::MapToScratch,
+        Op::ScrollRotateCopy,
+        Op::ScrollShiftLeft4,
+        Op::ScrollRotateColumn,
+        Op::ScrollMergeSeam,
+        Op::ScrollShowA,
+        Op::ScrollShowB,
+        Op::ScrollShiftBothLeft,
+        Op::EndOfFrameCopy,
     ];
 
     const SHT_GROUPS: [ShtGroup; 8] =
@@ -1670,13 +1670,13 @@ mod tests {
         assert_same(&sd, &hd, "起點");
         for n in 0..ops {
             let c = rand_cmd(&mut rng);
-            // S1117F 是 MGA 的 SD 呈現專用（複製中間那條掃描線），HD 不動作。只餵 HD，SD 的狀態不變，
-            // 這樣其餘狀態仍要逐位元組相同，同時驗證 HD 的 S1117F 確實什麼都沒改。
-            if c.op != Op::S1117F {
+            // EndOfFrameCopy 是 MGA 的 SD 呈現專用（複製中間那條掃描線），HD 不動作。只餵 HD，SD 的狀態不變，
+            // 這樣其餘狀態仍要逐位元組相同，同時驗證 HD 的 EndOfFrameCopy 確實什麼都沒改。
+            if c.op != Op::EndOfFrameCopy {
                 sd.apply(&DrawCmd::Blit(c));
             }
             hd.apply(&DrawCmd::Blit(c));
-            if n % 16 == 0 || c.op == Op::S17EBA {
+            if n % 16 == 0 || c.op == Op::ScrollRotateCopy {
                 assert_same(&sd, &hd, &format!("{kind:?} seed {seed} png {via_png} 第 {n} 個命令 {c:?}"));
             }
         }

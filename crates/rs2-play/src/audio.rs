@@ -4,7 +4,7 @@
 
 use crate::session::AudioMsg;
 use rs2_audio::{Engine, NATIVE_RATE, Track};
-use rs2_core::MixFile;
+use rs2_game::MixFile;
 use sdl2::AudioSubsystem;
 use sdl2::audio::{AudioCallback, AudioDevice, AudioSpecDesired};
 use std::path::Path;

@@ -14,7 +14,7 @@
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
 use crate::mode::DisplayMode;
 use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS, index_of};
-use rs2_core::Rules;
+use rs2_game::Rules;
 use crate::resources::{Env, Os, non_empty};
 use crate::ui::text;
 use std::io::Write;

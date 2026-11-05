@@ -65,7 +65,7 @@ fn describe(v: &Verdict) -> String {
 #[test]
 #[ignore]
 fn ega_attribute_table_matches_the_original() {
-    use rs2_core::{DrawCmd, Fixes, Game, Input, Start};
+    use rs2_game::{DrawCmd, Fixes, Game, Input, Start};
     let text = {
         let p = env_path("RS2_DOSRUN").join("mode_e/e_stage1_start.json");
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("讀不到 {}：{e}", p.display()))
@@ -166,7 +166,7 @@ fn mono_replay() {
     println!("涵蓋的繪製命令 {} 種：{}", covered.len(), covered.join(" "));
     if only.is_empty() {
         // 這些命令在單色路徑各有自己的分支（`docs/re/14-display-modes.md` 第 4 節）。沒有涵蓋的在 `docs/spec/006-display-modes.md` 的「未涵蓋」列出。
-        for must in ["S18C0A", "S18C6E", "S18CE2", "S18D46", "S18F1A", "S18F5D", "S19068", "S19ADC", "S19B40", "S19BA4", "S19D08", "S19CF9", "S1A287", "S1929F", "S1890D", "S18ACE", "S17FA0", "S18031", "S180C6", "S1117F", "S11504", "S1152D"] {
+        for must in ["MyOverwrite", "MyOverwriteInverted", "MyOverlay", "MyCut", "StageCut", "StageOverlay", "BegOverwrite", "StageToScratch", "BegToScratch", "ScratchReplace", "ScratchReplaceShifted", "ClearDrawPage", "FillRows", "BarCell", "Number", "MapToScratch", "ScrollShowA", "ScrollShowB", "ScrollShiftBothLeft", "EndOfFrameCopy", "ClearScratchA", "ClearScratchB"] {
             assert!(st.ops.contains_key(must), "收據沒有涵蓋 {must}");
         }
     }

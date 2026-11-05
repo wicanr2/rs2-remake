@@ -1352,7 +1352,7 @@ mod tests {
             .iter()
             .filter_map(|d| if let crate::draw::DrawCmd::Blit(x) = d { Some((x.op, x.y)) } else { None })
             .collect();
-        assert_eq!(ops, [(crate::draw::Op::S18D46, 50), (crate::draw::Op::S18CE2, 51)]);
+        assert_eq!(ops, [(crate::draw::Op::MyCut, 50), (crate::draw::Op::MyOverlay, 51)]);
         b.library = 0;
         c.draws.clear();
         c.draw_bullet(&b, 0);
@@ -1361,7 +1361,7 @@ mod tests {
             .iter()
             .filter_map(|d| if let crate::draw::DrawCmd::Blit(x) = d { Some((x.op, x.y)) } else { None })
             .collect();
-        assert_eq!(ops, [(crate::draw::Op::S18F1A, 50), (crate::draw::Op::S18F5D, 50)]);
+        assert_eq!(ops, [(crate::draw::Op::StageCut, 50), (crate::draw::Op::StageOverlay, 50)]);
     }
 
     #[test]

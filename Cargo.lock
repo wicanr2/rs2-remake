@@ -7,23 +7,23 @@ name = "rs2-audio"
 version = "0.1.0"
 
 [[package]]
-name = "rs2-core"
+name = "rs2-formats"
+version = "0.1.0"
+
+[[package]]
+name = "rs2-game"
 version = "0.1.0"
 dependencies = [
  "rs2-formats",
 ]
 
 [[package]]
-name = "rs2-formats"
-version = "0.1.0"
-
-[[package]]
 name = "rs2-gfx"
 version = "0.1.0"
 dependencies = [
  "rs2-audio",
- "rs2-core",
  "rs2-formats",
+ "rs2-game",
 ]
 
 [[package]]
@@ -31,7 +31,7 @@ name = "rs2-trace"
 version = "0.1.0"
 dependencies = [
  "rs2-audio",
- "rs2-core",
  "rs2-formats",
+ "rs2-game",
  "rs2-gfx",
 ]

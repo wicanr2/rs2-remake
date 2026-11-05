@@ -14,7 +14,7 @@
 //! 玩家開火：`Pool::PlayerBullet` 的新世代。
 
 use rs2_audio::SfxKind;
-use rs2_core::{DrawCmd, Pool};
+use rs2_game::{DrawCmd, Pool};
 use std::collections::HashSet;
 
 /// 火花（右、左）的第一格。
@@ -223,11 +223,11 @@ pub fn shake_at(dt_ms: u64, seed: u32) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rs2_core::{BegGroup, BlitCmd, ObjId, Op, ShtGroup};
+    use rs2_game::{BegGroup, BlitCmd, ObjId, Op, ShtGroup};
 
     fn blit(pool: Pool, slot: u8, generation: u32, index: u16, x: u16, y: u16) -> DrawCmd {
         DrawCmd::Blit(BlitCmd {
-            op: Op::S18DCC,
+            op: Op::MyOverlayEffect,
             x,
             y,
             index,

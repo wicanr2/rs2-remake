@@ -7,7 +7,7 @@
 use crate::assets::Assets;
 use crate::sink::disp_row;
 use rs2_audio::{SpkEv, SpkKind};
-use rs2_core::{BlitCmd, Op};
+use rs2_game::{BlitCmd, Op};
 use rs2_formats::BankItem;
 
 /// `sub_187A6` 從 `call` 到第二個 `out 42h`：`call`、`push`、`mov`、`out`、`pop`、`out`、`mov`、`out`。
@@ -124,9 +124,9 @@ fn plane(b: &mut Burst, it: &BankItem, next: u8, c: &BlitCmd, stride_before: u16
 /// y < 0 每列另加 6 道（`19689h` 的迴圈）。
 const FIRST_ROW_ENTRY: u32 = 20 + 8 + 19;
 
-/// 這個命令附帶的喇叭事件。不是 `S18DCC`、或圖號超出 `MY` 就是空的。
+/// 這個命令附帶的喇叭事件。不是 `MyOverlayEffect`、或圖號超出 `MY` 就是空的。
 pub fn speaker_events(assets: &Assets, c: &BlitCmd) -> Vec<SpkEv> {
-    if c.op != Op::S18DCC {
+    if c.op != Op::MyOverlayEffect {
         return Vec::new();
     }
     let go = &assets.my;

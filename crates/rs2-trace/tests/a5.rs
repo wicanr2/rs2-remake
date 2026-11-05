@@ -3,7 +3,7 @@
 //! 需要原版檔與收據，由 `tools/rust.sh test -p rs2-trace --test a5 -- --ignored --nocapture` 跑。
 //! 比對筆數為 0 視為失敗。
 
-use rs2_core::{DrawCmd, Fixes, Game, Input, Start};
+use rs2_game::{DrawCmd, Fixes, Game, Input, Start};
 use rs2_gfx::{Assets, VgaSink, disp_row, locate, scratch_row};
 use rs2_trace::mirror::Dseg;
 use rs2_trace::{load_inputs, parse_sc};

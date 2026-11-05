@@ -167,7 +167,7 @@ fn start_mode_and_midrun_mode_toggles_keep_the_dseg_hashes() {
     println!("模式切換：{compared} 筆雜湊與預設相同");
 }
 
-/// 全流程（標題、第一到第四關打完、片尾）用收據的真實輸入，中途一路切換顯示模式，每步 `Dseg` 雜湊與 `rs2-core` 重播相同。
+/// 全流程（標題、第一到第四關打完、片尾）用收據的真實輸入，中途一路切換顯示模式，每步 `Dseg` 雜湊與 `rs2-game` 重播相同。
 ///
 /// 第三關的地形來源在進場時決定（已決定的取捨），所以進第三關之前的切換剛好繞一圈回到 VGA（途中經過 EGA、CGA、MGA，
 /// 涵蓋第一、二關的全程），進場之後每 37 步換一個模式直到片尾（涵蓋第三關關內、第四關全程與片尾）。
@@ -224,9 +224,9 @@ fn full_flow_with_mode_switches_keeps_every_hash() {
     assert!(r.ok, "失敗（{:?}）：\n{}", r.code, r.stderr);
     assert_eq!(r.hashes.len(), steps);
     let first_diff = (0..steps).find(|&i| r.hashes[i] != want[i]);
-    assert_eq!(first_diff, None, "第 {} 步（第三關進場 {n3}、第四關進場 {n4}）的 Dseg 雜湊與 rs2-core 重播不同\n{}", first_diff.unwrap_or(0) + 1, r.stderr);
+    assert_eq!(first_diff, None, "第 {} 步（第三關進場 {n3}、第四關進場 {n4}）的 Dseg 雜湊與 rs2-game 重播不同\n{}", first_diff.unwrap_or(0) + 1, r.stderr);
     assert!(r.stderr.contains("ending_"), "沒有走到片尾的調色盤：\n{}", r.stderr);
-    println!("全流程 {steps} 步（第三關進場 {n3}，第四關進場 {n4}），{} 次切換，雜湊全部與 rs2-core 相同", toggles.len());
+    println!("全流程 {steps} 步（第三關進場 {n3}，第四關進場 {n4}），{} 次切換，雜湊全部與 rs2-game 相同", toggles.len());
 }
 
 // ---------------------------------------------------------------------------

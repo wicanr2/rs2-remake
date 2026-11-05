@@ -3,7 +3,7 @@
 
 use rs2_audio::oracle::{Seg, SpkLine, parse_tsv, replay_driver};
 use rs2_audio::{Mix, SpkEv, SpkKind, Track};
-use rs2_core::{AudioCmd, DrawCmd, MixFile};
+use rs2_game::{AudioCmd, DrawCmd, MixFile};
 use rs2_gfx::Assets;
 use rs2_gfx::speaker::speaker_events;
 use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};

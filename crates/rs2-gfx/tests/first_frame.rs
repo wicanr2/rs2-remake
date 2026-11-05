@@ -1,7 +1,7 @@
 //! 第一幀前的暫存區 A：`sub_10B65` 的呼叫序列餵給 `VgaSink`，與 dosgolem 的平面傾印逐位元組比對。
 //! 需要原版檔與收據，由 `tools/rust.sh test -p rs2-gfx -- --ignored` 跑（環境變數 `RS2_ORIG`、`RS2_DOSRUN`）。
 
-use rs2_core::{BlitCmd, DrawCmd, Op, ShtGroup};
+use rs2_game::{BlitCmd, DrawCmd, Op, ShtGroup};
 use rs2_gfx::{Assets, VgaSink, locate};
 use std::path::PathBuf;
 
@@ -11,7 +11,7 @@ fn env_path(name: &str) -> PathBuf {
 
 fn put(x: u16, y: u16, index: u16) -> DrawCmd {
     DrawCmd::Blit(BlitCmd {
-        op: Op::S19ADC,
+        op: Op::StageToScratch,
         x,
         y,
         index,
@@ -26,13 +26,13 @@ fn put(x: u16, y: u16, index: u16) -> DrawCmd {
         text_y: 0xBF,
         sht_group: ShtGroup::Bh1,
         mask_group: ShtGroup::Sht1,
-        beg_group: rs2_core::BegGroup::Beg1,
+        beg_group: rs2_game::BegGroup::Beg1,
         stride_reg: None,
         obj: None,
     })
 }
 
-/// `crates/rs2-core/src/flow.rs` 的 `s10b65`：`BH1` 的五層寫進暫存區 A。
+/// `crates/rs2-game/src/flow.rs` 的 `s10b65`：`BH1` 的五層寫進暫存區 A。
 fn s10b65() -> Vec<DrawCmd> {
     let mut v = vec![put(0, 0, 0), put(0x28, 0, 0), put(0, 0x28, 2), put(0x28, 0x28, 2)];
     for i in 0..0x0A {

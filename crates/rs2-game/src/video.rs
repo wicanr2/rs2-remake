@@ -8,20 +8,20 @@
 //!
 //! | `Op` | 名字 |
 //! |---|---|
-//! | `S18D46`、`S18E30`、`S18E73` | [`Core::cut_my`]（遮罩 AND），用 [`MyCopy`] 選副本 |
-//! | `S18CE2`、`S18DCC`、`S18EB6` | [`Core::overlay_my`]（四平面 OR），用 [`MyCopy`] 選副本 |
-//! | `S18D89` | [`Core::flash_my`] |
-//! | `S18C0A` | [`Core::overwrite_my`] |
-//! | `S18C6E` | [`Core::overwrite_my_inverted`] |
-//! | `S18F1A`、`S19025`、`S18F5D`、`S18FC1` | [`Core::cut_stage`]、[`Core::flash_stage`]、[`Core::overlay_stage`]、[`Core::overwrite_stage`] |
-//! | `S19068` | [`Core::overwrite_beg`] |
-//! | `S190CC` | 沒有。唯一呼叫端 `sub_12438` 的 `1243Ch` 起是死碼（`docs/re/12` 第 661 行），前一個領域留下的 `s190cc` 已刪 |
-//! | `S19ADC`、`S19B40`、`S18ACE` | [`Core::draw_current_tile_to_scratch`]、[`Core::draw_current_beg_to_scratch`]、[`Core::draw_map_tile_to_scratch`] |
-//! | `S19BA4`、`S19C4F`、`S19D08`、`S19DA8`、`S19F3B`、`S1A09F`、`S1A1E6`、`S19E66`、`S19FF9`、`S1A144` | [`Core::copy_scratch_rows`]，用 [`RowCopy`] 選種類 |
-//! | `S1A287`、`S1929F`、`S1890D` | [`Core::fill_rows`]、[`Core::draw_bar_cell`]、[`Core::draw_number`] |
-//! | `S19CF9`、`S11504`、`S1152D`、`S18894` | [`Core::clear_draw_page`]、[`Core::clear_scratch_a`]、[`Core::clear_scratch_b`]、[`Core::clear_both_pages`] |
-//! | `S1117F` | [`Core::end_of_frame_copy`] |
-//! | `S17EBA`、`S17EEA`、`S17F26`、`S17F5D`、`S17FA0`、`S18031`、`S180C6` | [`Core::scroll_op`]，用 [`ScrollOp`] 選種類 |
+//! | `MyCut`、`MyCutEffect`、`MyCutPlayerShot` | [`Core::cut_my`]（遮罩 AND），用 [`MyCopy`] 選副本 |
+//! | `MyOverlay`、`MyOverlayEffect`、`MyOverlayPlayerShot` | [`Core::overlay_my`]（四平面 OR），用 [`MyCopy`] 選副本 |
+//! | `MyFlash` | [`Core::flash_my`] |
+//! | `MyOverwrite` | [`Core::overwrite_my`] |
+//! | `MyOverwriteInverted` | [`Core::overwrite_my_inverted`] |
+//! | `StageCut`、`StageFlash`、`StageOverlay`、`StageOverwrite` | [`Core::cut_stage`]、[`Core::flash_stage`]、[`Core::overlay_stage`]、[`Core::overwrite_stage`] |
+//! | `BegOverwrite` | [`Core::overwrite_beg`] |
+//! | `BegInverted` | 沒有。唯一呼叫端 `sub_12438` 的 `1243Ch` 起是死碼（`docs/re/12` 第 661 行），前一個領域留下的 `s190cc` 已刪 |
+//! | `StageToScratch`、`BegToScratch`、`MapToScratch` | [`Core::draw_current_tile_to_scratch`]、[`Core::draw_current_beg_to_scratch`]、[`Core::draw_map_tile_to_scratch`] |
+//! | `ScratchReplace`、`ScratchReplaceMirrored`、`ScratchReplaceShifted`、`ScratchOr`、`ScratchOrMirrored`、`ScratchAnd`、`ScratchAndMirrored`、`ScratchOrPairs`、`ScratchLatchPairs`、`ScratchAndPairs` | [`Core::copy_scratch_rows`]，用 [`RowCopy`] 選種類 |
+//! | `FillRows`、`BarCell`、`Number` | [`Core::fill_rows`]、[`Core::draw_bar_cell`]、[`Core::draw_number`] |
+//! | `ClearDrawPage`、`ClearScratchA`、`ClearScratchB`、`ClearBothPages` | [`Core::clear_draw_page`]、[`Core::clear_scratch_a`]、[`Core::clear_scratch_b`]、[`Core::clear_both_pages`] |
+//! | `EndOfFrameCopy` | [`Core::end_of_frame_copy`] |
+//! | `ScrollRotateCopy`、`ScrollShiftLeft4`、`ScrollRotateColumn`、`ScrollMergeSeam`、`ScrollShowA`、`ScrollShowB`、`ScrollShiftBothLeft` | [`Core::scroll_op`]，用 [`ScrollOp`] 選種類 |
 //!
 //! 繪製命令的 `cx`、`dx` 兩個欄位原版是暫存器，不屬於繪製參數。接收端（`rs2-gfx` 的 `sink.rs`、`mono.rs`、
 //! `mono_hd.rs`、`layer.rs`、`layer/idx.rs`、`layer/hd.rs`、`layer/interp.rs`）只在下列動作讀它們，
@@ -30,11 +30,11 @@
 //! | 動作 | `cx` | `dx` |
 //! |---|---|---|
 //! | 暫存區列複製（`copy_scratch_rows` 的十種） | 列數 | 不讀 |
-//! | `S1A287`（`fill_rows`） | 列數 | 色號 |
-//! | `S1929F`（`draw_bar_cell`） | 不讀 | 色號 |
-//! | `S1890D`（`draw_number`） | 數值 | 不讀 |
+//! | `FillRows`（`fill_rows`） | 列數 | 色號 |
+//! | `BarCell`（`draw_bar_cell`） | 不讀 | 色號 |
+//! | `Number`（`draw_number`） | 數值 | 不讀 |
 //!
-//! `S1929F` 的接收端（`sink.rs`、`layer/idx.rs`）把 `cx` 傳進列起點的函式，但回傳的寫入位址在用到 `cx` 之前就算好，
+//! `BarCell` 的接收端（`sink.rs`、`layer/idx.rs`）把 `cx` 傳進列起點的函式，但回傳的寫入位址在用到 `cx` 之前就算好，
 //! `cx` 沒有影響結果。
 
 use crate::draw::{BlitCmd, DrawCmd, Op};
@@ -258,59 +258,59 @@ impl Core {
     /// `MY.GO` 的遮罩 AND，挖出形狀。
     pub(crate) fn cut_my(&mut self, copy: MyCopy) {
         self.emit(match copy {
-            MyCopy::General => Op::S18D46,
-            MyCopy::Effect => Op::S18E30,
-            MyCopy::PlayerShot => Op::S18E73,
+            MyCopy::General => Op::MyCut,
+            MyCopy::Effect => Op::MyCutEffect,
+            MyCopy::PlayerShot => Op::MyCutPlayerShot,
         });
     }
 
     /// `MY.GO` 的四平面 OR。
     pub(crate) fn overlay_my(&mut self, copy: MyCopy) {
         self.emit(match copy {
-            MyCopy::General => Op::S18CE2,
-            MyCopy::Effect => Op::S18DCC,
-            MyCopy::PlayerShot => Op::S18EB6,
+            MyCopy::General => Op::MyOverlay,
+            MyCopy::Effect => Op::MyOverlayEffect,
+            MyCopy::PlayerShot => Op::MyOverlayPlayerShot,
         });
     }
 
     /// `MY.GO` 的遮罩閃白（`sub_18D89`），玩家受擊後的無敵幀。
     pub(crate) fn flash_my(&mut self) {
-        self.emit(Op::S18D89);
+        self.emit(Op::MyFlash);
     }
 
     /// `MY.GO` 的四平面覆寫（`sub_18C0A`）。
     pub(crate) fn overwrite_my(&mut self) {
-        self.emit(Op::S18C0A);
+        self.emit(Op::MyOverwrite);
     }
 
     /// `MY.GO` 的四平面反相覆寫（`sub_18C6E`），選單用來標出選中的列。
     pub(crate) fn overwrite_my_inverted(&mut self) {
-        self.emit(Op::S18C6E);
+        self.emit(Op::MyOverwriteInverted);
     }
 
     /// 目前載入的關卡圖庫（`SHT`、`BH`）的遮罩 AND（`sub_18F1A`）。遮罩取自 [`Banks::mask`](crate::loader::Banks)。
     pub(crate) fn cut_stage(&mut self) {
-        self.emit(Op::S18F1A);
+        self.emit(Op::StageCut);
     }
 
     /// 關卡圖庫的遮罩閃白（`sub_19025`）。
     pub(crate) fn flash_stage(&mut self) {
-        self.emit(Op::S19025);
+        self.emit(Op::StageFlash);
     }
 
     /// 關卡圖庫的四平面 OR（`sub_18F5D`）。
     pub(crate) fn overlay_stage(&mut self) {
-        self.emit(Op::S18F5D);
+        self.emit(Op::StageOverlay);
     }
 
     /// 關卡圖庫的四平面覆寫（`sub_18FC1`）。
     pub(crate) fn overwrite_stage(&mut self) {
-        self.emit(Op::S18FC1);
+        self.emit(Op::StageOverwrite);
     }
 
     /// `BEG1`、`J` 圖庫的四平面覆寫（`sub_19068`）。
     pub(crate) fn overwrite_beg(&mut self) {
-        self.emit(Op::S19068);
+        self.emit(Op::BegOverwrite);
     }
 
     // ---- 寫進暫存區 ----
@@ -323,17 +323,17 @@ impl Core {
 
     /// 同上，位置與索引沿用現有的繪製參數（迴圈裡逐份往右畫時用）。
     pub(crate) fn draw_current_tile_to_scratch(&mut self) {
-        self.emit(Op::S19ADC);
+        self.emit(Op::StageToScratch);
     }
 
     /// `BEG1`、`J` 圖庫的圖寫進暫存區，位置與索引取自繪製參數（`sub_19B40`）。
     pub(crate) fn draw_current_beg_to_scratch(&mut self) {
-        self.emit(Op::S19B40);
+        self.emit(Op::BegToScratch);
     }
 
     /// 第三關的地圖圖塊寫進暫存區（`sub_18ACE`，固定讀 `MAP` 圖庫）。
     pub(crate) fn draw_map_tile_to_scratch(&mut self) {
-        self.emit(Op::S18ACE);
+        self.emit(Op::MapToScratch);
     }
 
     // ---- 暫存區複製到繪製頁 ----
@@ -342,16 +342,16 @@ impl Core {
     /// `rows` 進命令的 `cx`。
     pub(crate) fn copy_scratch_rows(&mut self, how: RowCopy, rows: u16) {
         let op = match how {
-            RowCopy::Replace => Op::S19BA4,
-            RowCopy::ReplaceShifted => Op::S19D08,
-            RowCopy::ReplaceMirrored => Op::S19C4F,
-            RowCopy::Or => Op::S19DA8,
-            RowCopy::OrMirrored => Op::S19F3B,
-            RowCopy::And => Op::S1A09F,
-            RowCopy::AndMirrored => Op::S1A1E6,
-            RowCopy::LatchPairs => Op::S19FF9,
-            RowCopy::AndPairs => Op::S1A144,
-            RowCopy::OrPairs => Op::S19E66,
+            RowCopy::Replace => Op::ScratchReplace,
+            RowCopy::ReplaceShifted => Op::ScratchReplaceShifted,
+            RowCopy::ReplaceMirrored => Op::ScratchReplaceMirrored,
+            RowCopy::Or => Op::ScratchOr,
+            RowCopy::OrMirrored => Op::ScratchOrMirrored,
+            RowCopy::And => Op::ScratchAnd,
+            RowCopy::AndMirrored => Op::ScratchAndMirrored,
+            RowCopy::LatchPairs => Op::ScratchLatchPairs,
+            RowCopy::AndPairs => Op::ScratchAndPairs,
+            RowCopy::OrPairs => Op::ScratchOrPairs,
         };
         self.emit_with(op, rows, 0);
     }
@@ -360,47 +360,47 @@ impl Core {
 
     /// 填實色（`sub_1A287`）：從目的列起 `rows` 列，`color` 是色號。
     pub(crate) fn fill_rows(&mut self, rows: u16, color: u16) {
-        self.emit_with(Op::S1A287, rows, color);
+        self.emit_with(Op::FillRows, rows, color);
     }
 
     /// 血條的一格（`sub_1929F`），`color` 是色號。
     pub(crate) fn draw_bar_cell(&mut self, color: u16) {
-        self.emit_with(Op::S1929F, 0, color);
+        self.emit_with(Op::BarCell, 0, color);
     }
 
     /// 5 位數字（`sub_1890D`），位置見 [`Core::set_text_position`]。`value` 進命令的 `cx`。
     /// 原版先把數字轉成 5 個 ASCII 位元組寫進 `268A1h` 起的緩衝，再由繪製常式讀；緩衝是函式內先寫後讀的工作變數，
     /// 在 `DS_EXEMPT`（`9CE1..9CE5`），這裡不寫，由接收端依 `value` 轉換。
     pub(crate) fn draw_number(&mut self, value: u16) {
-        self.emit_with(Op::S1890D, value, 0);
+        self.emit_with(Op::Number, value, 0);
     }
 
     // ---- 清除 ----
 
     /// 清除目前的繪製頁（原版 `sub_19CF9`，190 列）。
     pub(crate) fn clear_draw_page(&mut self) {
-        self.emit(Op::S19CF9);
+        self.emit(Op::ClearDrawPage);
     }
 
     /// 清暫存區 A（原版 `sub_11504`）。
     pub(crate) fn clear_scratch_a(&mut self) {
-        self.emit(Op::S11504);
+        self.emit(Op::ClearScratchA);
     }
 
     /// 清暫存區 B（原版 `sub_1152D`）。
     pub(crate) fn clear_scratch_b(&mut self) {
-        self.emit(Op::S1152D);
+        self.emit(Op::ClearScratchB);
     }
 
     /// 兩個顯示頁都清成黑（原版 `sub_18894`）。
     pub(crate) fn clear_both_pages(&mut self) {
-        self.emit(Op::S18894);
+        self.emit(Op::ClearBothPages);
     }
 
     /// 一幀畫完、翻頁之前的頁複製（原版 `sub_1117F`）。只有 MGA（Hercules）有動作，位置見 `docs/re/14-display-modes.md`。
     /// 命令只記頁偏移，不動 `shape_width`，所以 E 模式的其他命令與資料段完全不受影響。
     pub(crate) fn end_of_frame_copy(&mut self) {
-        let mut cmd = self.blit_cmd(Op::S1117F, 0, 0);
+        let mut cmd = self.blit_cmd(Op::EndOfFrameCopy, 0, 0);
         cmd.stride_reg = None;
         cmd.obj = None;
         self.draws.push(DrawCmd::Blit(cmd));
@@ -430,13 +430,13 @@ impl Core {
     /// 第三關地圖捲動的顯示記憶體命令，種類見 [`ScrollOp`]。
     pub(crate) fn scroll_op(&mut self, which: ScrollOp) {
         self.emit(match which {
-            ScrollOp::RotateCopy => Op::S17EBA,
-            ScrollOp::ShiftLeft4 => Op::S17EEA,
-            ScrollOp::RotateColumn => Op::S17F26,
-            ScrollOp::MergeSeam => Op::S17F5D,
-            ScrollOp::ShowA => Op::S17FA0,
-            ScrollOp::ShowB => Op::S18031,
-            ScrollOp::ShiftBothLeft => Op::S180C6,
+            ScrollOp::RotateCopy => Op::ScrollRotateCopy,
+            ScrollOp::ShiftLeft4 => Op::ScrollShiftLeft4,
+            ScrollOp::RotateColumn => Op::ScrollRotateColumn,
+            ScrollOp::MergeSeam => Op::ScrollMergeSeam,
+            ScrollOp::ShowA => Op::ScrollShowA,
+            ScrollOp::ShowB => Op::ScrollShowB,
+            ScrollOp::ShiftBothLeft => Op::ScrollShiftBothLeft,
         });
     }
 
@@ -556,8 +556,8 @@ mod tests {
         c.set_shape_width(5);
         c.end_of_frame_copy();
         let b = last_blit(&c);
-        assert_eq!((b.op, b.stride_reg, b.obj), (Op::S1117F, None, None));
-        assert_eq!(c.pending_shape_width(), Some(5), "S1117F 在 E 模式是 retn，不動 word_2687E");
+        assert_eq!((b.op, b.stride_reg, b.obj), (Op::EndOfFrameCopy, None, None));
+        assert_eq!(c.pending_shape_width(), Some(5), "EndOfFrameCopy 在 E 模式是 retn，不動 word_2687E");
     }
 
     #[test]
@@ -607,7 +607,7 @@ mod tests {
             c.overlay_my(copy);
             ops.push(last_blit(&c).op);
         }
-        assert_eq!(ops, [Op::S18D46, Op::S18CE2, Op::S18E30, Op::S18DCC, Op::S18E73, Op::S18EB6]);
+        assert_eq!(ops, [Op::MyCut, Op::MyOverlay, Op::MyCutEffect, Op::MyOverlayEffect, Op::MyCutPlayerShot, Op::MyOverlayPlayerShot]);
     }
 
     #[test]

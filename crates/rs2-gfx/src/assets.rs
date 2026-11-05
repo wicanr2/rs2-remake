@@ -8,7 +8,7 @@
 //! - `BEG1`：`BEG1.BD1`～`BD4` 四個檔各是一個平面（`sub_1C24F`：`BD1` 進 `word_1CF46`，
 //!   也就是 `sub_19068` 第一個選的平面 3），每個檔是單獨成檔的 RLE 圖庫。
 
-use rs2_core::{BegGroup, ShtGroup};
+use rs2_game::{BegGroup, ShtGroup};
 use rs2_formats::{BankItem, EXPECTED, GoFile, check_hash, parse_bank, parse_go, unrle};
 use std::path::Path;
 

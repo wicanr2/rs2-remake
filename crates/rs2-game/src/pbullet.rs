@@ -1153,7 +1153,7 @@ mod tests {
         // 欄 4、5、...、9：走 6 步，長度 = 1 + 6 = 7，欄前進 7。
         assert_eq!(b.col, 10, "欄跟著光束前進");
         assert_eq!(c.entity_damage(EntityLink::Slot(4)), 0x0101, "格值 5 是實體索引 4，傷害 1");
-        let beams = c.draws.iter().filter(|d| matches!(d, crate::draw::DrawCmd::Blit(b) if b.op == crate::draw::Op::S18C0A)).count();
+        let beams = c.draws.iter().filter(|d| matches!(d, crate::draw::DrawCmd::Blit(b) if b.op == crate::draw::Op::MyOverwrite)).count();
         assert_eq!(beams, 7);
         assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (10, 6), "命中特效在光束末端");
     }
@@ -1202,7 +1202,7 @@ mod tests {
         c.draws.clear();
         c.update_player_bullets();
         let blits: Vec<_> = c.draws.iter().filter_map(|d| if let crate::draw::DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
-        assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), vec![crate::draw::Op::S18E73, crate::draw::Op::S18EB6]);
+        assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), vec![crate::draw::Op::MyCutPlayerShot, crate::draw::Op::MyOverlayPlayerShot]);
         assert!(blits.iter().all(|b| b.x == 6 && b.y == 40 && b.index == 33), "移動後再畫");
         assert_eq!(c.grids.peek8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
         assert_eq!(c.pb.slots[0].bullet.col, 6);

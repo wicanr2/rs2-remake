@@ -1,7 +1,7 @@
 //! 射擊與操控選項（規格 005：波動砲充能、按住連射、砲座像 Force、細步移動）在真實資料上的測試。
 //!
 //! 需要原版檔，標 `#[ignore]`，由 `tools/rust.sh play-test shoot_` 帶 `--include-ignored` 跑。單元層的行為測試
-//! （門檻、傷害、移動規則、砲座飛行）在 `rs2-core` 的 `player/enhanced.rs`，這裡驗：
+//! （門檻、傷害、移動規則、砲座飛行）在 `rs2-game` 的 `player/enhanced.rs`，這裡驗：
 //!
 //! | 測試 | 內容 |
 //! |---|---|
@@ -16,7 +16,7 @@
 
 use super::*;
 use crate::ui::hud::HudFlags;
-use rs2_core::Rules;
+use rs2_game::Rules;
 use rs2_trace::mirror::a as dseg;
 use rs2_trace::load_inputs;
 use std::path::PathBuf;
@@ -189,7 +189,7 @@ fn shoot_e2_each_option_is_deterministic_and_changes_the_run() {
 #[ignore]
 fn shoot_e3_each_option_leaves_its_mark_in_the_state_it_owns() {
     let wave = run(WAVE, 200, false);
-    assert_eq!(wave.max_charge, rs2_core::WAVE_CHARGE_FULL, "按住 20 步，充能到滿格");
+    assert_eq!(wave.max_charge, rs2_game::WAVE_CHARGE_FULL, "按住 20 步，充能到滿格");
     let orig = run(Rules::ORIGINAL, 200, false);
     assert_eq!((orig.detached_steps, orig.half_row_steps, orig.even_col_steps), (0, 0, 0), "原版：砲座不分離、位置永遠是整格和奇數欄");
     let force = run(FORCE, 200, false);
@@ -238,7 +238,7 @@ fn shoot_e1_original_rules_leave_the_run_untouched() {
 fn shoot_combo_all_four_options_with_two_players_run_the_first_stage() {
     let r = run(ALL, 600, true);
     assert_eq!(r.hashes.len(), 600);
-    assert_eq!(r.max_charge, rs2_core::WAVE_CHARGE_FULL);
+    assert_eq!(r.max_charge, rs2_game::WAVE_CHARGE_FULL);
     assert!(r.detached_steps > 20, "砲座分離過 {} 步", r.detached_steps);
     assert!(r.half_row_steps > 10 && r.even_col_steps > 10);
     let distinct: std::collections::HashSet<&String> = r.hashes.iter().collect();

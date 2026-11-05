@@ -15,7 +15,7 @@ use super::Off;
 use crate::assets::Assets;
 use crate::font::DIGITS;
 use crate::sink::{disp_row, scratch_row, scratch_src};
-use rs2_core::{BlitCmd, Op};
+use rs2_game::{BlitCmd, Op};
 use rs2_formats::{BankItem, GoFile};
 
 /// 像素總數：64 KB 位址空間，每位元組 8 個像素。
@@ -66,7 +66,7 @@ pub struct St {
     pub map_mask: u8,
     /// GC 索引 4（讀取平面），預設 0。
     pub read_map: u8,
-    /// GC 索引 3 的資料旋轉。只有第三關捲動的 `S17EBA`、`S17F26` 會設成 4，緊接的 `S17EEA`、`S17F5D` 設回 0。
+    /// GC 索引 3 的資料旋轉。只有第三關捲動的 `ScrollRotateCopy`、`ScrollRotateColumn` 會設成 4，緊接的 `ScrollShiftLeft4`、`ScrollMergeSeam` 設回 0。
     /// 索引色引擎只在這四個命令內套用旋轉；旋轉還在時執行別的命令，原版的寫入資料會被旋轉，這裡不模擬，
     /// 只把 `anomalies` 加 1（原版的呼叫序列不會發生）。
     pub rotate: u8,
@@ -706,7 +706,7 @@ pub fn counter(m: &mut Mem, col: u16, row: u16, value: u16, font: Option<&[u8]>)
     }
 }
 
-/// 套用一個 blit 命令。`S1890D` 的幀計數位置不在這裡處理（由 `LayerSink` 在輸出時疊上）。
+/// 套用一個 blit 命令。`Number` 的幀計數位置不在這裡處理（由 `LayerSink` 在輸出時疊上）。
 pub fn apply(m: &mut Mem, st: &mut St, assets: &Assets, font: Option<&[u8]>, c: &BlitCmd, off: Off) {
     if let Some(v) = c.stride_reg {
         st.stride_reg = v;
@@ -714,49 +714,49 @@ pub fn apply(m: &mut Mem, st: &mut St, assets: &Assets, font: Option<&[u8]>, c: 
     let sht = assets.sht(c.sht_group);
     let sht_mask = assets.sht_mask(c.mask_group);
     let beg = assets.beg(c.beg_group);
-    if st.rotate != 0 && !matches!(c.op, Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D) {
+    if st.rotate != 0 && !matches!(c.op, Op::ScrollRotateCopy | Op::ScrollShiftLeft4 | Op::ScrollRotateColumn | Op::ScrollMergeSeam) {
         st.anomalies += 1;
     }
     match c.op {
-        Op::S18C0A => planes4(m, st, &assets.my, c, Put::Mov, off),
-        Op::S18CE2 | Op::S18EB6 | Op::S18DCC => planes4(m, st, &assets.my, c, Put::Or, off),
-        Op::S18C6E => planes4(m, st, &assets.my, c, Put::MovInv, off),
-        Op::S18D46 | Op::S18E30 | Op::S18E73 => mask_op(m, st, assets.my.mask.as_deref(), c, Put::MaskAnd, off),
-        Op::S18D89 => mask_op(m, st, assets.my.mask.as_deref(), c, Put::MaskInv, off),
-        Op::S18F1A => mask_op(m, st, sht_mask, c, Put::MaskAnd, off),
-        Op::S19025 => mask_op(m, st, sht_mask, c, Put::MaskInv, off),
-        Op::S18F5D => planes4(m, st, sht, c, Put::Or, off),
-        Op::S18FC1 => planes4(m, st, sht, c, Put::Mov, off),
-        Op::S19068 => planes4(m, st, beg, c, Put::Mov, off),
-        Op::S190CC => planes4(m, st, beg, c, Put::MovInv, off),
-        Op::S19ADC => scratch4(m, st, sht, c),
-        Op::S19B40 => scratch4(m, st, beg, c),
-        Op::S18ACE => map_tiles(m, st, &assets.map, c),
-        Op::S19BA4 => copy_rows(m, st, c, off, false),
-        Op::S19D08 => copy_rows(m, st, c, off, true),
-        Op::S19C4F => copy_rows_mirror(m, st, c),
-        Op::S19CF9 => clear_page(m, st, c),
-        Op::S19DA8 => or_rows(m, st, c, off, false),
-        Op::S19F3B => or_rows(m, st, c, off, true),
-        Op::S19E66 => or_word_rows(m, st, c),
-        Op::S19FF9 => latch2_rows(m, st, c),
-        Op::S1A09F => and_rows(m, st, c, off, false),
-        Op::S1A1E6 => and_rows(m, st, c, off, true),
-        Op::S1A144 => and2_rows(m, st, c),
-        Op::S1A287 => fill_rows(m, st, c, off),
-        Op::S1929F => bar_cell(m, st, c),
-        Op::S11504 => clear_scratch(m, st, 0),
-        Op::S1152D => clear_scratch(m, st, 0x8000),
-        Op::S18894 => clear_both_pages(m, st),
-        Op::S17EBA => scroll_rot_copy(m, st, c),
-        Op::S17EEA => scroll_shift_merge(m, st, c),
-        Op::S17F26 => scroll_col_rot(m, st, c),
-        Op::S17F5D => scroll_col_merge(m, st, c),
-        Op::S17FA0 | Op::S18031 => scroll_view(m, st, c),
-        Op::S180C6 => scroll_left(m, st),
+        Op::MyOverwrite => planes4(m, st, &assets.my, c, Put::Mov, off),
+        Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect => planes4(m, st, &assets.my, c, Put::Or, off),
+        Op::MyOverwriteInverted => planes4(m, st, &assets.my, c, Put::MovInv, off),
+        Op::MyCut | Op::MyCutEffect | Op::MyCutPlayerShot => mask_op(m, st, assets.my.mask.as_deref(), c, Put::MaskAnd, off),
+        Op::MyFlash => mask_op(m, st, assets.my.mask.as_deref(), c, Put::MaskInv, off),
+        Op::StageCut => mask_op(m, st, sht_mask, c, Put::MaskAnd, off),
+        Op::StageFlash => mask_op(m, st, sht_mask, c, Put::MaskInv, off),
+        Op::StageOverlay => planes4(m, st, sht, c, Put::Or, off),
+        Op::StageOverwrite => planes4(m, st, sht, c, Put::Mov, off),
+        Op::BegOverwrite => planes4(m, st, beg, c, Put::Mov, off),
+        Op::BegInverted => planes4(m, st, beg, c, Put::MovInv, off),
+        Op::StageToScratch => scratch4(m, st, sht, c),
+        Op::BegToScratch => scratch4(m, st, beg, c),
+        Op::MapToScratch => map_tiles(m, st, &assets.map, c),
+        Op::ScratchReplace => copy_rows(m, st, c, off, false),
+        Op::ScratchReplaceShifted => copy_rows(m, st, c, off, true),
+        Op::ScratchReplaceMirrored => copy_rows_mirror(m, st, c),
+        Op::ClearDrawPage => clear_page(m, st, c),
+        Op::ScratchOr => or_rows(m, st, c, off, false),
+        Op::ScratchOrMirrored => or_rows(m, st, c, off, true),
+        Op::ScratchOrPairs => or_word_rows(m, st, c),
+        Op::ScratchLatchPairs => latch2_rows(m, st, c),
+        Op::ScratchAnd => and_rows(m, st, c, off, false),
+        Op::ScratchAndMirrored => and_rows(m, st, c, off, true),
+        Op::ScratchAndPairs => and2_rows(m, st, c),
+        Op::FillRows => fill_rows(m, st, c, off),
+        Op::BarCell => bar_cell(m, st, c),
+        Op::ClearScratchA => clear_scratch(m, st, 0),
+        Op::ClearScratchB => clear_scratch(m, st, 0x8000),
+        Op::ClearBothPages => clear_both_pages(m, st),
+        Op::ScrollRotateCopy => scroll_rot_copy(m, st, c),
+        Op::ScrollShiftLeft4 => scroll_shift_merge(m, st, c),
+        Op::ScrollRotateColumn => scroll_col_rot(m, st, c),
+        Op::ScrollMergeSeam => scroll_col_merge(m, st, c),
+        Op::ScrollShowA | Op::ScrollShowB => scroll_view(m, st, c),
+        Op::ScrollShiftBothLeft => scroll_left(m, st),
         // MGA 專用（`sub_1117F`），E 直接 `retn`。
-        Op::S1117F => {}
-        Op::S1890D => {
+        Op::EndOfFrameCopy => {}
+        Op::Number => {
             counter(m, c.text_x, c.text_y, c.cx, font);
             restore(st);
         }

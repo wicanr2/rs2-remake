@@ -72,7 +72,7 @@ pub fn next_step(fine: bool, last: (i8, i8), dir: Dir) -> StepPx {
     StepPx { x: if hx != 0 && hx == last.0 { STEP_X } else { FINE_STEP_X }, y: if hy != 0 && hy == last.1 { STEP_Y } else { FINE_STEP_Y } }
 }
 
-/// 玩家機還能往哪裡走（邏輯那邊的界限），和 `rs2_core::PlayerStatus` 同內容，這裡不依賴它好寫測試。
+/// 玩家機還能往哪裡走（邏輯那邊的界限），和 `rs2_game::PlayerStatus` 同內容，這裡不依賴它好寫測試。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reach {
     pub up: bool,

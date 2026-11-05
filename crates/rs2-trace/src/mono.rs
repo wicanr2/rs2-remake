@@ -11,7 +11,7 @@
 use crate::Inputs;
 use crate::mirror::{Dseg, Mirror, a, ds_exempt};
 use crate::wait::{Dsd, Poke, Verdict, WaitRow, entry_of, parse_pokes, parse_row};
-use rs2_core::{Exit, Fixes, Game, Input};
+use rs2_game::{Exit, Fixes, Game, Input};
 use rs2_gfx::{MonoAssets, MonoKind, MonoSink};
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -319,7 +319,7 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
             }
             if let Some(stats) = &opts.stats {
                 let name = match c {
-                    rs2_core::DrawCmd::Blit(b) => format!("{:?}", b.op),
+                    rs2_game::DrawCmd::Blit(b) => format!("{:?}", b.op),
                     other => format!("{:?}", std::mem::discriminant(other)).replace("Discriminant", "Cmd"),
                 };
                 *stats.borrow_mut().ops.entry(name).or_default() += 1;
@@ -367,7 +367,7 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
 
 /// 畫面定位：`tools/dos/wm_locate.sh NAME N` 在 `wl_<NAME>_<N>/` 存了第 N 筆（收據的 n 欄）寫完時的 `.mono`、`.msa`、`.msb`。
 /// 回傳不同的位元組段與第一個不同位元組的最後寫入命令。
-fn locate_detail(rc: &MonoReceipt, root: &Path, n: u64, cmds: &[rs2_core::DrawCmd], assets: &Arc<MonoAssets>) -> String {
+fn locate_detail(rc: &MonoReceipt, root: &Path, n: u64, cmds: &[rs2_game::DrawCmd], assets: &Arc<MonoAssets>) -> String {
     let short = rc.name.strip_prefix("wm_").unwrap_or(&rc.name);
     let dir = root.join(format!("wl_{short}_{n}"));
     let base = format!("wt_{short}-w{n}");

@@ -1,98 +1,131 @@
-//! 繪製命令。`rs2-core` 不碰繪圖，只把原版 blit 的呼叫與參數依序記下，交給接收端。
+//! 繪製命令。`rs2-game` 不碰繪圖，只把原版 blit 的呼叫與參數依序記下，交給接收端。
 //! 語意見 `docs/re/12-stages-presentation.md` 第 2.3 節。
 
-/// 原版的繪製函式。名稱是 `sub_` 位址。
+/// 接收端要執行的繪製動作。每個變體對應原版的一個繪製函式，函式位址（`sub_`）記在變體的說明；
+/// 名稱依動作命名，同動作而不同呼叫端的複本（`MyOverlay`、`MyOverlayEffect`、`MyOverlayPlayerShot`）本體相同，只在對拍時分辨。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Op {
     /// MY 4 平面，覆寫。
-    S18C0A,
-    /// MY 4 平面，OR。
-    S18CE2,
-    /// MY 遮罩，AND。
-    S18D46,
+    /// 原版 `sub_18C0A`。
+    MyOverwrite,
+    /// MY 4 平面，OR，一般呼叫端。
+    /// 原版 `sub_18CE2`。
+    MyOverlay,
+    /// MY 遮罩，AND，一般呼叫端。
+    /// 原版 `sub_18D46`。
+    MyCut,
     /// MY 遮罩，閃白。
-    S18D89,
+    /// 原版 `sub_18D89`。
+    MyFlash,
     /// MY 4 平面，OR，並產生喇叭音（特效）。
-    S18DCC,
-    /// MY 遮罩，AND。
-    S18E30,
-    /// MY 遮罩，AND。
-    S18E73,
-    /// MY 4 平面，OR。
-    S18EB6,
+    /// 原版 `sub_18DCC`。
+    MyOverlayEffect,
+    /// MY 遮罩，AND，特效的呼叫端。
+    /// 原版 `sub_18E30`。
+    MyCutEffect,
+    /// MY 遮罩，AND，玩家彈的呼叫端。
+    /// 原版 `sub_18E73`。
+    MyCutPlayerShot,
+    /// MY 4 平面，OR，玩家彈的呼叫端。
+    /// 原版 `sub_18EB6`。
+    MyOverlayPlayerShot,
     /// SHT 遮罩，AND。
-    S18F1A,
+    /// 原版 `sub_18F1A`。
+    StageCut,
     /// SHT 4 平面，OR。
-    S18F5D,
+    /// 原版 `sub_18F5D`。
+    StageOverlay,
     /// SHT 4 平面，覆寫。
-    S18FC1,
+    /// 原版 `sub_18FC1`。
+    StageOverwrite,
     /// SHT 遮罩，閃白。
-    S19025,
+    /// 原版 `sub_19025`。
+    StageFlash,
     /// SHT／BH 4 平面寫進暫存區。
-    S19ADC,
+    /// 原版 `sub_19ADC`。
+    StageToScratch,
     /// 暫存區列複製到顯示頁。
-    S19BA4,
+    /// 原版 `sub_19BA4`。
+    ScratchReplace,
     /// 清除目前的頁（190 列）。
-    S19CF9,
+    /// 原版 `sub_19CF9`。
+    ClearDrawPage,
     /// 暫存區列複製到顯示頁，帶 x 位移。
-    S19D08,
+    /// 原版 `sub_19D08`。
+    ScratchReplaceShifted,
     /// 暫存區整列 OR 到顯示頁。
-    S19DA8,
+    /// 原版 `sub_19DA8`。
+    ScratchOr,
     /// 暫存區整列 AND 到顯示頁。
-    S1A09F,
+    /// 原版 `sub_1A09F`。
+    ScratchAnd,
     /// 填實色。`dx` 是色號，`cx` 是列數。
-    S1A287,
+    /// 原版 `sub_1A287`。
+    FillRows,
     /// 血條的一格。`dx` 是色號。
-    S1929F,
+    /// 原版 `sub_1929F`。
+    BarCell,
     /// 5 位數字，`cx` 是數值，位置在 `text_x`、`text_y`。幀計數在 (12h, BFh)。
     /// `sub_16C7D` 的擊中計數也走這裡，條件是子彈 w7 為 `1`、`2`，發行版的武器字母碰不到。
-    S1890D,
+    /// 原版 `sub_1890D`。
+    Number,
     /// 清暫存區 B（`sub_1152D`，E 模式從 `A800:1F40` 填 `20BFh` 個字組）。
-    S1152D,
+    ClearScratchB,
     /// 清暫存區 A（`sub_11504`，從 `A000:1F40` 填 `20BFh` 個字組）。
-    S11504,
+    ClearScratchA,
     /// 清兩頁（`sub_18894`）。
-    S18894,
+    ClearBothPages,
     /// MY 4 平面，反相覆寫。
-    S18C6E,
+    /// 原版 `sub_18C6E`。
+    MyOverwriteInverted,
     /// BEG1／J 4 平面，覆寫。
-    S19068,
+    /// 原版 `sub_19068`。
+    BegOverwrite,
     /// BEG1／J 4 平面，反相。
-    S190CC,
+    /// 原版 `sub_190CC`。
+    BegInverted,
     /// BEG1／J 4 平面寫進暫存區。
-    S19B40,
+    /// 原版 `sub_19B40`。
+    BegToScratch,
     /// 暫存區列複製到顯示頁，垂直鏡射。
-    S19C4F,
+    /// 原版 `sub_19C4F`。
+    ScratchReplaceMirrored,
     /// 暫存區逐平面 OR，每列 2 位元組。
-    S19E66,
+    /// 原版 `sub_19E66`。
+    ScratchOrPairs,
     /// 暫存區整列 OR，垂直鏡射。
-    S19F3B,
+    /// 原版 `sub_19F3B`。
+    ScratchOrMirrored,
     /// 閂鎖複製，每列 2 位元組。
-    S19FF9,
+    /// 原版 `sub_19FF9`。
+    ScratchLatchPairs,
     /// 暫存區 AND，每列 2 位元組。
-    S1A144,
+    /// 原版 `sub_1A144`。
+    ScratchAndPairs,
     /// 暫存區整列 AND，垂直鏡射。
-    S1A1E6,
+    /// 原版 `sub_1A1E6`。
+    ScratchAndMirrored,
     /// MAP 圖塊寫進暫存區。
-    S18ACE,
+    /// 原版 `sub_18ACE`。
+    MapToScratch,
     /// 第三關捲動（`sub_17EBA`）：暫存區 A 前 3E80h 位元組複製到 B，GC 旋轉 4。語意見 `workspace/progress/ops-needed.md`。
-    S17EBA,
+    ScrollRotateCopy,
     /// 第三關捲動（`sub_17EEA`）：暫存區 B 就地左移 4 像素，位元遮罩 0Fh。
-    S17EEA,
+    ScrollShiftLeft4,
     /// 第三關捲動（`sub_17F26`）：暫存區 A 的一欄（200 列）轉 4 位元複製到 B。
-    S17F26,
+    ScrollRotateColumn,
     /// 第三關捲動（`sub_17F5D`）：暫存區 B 的接縫欄取下一欄低半，位元遮罩 0Fh。
-    S17F5D,
+    ScrollMergeSeam,
     /// 第三關捲動（`sub_17FA0`）：暫存區（`word_2685C`）的 40 欄 x 190 列以寫入模式 1 複製到顯示頁。
-    S17FA0,
-    /// 第三關捲動（`sub_18031`）：同 `S17FA0`，`word_2685C` 為 8000h。
-    S18031,
+    ScrollShowA,
+    /// 第三關捲動（`sub_18031`）：同 `ScrollShowA`，`word_2685C` 為 8000h。
+    ScrollShowB,
     /// 第三關捲動（`sub_180C6`）：暫存區 A、B 各整體左移 28h 位元組，寫入模式 1。
-    S180C6,
+    ScrollShiftBothLeft,
     /// MGA（Hercules）專用（`sub_1117F`）：目前頁 `0000h`～`1FFFh` 複製到 `2000h`～`3FFFh`，也就是偶數列那一組複製到
     /// 中間那條掃描線。`byte_1CF74` 為 `E` 時直接 `retn`，所以 VGA、EGA 與 CGA 沒有動作。
     /// 原版呼叫端在一幀畫完之後、翻頁之前，位置見 `docs/re/14-display-modes.md`。這個命令不帶參數，只有 `page` 有意義。
-    S1117F,
+    EndOfFrameCopy,
 }
 
 /// `sub_19ADC` 那組段變數目前指向的圖庫。BH 與 SHT 共用同一組，載入 BH 時會蓋掉 SHT。
@@ -161,7 +194,9 @@ pub struct BlitCmd {
     pub src_y: u16,
     /// `word_26868`，水平位移。
     pub shift: u16,
+    /// 列數或數值，依 `op`：`Scratch*` 系列（暫存區複製到繪製頁）與 `FillRows` 是列數，`Number` 是要顯示的數值。其他命令不讀。
     pub cx: u16,
+    /// 色號：`FillRows` 與 `BarCell` 用。其他命令不讀。
     pub dx: u16,
     /// `word_2688A`，`sub_1890D` 的欄。
     pub text_x: u16,

@@ -12,7 +12,7 @@
 //! | L8 全流程等價 | 全部 `wt_*` 收據，原版圖、不補間，與 `VgaSink::render_page(畫頁)` 逐像素相同；L8b 是補間版（alpha 0.5 渲染後 alpha 1.0 仍相同） |
 //! | L9 全流程 HD | 全部 `wt_*` 收據用 HD 圖跑，`missing_hd()` 為空 |
 
-use rs2_core::{BlitCmd, DrawCmd, Fixes, Game, Input, ObjId, Op, Pool, Start};
+use rs2_game::{BlitCmd, DrawCmd, Fixes, Game, Input, ObjId, Op, Pool, Start};
 use rs2_gfx::pal::{PALETTES, fingerprint};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink, png};
 use rs2_trace::mirror::Dseg;
@@ -211,7 +211,7 @@ fn l4_negative_controls_fail_the_comparison() {
             .find_map(|n| {
                 sc.steps[n]
                     .iter()
-                    .position(|d| matches!(d, DrawCmd::Blit(b) if b.op == Op::S18F5D && b.obj.is_some()))
+                    .position(|d| matches!(d, DrawCmd::Blit(b) if b.op == Op::StageOverlay && b.obj.is_some()))
                     .map(|k| (n, k))
             })
             .expect("找不到可用的命令");
@@ -271,7 +271,7 @@ struct Cand {
 /// 原版圖庫項的寬（像素）與高。OR 平面命令用哪個圖庫由 `op` 與 `sht_group` 決定。
 fn dims(a: &Assets, c: &BlitCmd) -> Option<(i32, i32)> {
     let go = match c.op {
-        Op::S18CE2 | Op::S18EB6 | Op::S18DCC => &a.my,
+        Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect => &a.my,
         _ => a.sht(c.sht_group),
     };
     let it = go.planes[0].get(c.index as usize)?;
@@ -279,7 +279,7 @@ fn dims(a: &Assets, c: &BlitCmd) -> Option<(i32, i32)> {
 }
 
 fn is_or_plane(op: Op) -> bool {
-    matches!(op, Op::S18F5D | Op::S18CE2 | Op::S18EB6 | Op::S18DCC)
+    matches!(op, Op::StageOverlay | Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect)
 }
 
 /// 連續 3 幀都以同一個 `ObjId`、同一個圖移動，且完整在遊戲區內的 OR 平面命令。
@@ -343,7 +343,7 @@ fn nonblack_bbox(img: &[u8]) -> Option<(i32, i32, i32, i32)> {
 }
 
 fn clear(page: u16) -> DrawCmd {
-    let mut c = prev_template(Op::S19CF9);
+    let mut c = prev_template(Op::ClearDrawPage);
     c.page = page;
     DrawCmd::Blit(c)
 }
@@ -363,9 +363,9 @@ fn prev_template(op: Op) -> BlitCmd {
         dx: 0,
         text_x: 0,
         text_y: 0,
-        sht_group: rs2_core::ShtGroup::Sht1,
-        mask_group: rs2_core::ShtGroup::Sht1,
-        beg_group: rs2_core::BegGroup::Beg1,
+        sht_group: rs2_game::ShtGroup::Sht1,
+        mask_group: rs2_game::ShtGroup::Sht1,
+        beg_group: rs2_game::BegGroup::Beg1,
         stride_reg: None,
         obj: None,
     }
@@ -1243,7 +1243,7 @@ fn l8c_full_flow_negative_controls_fail() {
     let shift = |n: usize, d: &[DrawCmd]| -> Vec<DrawCmd> {
         let mut v = d.to_vec();
         if n >= 100 && hit.get().is_none() {
-            if let Some(DrawCmd::Blit(c)) = v.iter_mut().find(|x| matches!(x, DrawCmd::Blit(c) if c.op == Op::S18F5D && c.obj.is_some())) {
+            if let Some(DrawCmd::Blit(c)) = v.iter_mut().find(|x| matches!(x, DrawCmd::Blit(c) if c.op == Op::StageOverlay && c.obj.is_some())) {
                 c.x = c.x.wrapping_add(1);
                 hit.set(Some(n));
             }
