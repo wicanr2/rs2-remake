@@ -10,6 +10,7 @@ use crate::session::ViewOpts;
 use crate::settings::Settings;
 use crate::toolbar::{BarState, Button, Toolbar};
 use crate::ui::hud::HudFlags;
+use rs2_game::FieldSize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -140,6 +141,8 @@ pub struct Controls {
     pub hd_available: bool,
     /// 單色圖庫（CGA、MGA）載入成功。為假時循環跳過 CGA、MGA。用 `set_mono_available` 設。
     pub mono_available: bool,
+    /// 這一關的戰場加大了（規格 005「戰場大小」），單色模式（CGA、MGA）不支援，循環跳過。每步由主迴圈從 `Session` 同步。
+    pub field_wide: bool,
     pub fullscreen: bool,
     /// 手機版的工具列，視窗大小固定。
     pub mobile: bool,
@@ -153,7 +156,17 @@ pub struct Controls {
 
 impl Controls {
     pub fn new(settings: Settings, hd_available: bool) -> Controls {
-        Controls { settings, hd_available, mono_available: true, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
+        Controls { settings, hd_available, mono_available: true, field_wide: false, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
+    }
+
+    /// CGA、MGA 現在選得到：單色圖庫可用，而且這一關的戰場沒有加大。
+    pub fn mono_selectable(&self) -> bool {
+        self.mono_available && !self.field_wide
+    }
+
+    /// 告知這一關的戰場有沒有加大（`Session::field_wide`）。
+    pub fn set_field_wide(&mut self, wide: bool) {
+        self.field_wide = wide;
     }
 
     /// 告知單色圖庫能不能用。不能用時，設定裡存的 CGA、MGA 退回 VGA（回傳真，呼叫端要說明原因）。
@@ -202,7 +215,7 @@ impl Controls {
                 Effect { save: true, ..Effect::default() }
             }
             Action::Mode => {
-                s.mode = s.mode.next_available(self.mono_available);
+                s.mode = s.mode.next_available(self.mono_available && !self.field_wide);
                 Effect { save: true, ..Effect::default() }
             }
             Action::Toolbar => {
@@ -267,6 +280,8 @@ impl Controls {
             mobile: self.mobile,
             mode: self.settings.mode,
             mono_available: self.mono_available,
+            field_wide: self.field_wide,
+            field_mono_note: self.settings.mode.is_mono() && self.settings.field_size() != FieldSize::Normal,
             notice: String::new(),
             hover: None,
             down: None,

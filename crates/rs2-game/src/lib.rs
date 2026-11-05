@@ -34,7 +34,7 @@ pub mod title;
 pub mod video;
 
 pub use draw::{AudioCmd, BegGroup, BlitCmd, DrawCmd, MixFile, ObjId, Op, Pool, ShtGroup};
-pub use game::{Core, Entry, Exit, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Rules, Start, State, boot_state};
+pub use game::{Core, Entry, Exit, FieldSize, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Rules, Start, State, boot_state};
 pub use grid::Grids;
 pub use player::{WAVE_CHARGE_FULL, WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
 pub use tables::Tables;

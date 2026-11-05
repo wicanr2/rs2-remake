@@ -35,6 +35,7 @@ const SPEAKER_FLAGS: u8 = 4;
 impl Core {
     /// 第一關的初始化，不含檔案載入（原版 `10CD0h` 至 `10D11h`）。`Core::new`、`Game::restart` 用。
     pub(crate) fn init_stage1(&mut self) {
+        self.begin_stage_field();
         self.draw_on(Page::Zero);
         self.draw_on(Page::One);
         self.banks.sht = ShtGroup::Bh1;
@@ -50,6 +51,7 @@ impl Core {
 
     /// 第一關完整入口，含載入（原版 `sub_10CD0`）。
     pub(crate) async fn play_stage1(&mut self) -> Exit {
+        self.begin_stage_field();
         self.show_page(Page::Zero);
         self.draw_on(Page::Zero);
         self.show_page(Page::One);
@@ -171,10 +173,10 @@ impl Core {
         self.await_timer_ticks(FRAME_TICKS).await;
     }
 
-    /// 橫幅：`MY` 第 26 項（原版 `sub_18C0A`）。
+    /// 橫幅：`MY` 第 26 項（原版 `sub_18C0A`）。戰場加大時靠右對齊新右緣（x 加上多出來的欄數），圖不改。
     fn draw_banner(&mut self) {
         let (x, y, index) = BANNER;
-        self.set_blit_params(x, y, index);
+        self.set_blit_params(x + self.field_extra(), y, index);
         self.clear_obj();
         self.overwrite_my();
     }

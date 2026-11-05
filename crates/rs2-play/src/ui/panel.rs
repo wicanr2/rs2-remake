@@ -1276,7 +1276,7 @@ impl Panel {
             Id::Toolbar => out.eff.merge(cx.ctl.apply(Action::Toolbar)),
             Id::Mode => {
                 // 動作只有「下一個」，往前等於繞一圈少一步。單色圖庫不可用時只有 VGA 與 EGA 兩個。
-                let available = if cx.ctl.mono_available { DisplayMode::ALL.len() } else { 2 };
+                let available = if cx.ctl.mono_selectable() { DisplayMode::ALL.len() } else { 2 };
                 let steps = if delta < 0 { available - 1 } else { 1 };
                 for _ in 0..steps {
                     out.eff.merge(cx.ctl.apply(Action::Mode));
@@ -1414,6 +1414,7 @@ impl Panel {
             }
             Id::Mode => match DisplayMode::ALL.get(i).copied() {
                 Some(t) if t.is_mono() && !cx.ctl.mono_available => self.msg = text::ST_MONO_MISSING.to_string(),
+                Some(t) if t.is_mono() && cx.ctl.field_wide => self.msg = text::ST_MONO_WIDE.to_string(),
                 Some(t) if t != cx.ctl.settings.mode => {
                     for _ in 0..DisplayMode::ALL.len() {
                         out.eff.merge(cx.ctl.apply(Action::Mode));

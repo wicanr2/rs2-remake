@@ -34,6 +34,7 @@ impl Core {
     /// 第三關完整入口，含載入與主迴圈（原版 `sub_13A51`）。`MAP.GO`（`sub_1AFBC`）與 `SHT.SCN`（`sub_1BF71`）沒有
     /// 載入狀態要記，`SHT.SCN` 的解壓在 [`Core::load_map`]，見 `loader.rs`。
     pub(crate) async fn play_stage3(&mut self) -> Exit {
+        self.begin_stage_field();
         self.dos_allocate_buffers(StageBuffers::Stage3);
         self.dos_free_buffers(StageBuffers::Stage3);
         self.show_page(Page::One);

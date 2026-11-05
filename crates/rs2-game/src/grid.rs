@@ -14,7 +14,15 @@
 //! | `terrain` | G4（20 列 × 40 欄 × 2 位元組）、G3（同）、第三關新欄的寫入游標（一個字組）依序相鄰 |
 //!
 //! G4、G3 與游標相鄰是原版行為的前提：第三關捲動時 G4 的最後一個字組取自 G3 的第一個，G3 的最後一個字組取自游標。
+//!
+//! # 戰場加大（規格 005「戰場大小」）
+//!
+//! 欄數不是 40 時（48 或 60，進關時由 [`Core::enter_field`] 決定，存在 [`Grids::cols`]），格網改用新寬度，
+//! 位址仍是 16 位元的位置，只是起點相同、列距與大小隨欄數（[`Layout`]）。越界一律乾淨處理：
+//! 列不在 0 至 19 的格回傳一個不在任何格網內的位址（[`VOID`]），讀回 0、寫入丟掉，
+//! 不模擬原版把列基底表、死亡旗標與 G1 的內容當位址的別名（只有欄數為 40 時存在）。
 
+use crate::draw::DrawCmd;
 use crate::game::Core;
 
 /// G1 實體格網的起點位置與大小：20 列，列距 40。
@@ -71,6 +79,11 @@ const ROW_BASE_FAR: u16 = 0x1F4;
 const ROW_BASE_FAR_VALUE: u16 = 0;
 /// 列號（無號）大於等於這個值，G3、G4、敵彈寫入 G2 一律當作這一列。
 pub(crate) const GRID_LAST_ROW: u16 = 0x14;
+/// 第三關地圖視窗比戰場寬幾欄（畫面右緣外多畫的兩欄）。
+pub(crate) const WINDOW_EXTRA_COLS: u16 = 2;
+
+/// 戰場加大時，列不在格網內的格的位址：不在三塊記憶體內，讀回 0，寫入丟掉。
+const VOID: u16 = 0;
 
 /// 玩家掃描的格網。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +102,11 @@ impl ScanGrid {
         }
     }
 
-    const fn limit(self) -> u16 {
+    /// 窗的上限（不含）。欄數為 40 是原版的值；加大時就是格網的終點，沒有間隙。
+    const fn limit(self, lay: Layout) -> u16 {
+        if lay.wide() {
+            return self.start() + 20 * lay.cols;
+        }
         match self {
             ScanGrid::Entities => 0x217C,
             ScanGrid::Bullets => 0x3266,
@@ -97,17 +114,110 @@ impl ScanGrid {
     }
 }
 
+/// 格網的版面：全由欄數決定。欄數 40 是原版，每個值都等於上面的常數；其他欄數是戰場加大（規格 005）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Layout {
+    pub(crate) cols: u16,
+}
+
+impl Layout {
+    pub(crate) const fn new(cols: u16) -> Layout {
+        Layout { cols }
+    }
+
+    /// 戰場加大：不是原版的 40 欄。
+    pub(crate) const fn wide(self) -> bool {
+        self.cols != GRID_COLS
+    }
+
+    /// G1、G2 每列的位元組數，也是列距。
+    pub(crate) const fn row_bytes(self) -> u16 {
+        self.cols
+    }
+
+    const fn g1_bytes(self) -> u16 {
+        20 * self.cols
+    }
+
+    /// G1 的終點（不含）：玩家彈的碰撞測只看 19 列。
+    pub(crate) const fn g1_end(self) -> u16 {
+        GRID1_START + 19 * self.cols
+    }
+
+    /// 一列最後可測的格相對列起點的位移加 1：列尾（最後一欄）嚴格在它之前。
+    pub(crate) const fn row_span(self) -> u16 {
+        self.cols - 1
+    }
+
+    const fn g2_bytes(self) -> u16 {
+        20 * self.cols
+    }
+
+    /// 敵彈寫 G2 的位址上限（含）。
+    const fn g2_last_writable(self) -> u16 {
+        GRID2_START + self.g2_bytes()
+    }
+
+    /// G2 可寫的欄範圍是列基底之後、列基底加這個值之前（欄 1 至 `cols - 2`）。
+    const fn g2_row_end(self) -> u16 {
+        self.cols - 1
+    }
+
+    /// 玩家掃描時，位址要嚴格在列起點加這個值之前。原版 45h，比一列寬；加大時就是一列。
+    const fn scan_row_span(self) -> u16 {
+        if self.wide() { self.cols } else { SCAN_ROW_SPAN }
+    }
+
+    /// G4 與 G3 各自的字組數。
+    const fn terrain_words(self) -> u16 {
+        20 * self.cols
+    }
+
+    /// G4 與 G3 的列距：每格 2 位元組。
+    pub(crate) const fn terrain_row_bytes(self) -> u16 {
+        2 * self.cols
+    }
+
+    pub(crate) const fn g3_start(self) -> u16 {
+        GRID4_START + 2 * self.terrain_words()
+    }
+
+    const fn g3_end(self) -> u16 {
+        self.g3_start() + 19 * self.terrain_row_bytes()
+    }
+
+    const fn g4_last(self) -> u16 {
+        GRID4_START + 19 * self.terrain_row_bytes()
+    }
+
+    /// 列內可寫的範圍是 `[第一格, 第一格 + 這個值]`。
+    const fn g3_row_last_cell(self) -> u16 {
+        2 * (self.cols - 1)
+    }
+
+    /// 第三關新欄的寫入游標（位元組位移），位置緊接在 G3 之後。
+    const fn terrain_cursor(self) -> u16 {
+        self.g3_start() + 2 * self.terrain_words()
+    }
+
+    const fn terrain_block(self) -> usize {
+        2 * (2 * self.terrain_words() as usize) + 2
+    }
+}
+
 /// 四張格網的記憶體。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grids {
-    pub g1: [u8; GRID1_BYTES as usize],
-    pub g2: [u8; GRID2_BYTES as usize + 1],
-    pub terrain: [u8; TERRAIN_BLOCK],
+    pub g1: Vec<u8>,
+    pub g2: Vec<u8>,
+    pub terrain: Vec<u8>,
+    /// 這一關的欄數：40 是原版，戰場加大時是 48 或 60。進關時由 [`Core::enter_field`] 設定，關內不變。
+    cols: u16,
 }
 
 impl Default for Grids {
     fn default() -> Grids {
-        Grids { g1: [0; GRID1_BYTES as usize], g2: [0; GRID2_BYTES as usize + 1], terrain: [0; TERRAIN_BLOCK] }
+        Grids::with_cols(GRID_COLS)
     }
 }
 
@@ -120,16 +230,37 @@ enum Spot {
 }
 
 impl Grids {
-    fn locate(addr: u16) -> Spot {
+    /// 全部清 0、欄數為 `cols` 的格網。
+    pub fn with_cols(cols: u16) -> Grids {
+        let lay = Layout::new(cols);
+        Grids {
+            g1: vec![0; usize::from(lay.g1_bytes())],
+            g2: vec![0; usize::from(lay.g2_bytes()) + 1],
+            terrain: vec![0; lay.terrain_block()],
+            cols,
+        }
+    }
+
+    /// 這一關的欄數。
+    pub fn cols(&self) -> u16 {
+        self.cols
+    }
+
+    pub(crate) fn layout(&self) -> Layout {
+        Layout::new(self.cols)
+    }
+
+    fn locate(&self, addr: u16) -> Spot {
+        let lay = self.layout();
         let within = |start: u16, len: usize| {
             let off = usize::from(addr.wrapping_sub(start));
             (off < len).then_some(off)
         };
-        if let Some(off) = within(GRID1_START, GRID1_BYTES as usize) {
+        if let Some(off) = within(GRID1_START, usize::from(lay.g1_bytes())) {
             Spot::G1(off)
-        } else if let Some(off) = within(GRID2_START, GRID2_BYTES as usize + 1) {
+        } else if let Some(off) = within(GRID2_START, usize::from(lay.g2_bytes()) + 1) {
             Spot::G2(off)
-        } else if let Some(off) = within(GRID4_START, TERRAIN_BLOCK) {
+        } else if let Some(off) = within(GRID4_START, lay.terrain_block()) {
             Spot::Terrain(off)
         } else {
             Spot::Gap
@@ -138,7 +269,7 @@ impl Grids {
 
     /// 位址上的位元組。三塊記憶體之外是零值間隙。
     pub(crate) fn peek8(&self, addr: u16) -> u8 {
-        match Grids::locate(addr) {
+        match self.locate(addr) {
             Spot::G1(i) => self.g1[i],
             Spot::G2(i) => self.g2[i],
             Spot::Terrain(i) => self.terrain[i],
@@ -153,7 +284,7 @@ impl Grids {
 
     /// 寫位址上的位元組。三塊記憶體之外丟掉。
     pub(crate) fn poke8(&mut self, addr: u16, v: u8) {
-        match Grids::locate(addr) {
+        match self.locate(addr) {
             Spot::G1(i) => self.g1[i] = v,
             Spot::G2(i) => self.g2[i] = v,
             Spot::Terrain(i) => self.terrain[i] = v,
@@ -169,11 +300,11 @@ impl Grids {
 
     /// 第三關新欄的寫入游標。
     pub(crate) fn terrain_cursor(&self) -> u16 {
-        self.peek16(TERRAIN_CURSOR)
+        self.peek16(self.layout().terrain_cursor())
     }
 
     pub(crate) fn set_terrain_cursor(&mut self, v: u16) {
-        self.poke16(TERRAIN_CURSOR, v);
+        self.poke16(self.layout().terrain_cursor(), v);
     }
 
     /// `rep movsw`：逐字組複製，重疊時行為與 8086 相同。
@@ -188,18 +319,79 @@ impl Grids {
     }
 }
 
-/// 一列 G1 的列尾位址（不含）：列起點加 27h。
-pub(crate) const fn grid1_row_end(row_start: u16) -> u16 {
-    row_start.wrapping_add(GRID1_ROW_SPAN)
-}
-
 impl Core {
+    /// 目前這一關的格網版面。
+    pub(crate) fn layout(&self) -> Layout {
+        self.grids.layout()
+    }
+
+    /// 這一關的戰場欄數：40 是原版，戰場加大時是 48 或 60（規格 005「戰場大小」）。
+    pub fn field_cols(&self) -> u16 {
+        self.grids.cols()
+    }
+
+    /// 戰場比原版多出來的欄數（`field_cols() - 40`）：右緣、敵人進場點與頭目都跟著往右移這麼多。
+    pub(crate) fn field_extra(&self) -> u16 {
+        self.grids.cols() - GRID_COLS
+    }
+
+    /// 一列 G1 的列尾位址（不含），欄數隨這一關。
+    pub(crate) fn grid1_row_end_of(&self, row_start: u16) -> u16 {
+        row_start.wrapping_add(self.layout().row_span())
+    }
+
+    /// 子彈左右出界的門檻（無號比較）：欄大於等於它就出界。原版 27h，戰場加大時是欄數減 1。
+    pub(crate) fn side_limit(&self) -> u16 {
+        self.layout().row_span()
+    }
+
+    /// 進關時決定這一關的戰場欄數（規格 005「戰場大小」），關內不變。
+    ///
+    /// 欄數 40 接 40 什麼都不做，和原版逐位元組相同。欄數變了就換一組全清的格網，修正模式另存的敵彈槽號跟著換大小，
+    /// 並送出 [`DrawCmd::Field`] 讓接收端換成這個寬度。戰場是加大的就每關都送一次，接收端對同一個欄數重送是空動作。
+    pub(crate) fn enter_field(&mut self, cols: u16) {
+        let now = self.grids.cols();
+        if cols == now && cols == GRID_COLS {
+            return;
+        }
+        if cols != now {
+            self.grids = Grids::with_cols(cols);
+        }
+        self.sync_g2_slots();
+        self.draws.push(DrawCmd::Field { cols });
+    }
+
+    /// 修正模式另存的敵彈槽號，每個 G2 格一項（加一個溢位格），大小跟著欄數。
+    pub(crate) fn sync_g2_slots(&mut self) {
+        let want = 20 * usize::from(self.grids.cols()) + 1;
+        if self.g2_slots.len() != want {
+            self.g2_slots = vec![0; want];
+        }
+    }
+
+    /// 進關：依強化選項（[`Rules::field`](crate::game::Rules)）決定這一關的欄數。展示錄影一律 100%（`Core::rules`）。
+    pub(crate) fn begin_stage_field(&mut self) {
+        let cols = self.rules().field.cols();
+        self.enter_field(cols);
+    }
+
+    /// 離開關卡時回到原版的欄數，標題、過場與片尾都是 40 欄。
+    pub(crate) fn leave_field(&mut self) {
+        self.enter_field(GRID_COLS);
+    }
+
     // ---- G1 實體格 ----
 
     /// G1 某一列的起點（原版 `sub_16CC6`，玩家彈用）。列（無號）大於等於 17Ch 改取索引 1F4h；
     /// 小於的列直接以列號索引列基底表，所以列 14h 至 17Bh 讀到的是 G1 自己的內容，原版行為。
     /// 列基底表第 14h 項就是 G1 的前兩個位元組，列 0 之前的負列落在越界列。
+    ///
+    /// 戰場加大時列不在 0 至 19 就回傳 [`VOID`]，沒有別名。
     pub(crate) fn grid1_row_start(&self, row: u16) -> u16 {
+        let lay = self.layout();
+        if lay.wide() {
+            return if row < GRID_LAST_ROW { GRID1_START + row * lay.cols } else { VOID };
+        }
         self.row_base_offset(row).wrapping_add(GRID1_START)
     }
 
@@ -224,12 +416,17 @@ impl Core {
     /// 位址須嚴格在格網窗之內，也嚴格在該列起點之後、列起點加 45h 之前。窗比格網大，列加 45h 比一列的 28h 寬，
     /// 所以位置正常時範圍檢查都成立；列號落在表外時掃到的是格網之外的資料，照原版。不合格回傳 `None`。
     pub(crate) fn scan_cell(&self, grid: ScanGrid, row_start: u16, addr: u16) -> Option<u8> {
-        let inside = addr < grid.limit() && addr > grid.start() && addr < row_start.wrapping_add(SCAN_ROW_SPAN) && addr > row_start;
+        let lay = self.layout();
+        let inside = addr < grid.limit(lay) && addr > grid.start() && addr < row_start.wrapping_add(lay.scan_row_span()) && addr > row_start;
         inside.then(|| self.grids.peek8(addr))
     }
 
-    /// 玩家掃描時第 `row` 列的起點：列基底表加格網起點。
+    /// 玩家掃描時第 `row` 列的起點：列基底表加格網起點。戰場加大時列不在 0 至 19 回傳 [`VOID`]。
     pub(crate) fn scan_row_start(&self, grid: ScanGrid, row: u16) -> u16 {
+        let lay = self.layout();
+        if lay.wide() {
+            return if row < GRID_LAST_ROW { grid.start() + row * lay.cols } else { VOID };
+        }
         self.row_base_offset(row).wrapping_add(grid.start())
     }
 
@@ -239,6 +436,9 @@ impl Core {
     /// 子彈欄為負（飛出左緣）時，追蹤彈的第一次讀取（`cell = 列起點 + 欄`）落在那裡，讀到非 0 就當作撞牆，
     /// 原版因此把它判成距離 0 的牆。G1 之後的位址（G1 之後直到 `217Ch` 的間隙）是 0。
     pub(crate) fn grid1_byte(&self, addr: u16) -> u8 {
+        if self.layout().wide() {
+            return self.grids.peek8(addr);
+        }
         let off = usize::from(addr.wrapping_sub(ROW_BASE_TABLE));
         match self.tables.row_base.get(off / 2) {
             Some(word) if off < 2 * usize::from(ROW_BASE_COUNT) => word.to_le_bytes()[off % 2],
@@ -249,7 +449,8 @@ impl Core {
     /// 玩家彈碰撞測的 G1 格（原版 `sub_16B49`）：位址須在 G1 之內，嚴格在該列起點之後、嚴格在列尾之前。
     /// 不合格回傳 `None`。
     pub(crate) fn grid1_probe(&self, row_start: u16, addr: u16) -> Option<u8> {
-        let inside = addr < GRID1_END && addr > GRID1_START && addr < grid1_row_end(row_start) && addr > row_start;
+        let lay = self.layout();
+        let inside = addr < lay.g1_end() && addr > GRID1_START && addr < row_start.wrapping_add(lay.row_span()) && addr > row_start;
         inside.then(|| self.grids.peek8(addr))
     }
 
@@ -261,7 +462,7 @@ impl Core {
     /// 敵人把形狀的一格值寫進 G1（原版 `sub_16233`）：覆蓋，不是 `or`，所以槽號大的敵人蓋過槽號小的。
     /// 欄（無號）大於 27h 的格略過，不會溢進相鄰的列；列起點取自列基底表（[`Core::grid1_row_start`]）。
     pub(crate) fn grid1_put(&mut self, row: u16, col: u16, v: u8) {
-        if col < GRID_COLS {
+        if col < self.layout().cols {
             let at = self.grid1_row_start(row).wrapping_add(col);
             self.grids.poke8(at, v);
         }
@@ -271,20 +472,27 @@ impl Core {
 
     /// 清 G2（原版 `sub_178BB`，每幀末）。修正模式另存的槽號一起清。
     pub(crate) fn clear_grid2(&mut self) {
-        self.grids.g2[..GRID2_BYTES as usize].fill(0);
+        let bytes = usize::from(self.layout().g2_bytes());
+        self.grids.g2[..bytes].fill(0);
         self.g2_slots.fill(0);
     }
 
     /// G2 某一列的基底位址（原版 `sub_17898`）。列（無號）大於等於 14h，含負列，改取索引 14h；
     /// 該項的位址是 G1 的前兩個位元組，所以列基底取到的是 G1 的內容，原版行為。
-    /// 道具球 2×3 在列 18 的移除幀會寫到列 20，走到這個分支。
+    /// 道具球 2×3 在列 18 的移除幀會寫到列 20，走到這個分支。戰場加大時列不在 0 至 19 回傳 [`VOID`]，不寫。
     pub(crate) fn grid2_row_base(&self, row: u16) -> u16 {
+        let lay = self.layout();
+        if lay.wide() {
+            return if row < GRID_LAST_ROW { GRID2_START + row * lay.cols } else { VOID };
+        }
         self.row_base_offset(row.min(GRID_LAST_ROW)).wrapping_add(GRID2_START)
     }
 
     /// `addr` 是否可寫：落在 `2C1Ch` 至 `2F3Ch` 之間，且嚴格在列基底之後（欄 0 不寫）、嚴格在列基底 + 27h 之前。
+    /// 戰場加大時上限與列寬隨欄數（欄 1 至 `cols - 2`）。
     pub(crate) fn grid2_writable(&self, row_base: u16, addr: u16) -> bool {
-        addr <= GRID2_LAST_WRITABLE && addr >= GRID2_START && addr < row_base.wrapping_add(GRID2_ROW_END) && addr > row_base
+        let lay = self.layout();
+        addr <= lay.g2_last_writable() && addr >= GRID2_START && addr < row_base.wrapping_add(lay.g2_row_end()) && addr > row_base
     }
 
     pub(crate) fn grid2_write(&mut self, addr: u16, v: u8) {
@@ -311,6 +519,16 @@ impl Core {
         if row >= GRID_LAST_ROW { self.en.death_flag } else { self.tables.row_start[usize::from(row)] }
     }
 
+    /// 戰場加大時 G3、G4 一格的位址：`start` 是格網的起點，列不在 0 至 19 回傳 [`VOID`]。
+    /// 列內的欄不在這裡擋，沿用原版的 16 位元環繞，由 [`Core::grid3_or_in_row`]、[`Core::grid4_contains`] 擋。
+    fn wide_terrain_cell(&self, start: u16, row: u16, col: u16) -> u16 {
+        if row >= GRID_LAST_ROW {
+            return VOID;
+        }
+        let row_bytes = self.layout().terrain_row_bytes();
+        start.wrapping_add(row * row_bytes + 1).wrapping_add(col.wrapping_shl(1).wrapping_add(1))
+    }
+
     /// 記下最近一個更新的敵人本幀要不要釋放（原版 `word_1EDAA`）：`Y` 釋放，`N` 不釋放。
     /// 列起點表的越界列（G3、G4 的列 14h 以上）讀的就是這個字組。
     pub(crate) fn set_enemy_death_flag(&mut self, dying: bool) {
@@ -320,22 +538,27 @@ impl Core {
     /// 以 `or` 寫進 G3 的一格，限定在 `first`（該列第一格的位址）起的這一列內。
     /// 敵彈用這個：超出該列右緣的格略過，不溢進下一列。
     pub(crate) fn grid3_or_in_row(&mut self, first: u16, addr: u16, v: u8) {
-        if first <= addr && addr <= first.wrapping_add(GRID3_ROW_LAST_CELL) {
+        if first <= addr && addr <= first.wrapping_add(self.layout().g3_row_last_cell()) {
             let old = self.grids.peek8(addr);
             self.grids.poke8(addr, old | v);
         }
     }
 
     /// G3 的格位址（原版 `sub_17D5F`）：`列` 大於等於 14h 改取 14h，位址 = G3 起點 + 列起點表 + 2 × 欄 + 1。
-    /// 全部以 16 位元環繞運算，所以越界的位址由 [`Core::grid3_or`] 擋掉。
+    /// 全部以 16 位元環繞運算，所以越界的位址由 [`Core::grid3_or`] 擋掉。戰場加大時列不在 0 至 19 回傳 [`VOID`]。
     pub(crate) fn grid3_cell_addr(&self, row: u16, col: u16) -> u16 {
+        let lay = self.layout();
+        if lay.wide() {
+            return self.wide_terrain_cell(lay.g3_start(), row, col);
+        }
         let row_start = self.row_start_word(row.min(GRID_LAST_ROW));
         row_start.wrapping_add(GRID3_START).wrapping_add(col.wrapping_shl(1).wrapping_add(1))
     }
 
     /// 以 `or` 寫進 G3 的一格。位址落在 G3 範圍之外的格略過。
     pub(crate) fn grid3_or(&mut self, addr: u16, v: u8) {
-        if (GRID3_START..=GRID3_END).contains(&addr) {
+        let lay = self.layout();
+        if (lay.g3_start()..=lay.g3_end()).contains(&addr) {
             let old = self.grids.peek8(addr);
             self.grids.poke8(addr, old | v);
         }
@@ -348,7 +571,23 @@ impl Core {
     /// 列號超出畫面時（例如死亡動畫往下走）寫得到 G3 之後的位址：先是游標，再往後是別的變數。
     /// 游標之後的位置原版是繪製與喇叭參數等變數，重製不維護它們的位元組（它們有自己的欄位），寫入丟掉。
     /// 這條路徑沒有收據分辨，是靜態推論。
+    ///
+    /// 戰場加大時改成乾淨的邊界：列在 0 至 18、欄在 0 至 `cols - 1` 的格才寫，其餘丟掉（G3 沒有人寫列 19，
+    /// 再往下是游標）。
     pub(crate) fn grid3_mark_block(&mut self, row: u16, col: u16, rows: u16, cols: u16, value: u16) {
+        let lay = self.layout();
+        if lay.wide() {
+            for r in 0..rows {
+                for c in 0..cols {
+                    let (rr, cc) = (i32::from(row as i16) + i32::from(r), i32::from(col as i16) + i32::from(c));
+                    if (0..19).contains(&rr) && (0..i32::from(lay.cols)).contains(&cc) {
+                        let at = self.wide_terrain_cell(lay.g3_start(), rr as u16, cc as u16);
+                        self.grids.poke16(at, value);
+                    }
+                }
+            }
+            return;
+        }
         let first = (u16::from(row as u8) * GRID_COLS).wrapping_add(col).wrapping_add(1).wrapping_shl(1);
         for r in 0..rows {
             for c in 0..cols {
@@ -361,8 +600,11 @@ impl Core {
     // ---- G4 地形格與第三關捲動 ----
 
     /// G4 地形格的位址（原版 `sub_16A2C`）：`列` 大於等於 14h 改取 14h，位址 = G4 起點 + 列起點表 + 2 × 欄 + 1。
-    /// 與 G3 共用列起點表（[`Core::grid3_cell_addr`]）。
+    /// 與 G3 共用列起點表（[`Core::grid3_cell_addr`]）。戰場加大時列不在 0 至 19 回傳 [`VOID`]。
     pub(crate) fn grid4_cell_addr(&self, row: u16, col: u16) -> u16 {
+        if self.layout().wide() {
+            return self.wide_terrain_cell(GRID4_START, row, col);
+        }
         let row_start = self.row_start_word(row.min(GRID_LAST_ROW));
         row_start.wrapping_add(GRID4_START).wrapping_add(col.wrapping_shl(1).wrapping_add(1))
     }
@@ -374,7 +616,7 @@ impl Core {
 
     /// `addr` 是否在 G4 的範圍內（原版 `169E0h` 的兩個比較）。
     pub(crate) fn grid4_contains(&self, addr: u16) -> bool {
-        (GRID4_START..=GRID4_LAST).contains(&addr)
+        (GRID4_START..=self.layout().g4_last()).contains(&addr)
     }
 
     /// 第三關捲動一格：G4 與 G3 各整體左移一個字組（原版 `sub_1840E` 的兩次 `rep movsw`，各 320h 個字組）。
@@ -385,32 +627,46 @@ impl Core {
     ///   那個位置沒有找到其他引用。
     /// - 結尾的 `stosb` 把游標的低位元組清 0；`scroll_map_second_page` 隨後才把游標設成 50h，所以沒有後續效果。
     pub(crate) fn scroll_terrain_grids(&mut self) {
-        self.grids.copy_words(GRID4_START, GRID4_START + 2, TERRAIN_WORDS);
-        self.grids.copy_words(GRID3_START, GRID3_START + 2, TERRAIN_WORDS);
-        self.grids.poke8(TERRAIN_CURSOR, 0);
+        let lay = self.layout();
+        self.grids.copy_words(GRID4_START, GRID4_START + 2, lay.terrain_words());
+        self.grids.copy_words(lay.g3_start(), lay.g3_start() + 2, lay.terrain_words());
+        self.grids.poke8(lay.terrain_cursor(), 0);
     }
 
     /// 清第三關的地形格 G4（原版 `sub_18599`）：從 G4 起點起 320h 個字組。每個關卡進場都清。
     pub(crate) fn clear_terrain_grid(&mut self) {
-        let len = 2 * usize::from(TERRAIN_WORDS);
+        let len = 2 * usize::from(self.layout().terrain_words());
         self.grids.terrain[..len].fill(0);
     }
 
     /// 新欄的第一格從游標 50h 起，也就是 G4 讀取格狀的（列 0，欄 39）（原版 `18306h`）。
+    /// 戰場加大時是列 0 的最後一欄，游標是一列的位元組數。
     pub(crate) fn start_terrain_column(&mut self) {
-        self.grids.set_terrain_cursor(TERRAIN_ROW_BYTES);
+        self.grids.set_terrain_cursor(self.layout().terrain_row_bytes());
     }
 
     /// 新欄的一格圖塊索引存進 G4（原版 `sub_1839F`）：寫在 G4 起點加游標，游標加一列。
     pub(crate) fn store_terrain_tile(&mut self, tile: u16) {
         let cursor = self.grids.terrain_cursor();
         self.grids.poke16(cursor.wrapping_add(GRID4_START), tile);
-        self.grids.set_terrain_cursor(cursor.wrapping_add(TERRAIN_ROW_BYTES));
+        self.grids.set_terrain_cursor(cursor.wrapping_add(self.layout().terrain_row_bytes()));
     }
 
     /// 初始視窗的第 `cell` 格圖塊索引存進 G4（原版 `sub_17DF9`）：從 G4 起點加 2 起連續寫，不分列，
     /// 視窗每列 42 格，所以列距是 54h 位元組，與碰撞讀取的列距（50h）不同。
+    ///
+    /// 戰場加大時改成對齊碰撞讀取的列距：視窗每列 `cols + 2` 格，只有前 `cols` 格存進 G4，
+    /// 所以第一幀起碰撞格就和畫面上的圖塊一致，沒有原版前 40 個捲動步的錯位。
     pub(crate) fn fill_terrain_cell(&mut self, cell: u16, tile: u16) {
+        let lay = self.layout();
+        if lay.wide() {
+            let window = lay.cols + WINDOW_EXTRA_COLS;
+            let (row, col) = (cell / window, cell % window);
+            if col < lay.cols {
+                self.grids.poke16(GRID4_START + 2 + row * lay.terrain_row_bytes() + 2 * col, tile);
+            }
+            return;
+        }
         self.grids.poke16(GRID4_START.wrapping_add(2).wrapping_add(2u16.wrapping_mul(cell)), tile);
     }
 
@@ -427,6 +683,28 @@ impl Core {
 
 const _: () = assert!(GRID3_START + 2 * TERRAIN_WORDS == TERRAIN_CURSOR, "游標緊接在 G3 之後");
 const _: () = assert!(GRID4_START + 2 * TERRAIN_WORDS == GRID3_START, "G3 緊接在 G4 之後");
+
+/// 欄數 40 的版面必須和原版的常數逐項相同，戰場加大的版面是同一組公式換了欄數。
+const _: () = {
+    const ORIGINAL: Layout = Layout::new(GRID_COLS);
+    assert!(ORIGINAL.g1_bytes() == GRID1_BYTES);
+    assert!(ORIGINAL.g1_end() == GRID1_END);
+    assert!(ORIGINAL.row_span() == GRID1_ROW_SPAN);
+    assert!(ORIGINAL.row_bytes() == GRID1_ROW_BYTES);
+    assert!(ORIGINAL.g2_bytes() == GRID2_BYTES);
+    assert!(ORIGINAL.g2_last_writable() == GRID2_LAST_WRITABLE);
+    assert!(ORIGINAL.g2_row_end() == GRID2_ROW_END);
+    assert!(ORIGINAL.scan_row_span() == SCAN_ROW_SPAN);
+    assert!(ORIGINAL.terrain_words() == TERRAIN_WORDS);
+    assert!(ORIGINAL.terrain_row_bytes() == TERRAIN_ROW_BYTES);
+    assert!(ORIGINAL.terrain_row_bytes() == GRID3_ROW_BYTES);
+    assert!(ORIGINAL.g3_start() == GRID3_START);
+    assert!(ORIGINAL.g3_end() == GRID3_END);
+    assert!(ORIGINAL.g4_last() == GRID4_LAST);
+    assert!(ORIGINAL.g3_row_last_cell() == GRID3_ROW_LAST_CELL);
+    assert!(ORIGINAL.terrain_cursor() == TERRAIN_CURSOR);
+    assert!(ORIGINAL.terrain_block() == TERRAIN_BLOCK);
+};
 
 #[cfg(test)]
 mod tests {

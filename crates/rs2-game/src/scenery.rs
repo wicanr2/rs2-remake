@@ -74,9 +74,10 @@ impl Core {
     }
 
     /// 把景物放進第一個空槽（原版 `sub_15C5F`）。10 槽全滿就放棄。
+    /// 戰場加大時（規格 005）起點 x 照敵人的規則平移（`Core::spawn_col`）：右緣的景物從新右緣飄進來。
     fn place_prop(&mut self, prop: Prop) {
         let Some(slot) = self.sc.first_free() else { return };
-        self.sc.props[slot] = prop;
+        self.sc.props[slot] = Prop { x: self.spawn_col(prop.x, false), ..prop };
         self.bump_gen(Pool::Scenery, slot as u8);
     }
 

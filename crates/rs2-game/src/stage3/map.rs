@@ -10,25 +10,22 @@
 
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::grid::GRID_COLS;
+use crate::grid::WINDOW_EXTRA_COLS;
 use crate::video::{SCRATCH_A, SCRATCH_B, ScrollOp};
 
-/// 地圖每列的欄數。戰場加大（規格 005）時地圖欄數與畫面欄數（`GRID_COLS`）、新欄生成位置要一起改。
+/// 地圖每列的欄數。
 const MAP_COLUMNS: u16 = 0x258;
 /// 每個捲動步前進幾欄（視窗與地圖左緣各加這麼多），每兩個頁面一步。
 const SCROLL_STEP_COLUMNS: u16 = 1;
-/// 視窗的欄數（含畫面右緣外多畫的兩欄）與可見欄數；視窗左緣在 0 到 `GRID_COLS - 1` 之間循環。
-const WINDOW_COLUMNS: u16 = 0x2A;
+/// 視窗左緣在暫存區裡的循環週期：0 到 39，到 40 歸零並把暫存區整個左移 40 位元組。
+/// 這是背景圖的週期，與戰場的欄數無關，戰場加大（規格 005）時也不變；暫存區的列寬夠放下 `39 + cols + 2` 欄。
+const WINDOW_PERIOD: u16 = 0x28;
 /// 視窗的列數（地圖有 20 列，第 20 列在可達碼中沒有用到）。
 const WINDOW_ROWS: u16 = 0x13;
 /// 一個圖塊的像素列數。
 const TILE_ROWS: u16 = 0x0A;
-/// 新的一欄畫在視窗左緣之右這麼多欄（可見寬度）。
-const NEW_COLUMN_OFFSET: u16 = GRID_COLS;
 /// 地圖往下一列的索引增量，單位是位元組（`2 × MAP_COLUMNS`）。
 const MAP_ROW_BYTES: u16 = 2 * MAP_COLUMNS;
-/// 初始填入時，視窗畫完一列後地圖索引要再跳過的位元組：一列 `MAP_ROW_BYTES` 減去已走過的 `2 × WINDOW_COLUMNS`。
-const MAP_ROW_SKIP: u16 = MAP_ROW_BYTES - 2 * WINDOW_COLUMNS;
 /// 捲動步取新欄時，地圖索引逐列增加的位元組：一列 `MAP_ROW_BYTES`。
 const NEW_COLUMN_STRIDE: u16 = MAP_ROW_BYTES;
 
@@ -44,6 +41,21 @@ pub struct MapScroll {
 }
 
 impl Core {
+    /// 視窗的欄數：畫面欄數加畫面右緣外多畫的兩欄（原版 42，戰場加大時 50 或 62）。
+    fn window_columns(&self) -> u16 {
+        self.field_cols() + WINDOW_EXTRA_COLS
+    }
+
+    /// 新的一欄畫在視窗左緣之右這麼多欄：可見寬度，也就是戰場的欄數。
+    fn new_column_offset(&self) -> u16 {
+        self.field_cols()
+    }
+
+    /// 初始填入時，視窗畫完一列後地圖索引要再跳過的位元組：一列 `MAP_ROW_BYTES` 減去已走過的 `2 × 視窗欄數`。
+    fn map_row_skip(&self) -> u16 {
+        MAP_ROW_BYTES - 2 * self.window_columns()
+    }
+
     /// 解壓地圖：`SHT.SCN`（E）或 `SHT.SCR`（單色）的 RLE 串流解到 `map_seg`（原版 `sub_1BF71` 的解壓部分）。
     /// 選哪一份由前端的顯示模式決定，見 `Game::set_terrain_scr`。
     pub(crate) fn load_map(&mut self) {
@@ -79,9 +91,10 @@ impl Core {
         self.set_blit_x(window);
         self.set_blit_y(0);
         let mut cell = 0;
+        let (columns, skip) = (self.window_columns(), self.map_row_skip());
         for _ in 0..WINDOW_ROWS {
             self.set_blit_x(window);
-            for _ in 0..WINDOW_COLUMNS {
+            for _ in 0..columns {
                 let tile = self.map_word(cursor);
                 self.fill_terrain_cell(cell, tile);
                 self.set_blit_index(tile);
@@ -90,7 +103,7 @@ impl Core {
                 self.add_blit_x(1);
                 cell += 1;
             }
-            cursor = cursor.wrapping_add(MAP_ROW_SKIP);
+            cursor = cursor.wrapping_add(skip);
             self.add_blit_y(TILE_ROWS);
         }
         self.show_scratch_a();
@@ -136,7 +149,7 @@ impl Core {
     /// 視窗左緣加 1（原版 `sub_180C6`）。到 40 歸零，並把暫存區 A、B 各整體左移 40 位元組（寫入模式 1）。
     fn advance_window(&mut self) {
         self.scenes.map.window = self.scenes.map.window.wrapping_add(SCROLL_STEP_COLUMNS);
-        if self.scenes.map.window < GRID_COLS {
+        if self.scenes.map.window < WINDOW_PERIOD {
             return;
         }
         self.scenes.map.window = 0;
@@ -151,8 +164,9 @@ impl Core {
         self.advance_window();
         self.scenes.map.left_col = self.scenes.map.left_col.wrapping_add(SCROLL_STEP_COLUMNS);
         self.scroll_terrain_grids();
-        let mut cursor = self.map_origin().wrapping_add(NEW_COLUMN_OFFSET).wrapping_shl(1);
-        self.set_blit_x(self.scenes.map.window.wrapping_add(NEW_COLUMN_OFFSET));
+        let offset = self.new_column_offset();
+        let mut cursor = self.map_origin().wrapping_add(offset).wrapping_shl(1);
+        self.set_blit_x(self.scenes.map.window.wrapping_add(offset));
         self.set_blit_y(0);
         self.start_terrain_column();
         for _ in 0..WINDOW_ROWS {
@@ -169,7 +183,7 @@ impl Core {
     /// 第一頁（`word_26872` 為 0）的捲動步（原版 `sub_18337`）：新欄 x 是視窗左緣加 40，四個平面各把 A 的這一欄
     /// 轉 4 位元複製到 B，再把 B 的前一欄取自這一欄的低半；顯示 B。
     pub(crate) fn scroll_map_first_page(&mut self) {
-        self.set_blit_x(self.scenes.map.window.wrapping_add(NEW_COLUMN_OFFSET));
+        self.set_blit_x(self.scenes.map.window.wrapping_add(self.new_column_offset()));
         self.select_scratch(SCRATCH_A);
         for plane in [1, 2, 4, 8] {
             self.select_plane(plane);

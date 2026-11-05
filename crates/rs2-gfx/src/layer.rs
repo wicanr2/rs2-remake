@@ -19,6 +19,7 @@ pub mod pal;
 mod recolor;
 
 use crate::assets::Assets;
+use crate::geom::Geom;
 use crate::sink::{COUNTER_X, COUNTER_Y};
 use hd::{Canvas, HdMem};
 use interp::Delta;
@@ -107,6 +108,8 @@ impl FrameData {
 pub struct LayerSink {
     assets: Assets,
     hd: Option<HdAssets>,
+    /// 顯示頁與暫存區的版面。`DrawCmd::Field`（規格 005「戰場大小」）換它，輸出寬是欄數 × 8 像素（HD 再乘 4）。
+    geom: Geom,
     /// 這一幀命令套完之後的調色盤，與這一幀開始前的。
     pal: pal::Pal,
     pal_before: pal::Pal,
@@ -290,19 +293,21 @@ fn hd_scratch_prepare(
 
 impl LayerSink {
     pub fn new(assets: Assets, hd: Option<HdAssets>) -> LayerSink {
-        let hdm = hd.as_ref().map(|_| HdMem::new());
+        let g = Geom::ORIGINAL;
+        let hdm = hd.as_ref().map(|_| HdMem::new(g));
         let hd_base_page = hdm.as_ref().map(|m| m.pages[0].clone()).unwrap_or_else(Canvas::empty);
         LayerSink {
             assets,
             hd,
+            geom: g,
             pal: pal::Pal::new(),
             pal_before: pal::Pal::new(),
             hd_space: None,
             hd_pal: pal::Pal::new(),
             out_lut: None,
-            idx: idx::Mem::new(),
-            idx_base: idx::Mem::new(),
-            idx_tmp: idx::Mem::new(),
+            idx: idx::Mem::new(g),
+            idx_base: idx::Mem::new(g),
+            idx_tmp: idx::Mem::new(g),
             idx_st: idx::St::default(),
             idx_st_before: idx::St::default(),
             hdm,
@@ -330,6 +335,7 @@ impl LayerSink {
     /// # Panics
     /// 任一平面不是 64 KB。
     pub fn load_snapshot(&mut self, planes: [&[u8]; 4], dac: &[u8; 768]) {
+        self.set_field(crate::geom::ORIGINAL_COLS);
         self.idx.load_planes(planes);
         self.idx_base.px.copy_from_slice(&self.idx.px);
         let stride = self.idx_st.stride_reg;
@@ -351,7 +357,7 @@ impl LayerSink {
             self.hd_pal = self.pal.clone();
         }
         if let Some(m) = &mut self.hdm {
-            *m = HdMem::new();
+            *m = HdMem::new(self.geom);
             hd::load_pages(m, &self.idx.px, &self.pal.visible8());
             self.hd_base_page = m.pages[0].clone();
             self.hd_scratch_before = None;
@@ -375,6 +381,16 @@ impl LayerSink {
     pub fn push_frame(&mut self, draws: &[DrawCmd]) {
         if draws.is_empty() {
             return;
+        }
+        // `DrawCmd::Field`（戰場大小）換版面。每一幀只用一種版面，所以命令串在 Field 之前切開，之前的部分用舊版面套完，
+        // 之後的部分第一個命令就是 Field。
+        if let Some(i) = draws.iter().skip(1).position(|d| matches!(d, DrawCmd::Field { .. })) {
+            self.push_frame(&draws[..i + 1]);
+            self.push_frame(&draws[i + 1..]);
+            return;
+        }
+        if let Some(DrawCmd::Field { cols }) = draws.first() {
+            self.set_field(*cols);
         }
         let page = page_of(draws).unwrap_or(self.cur.page);
         let deltas = interp::pair(&self.cur.cmds, draws);
@@ -411,6 +427,8 @@ impl LayerSink {
                         hd::set_map_mask(m, *mask);
                     }
                 }
+                // 版面已在上面換好（Field 一定是這一幀的第一個命令）。
+                DrawCmd::Field { .. } => {}
                 DrawCmd::VramFill { off, words, value } => {
                     idx::vram_fill(&mut self.idx, &self.idx_st, *off, *words, *value);
                     if let Some(m) = &mut self.hdm {
@@ -450,6 +468,35 @@ impl LayerSink {
         self.pushed += 1;
     }
 
+    /// 換顯示頁與暫存區的版面（`DrawCmd::Field`，規格 005「戰場大小」）：記憶體清成黑，補間的前一幀記錄清空，
+    /// 調色盤與診斷計數不動。欄數沒變是空動作。
+    fn set_field(&mut self, cols: u16) {
+        let g = Geom::new(cols);
+        if g == self.geom {
+            return;
+        }
+        self.geom = g;
+        self.idx = idx::Mem::new(g);
+        self.idx_base = idx::Mem::new(g);
+        self.idx_tmp = idx::Mem::new(g);
+        self.idx_st = idx::St { stride_reg: self.idx_st.stride_reg, anomalies: self.idx_st.anomalies, ..idx::St::default() };
+        self.idx_st_before = self.idx_st;
+        if let Some(m) = &mut self.hdm {
+            *m = HdMem::new(g);
+            self.hd_base_page = m.pages[0].clone();
+        }
+        self.hd_scratch_before = None;
+        self.hd_mask_before = 0x0F;
+        self.hd_spare = Vec::new();
+        self.out = Vec::new();
+        self.cur = FrameData::empty();
+    }
+
+    /// 目前的戰場欄數（顯示頁每列的位元組數）：40 是原版，戰場加大時是 48 或 60。
+    pub fn field_cols(&self) -> u16 {
+        self.geom.cols()
+    }
+
     /// 新的整張調色盤。有名字的話把 HD 畫布整塊換色，原版改 DAC 也是連已畫的像素一起變。
     fn sync_hd_space(&mut self, rgb: &[u8; 48]) {
         if self.hdm.is_none() || self.pal.name.is_none() {
@@ -474,15 +521,17 @@ impl LayerSink {
 
     /// 輸出 RGBA。`alpha` 是前一幀到目前這幀的進度，0.0 到 1.0。
     /// 原版圖 320×200，HD 1280×800。沒有載入 HD 資料夾時，`hd: true` 輸出原版圖的最近鄰 4 倍。
+    /// 戰場加大時（規格 005）寬變成欄數 × 8 像素（120% 384、150% 480），HD 再乘 4，高不變。
     pub fn render(&mut self, alpha: f32, opts: RenderOpts) -> (&[u8], usize, usize) {
         let t = if alpha.is_nan() { 1.0 } else { alpha.clamp(0.0, 1.0) };
         // 玩家機有預測偏移時，就算這一幀沒有別的東西動也要重放。
         let predicted = opts.player.iter().flatten().any(|&o| o != (0, 0));
         let replay = (opts.interpolate && self.cur.any_delta) || predicted;
+        let sd_w = self.geom.px_width();
         if opts.hd && self.hdm.is_some() {
             self.render_hd(t, replay, opts);
             self.hd_output_recolor();
-            return (&self.out, hd::PW as usize, hd::PH as usize);
+            return (&self.out, sd_w * hd::S as usize, hd::PH as usize);
         }
         // 原版圖：重放或直接用套完的記憶體。
         if replay {
@@ -505,7 +554,7 @@ impl LayerSink {
                     }
                     DrawCmd::VramFill { off, words, value } => idx::vram_fill(&mut self.idx_tmp, &st, *off, *words, *value),
                     DrawCmd::SetMapMask { mask } => idx::set_map_mask(&mut st, *mask),
-                    DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } => {}
+                    DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } | DrawCmd::Field { .. } => {}
                 }
             }
         } else {
@@ -519,21 +568,22 @@ impl LayerSink {
         let colors = self.pal.visible8();
         if opts.hd {
             // 沒有 HD 資料夾：原版圖最近鄰放大。
-            let mut small = vec![0u8; 320 * 200 * 4];
+            let mut small = vec![0u8; sd_w * 200 * 4];
             idx::page_to_rgba(&self.idx_tmp, self.cur.page, &colors, &mut small);
-            self.out.resize(1280 * 800 * 4, 0);
+            let hd_w = sd_w * 4;
+            self.out.resize(hd_w * 800 * 4, 0);
             for y in 0..800usize {
-                for x in 0..1280usize {
-                    let s = ((y / 4) * 320 + x / 4) * 4;
-                    let o = (y * 1280 + x) * 4;
+                for x in 0..hd_w {
+                    let s = ((y / 4) * sd_w + x / 4) * 4;
+                    let o = (y * hd_w + x) * 4;
                     self.out[o..o + 4].copy_from_slice(&small[s..s + 4]);
                 }
             }
-            return (&self.out, 1280, 800);
+            return (&self.out, hd_w, 800);
         }
-        self.out.resize(320 * 200 * 4, 0);
+        self.out.resize(sd_w * 200 * 4, 0);
         idx::page_to_rgba(&self.idx_tmp, self.cur.page, &colors, &mut self.out);
-        (&self.out, 320, 200)
+        (&self.out, sd_w, 200)
     }
 
     /// 漸變中目前的 DAC 和畫布的色彩空間不同，輸出時換色。
@@ -564,9 +614,9 @@ impl LayerSink {
         let mut buf = std::mem::take(hd_spare);
         buf.clear();
         buf.extend_from_slice(if replay { &hd_base_page.px } else { &mem.pages[pg].px });
-        let mut page = Canvas { px: buf };
+        let mut page = Canvas::from_px(buf, mem.pages[pg].w);
         if replay {
-            let mut tmp = HdMem::from_parts([Canvas::empty(), Canvas::empty()], [Canvas::empty(), Canvas::empty()]);
+            let mut tmp = HdMem::from_parts(mem.g, [Canvas::empty(), Canvas::empty()], [Canvas::empty(), Canvas::empty()]);
             tmp.map_mask = *hd_mask_before;
             tmp.pages[pg] = page;
             // 暫存區的來源：沒有寫入的幀借用目前的；有寫入而且之後沒有複製的幀借用「開始前」的並略過寫入；
@@ -605,7 +655,7 @@ impl LayerSink {
                             p.set_one(*index, rgb);
                         }
                     }
-                    DrawCmd::EgaAttr { .. } => {}
+                    DrawCmd::EgaAttr { .. } | DrawCmd::Field { .. } => {}
                     DrawCmd::SetMapMask { mask } => hd::set_map_mask(&mut tmp, *mask),
                     DrawCmd::VramFill { off, words, value } => hd::vram_fill(&mut tmp, &p.visible8(), *off, *words, *value),
                     DrawCmd::Blit(c) => {

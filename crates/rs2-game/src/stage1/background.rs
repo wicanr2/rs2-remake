@@ -127,14 +127,24 @@ impl Core {
 
     /// 背景圖寫進暫存區 A（原版 `sub_10B65`）：`BH1` 的第 0 項（波浪）兩份、第 2 項（倒懸岩）兩份、
     /// 第 1 項（天空）十塊、第 3 項（山影圖）兩份、第 4 項（山影遮罩）兩份。
+    ///
+    /// 戰場加大時（規格 005）畫面比一個週期寬，視窗從相位 0 至 39 取 `cols` 欄，所以磚畫三份（x = 0、28h、50h），
+    /// 天空的 4 欄磚畫滿 `cols` 欄。欄數 40 時和原版完全相同。
     pub(crate) fn compose_stage1_backdrop(&mut self) {
+        let wide = self.layout().wide();
+        let sky_blocks = self.field_cols() / 4;
         self.select_scratch(SCRATCH_A);
         self.draw_on(Page::Zero);
         for (x, y, index) in [(0, 0, 0), (0x28, 0, 0), (0, 0x28, 2), (0x28, 0x28, 2)] {
             self.draw_tile_to_scratch(x, y, index);
         }
+        if wide {
+            for (x, y, index) in [(0x50, 0, 0), (0x50, 0x28, 2)] {
+                self.draw_tile_to_scratch(x, y, index);
+            }
+        }
         self.set_blit_x(0);
-        for _ in 0..10 {
+        for _ in 0..sky_blocks {
             self.set_blit_y(0x6E);
             self.set_blit_index(1);
             self.draw_current_tile_to_scratch();
@@ -142,6 +152,11 @@ impl Core {
         }
         for (x, y, index) in [(0, 0xC8, 3), (0x28, 0xC8, 3), (0, 0xF3, 4), (0x28, 0xF3, 4)] {
             self.draw_tile_to_scratch(x, y, index);
+        }
+        if wide {
+            for (x, y, index) in [(0x50, 0xC8, 3), (0x50, 0xF3, 4)] {
+                self.draw_tile_to_scratch(x, y, index);
+            }
         }
     }
 

@@ -4,6 +4,7 @@
 
 mod assets;
 mod font;
+mod geom;
 mod layer;
 mod mono;
 mod mono_hd;
@@ -13,6 +14,7 @@ mod sink;
 pub mod vga;
 
 pub use assets::Assets;
+pub use geom::Geom;
 pub use mono::{MONO_EXPECTED, MonoAssets, MonoBank, MonoKind, MonoSink, SCRATCH_SIZE};
 pub use mono_hd::{MONO_HD_H, MONO_HD_W, MonoHdSink};
 pub use layer::{HdAssets, HdLib, HdSet, INTERP_CROSS_OP, INTERP_MAX_PX, LayerSink, RenderOpts, pal};

@@ -186,8 +186,14 @@ fn tag_w(s: &str) -> i32 {
     font::builtin().text_width(s, FONT_H) + 16
 }
 
-/// 各元素的矩形（HUD 緩衝區座標）。P1 靠左，P2 靠右並鏡射排列，沒有的玩家不排。
+/// 各元素的矩形（HUD 緩衝區座標），寬是原版的 1280。P1 靠左，P2 靠右並鏡射排列，沒有的玩家不排。
 pub fn layout(active: [bool; 2], flags: &HudFlags) -> Vec<(Elem, Rect)> {
+    layout_in(W, active, flags)
+}
+
+/// 同 [`layout`]，緩衝區寬 `w`：戰場加大（規格 005）時 HD 畫面是 1536 或 1920 寬，HUD 跟著撐滿，
+/// P1 靠左、P2 靠右，充能條與幀計數在中央。高度不變，仍蓋在第 760 列起，不碰遊戲區。
+pub fn layout_in(width: i32, active: [bool; 2], flags: &HudFlags) -> Vec<(Elem, Rect)> {
     let mut v = Vec::new();
     let y_bar = (H - CELL_H) / 2;
     for p in 0..2 {
@@ -195,7 +201,7 @@ pub fn layout(active: [bool; 2], flags: &HudFlags) -> Vec<(Elem, Rect)> {
             continue;
         }
         // 由外向內：標籤、血條、武器、砲座。P2 往左排。
-        let mut x = if p == 0 { M } else { W - M };
+        let mut x = if p == 0 { M } else { width - M };
         let step = |x: &mut i32, w: i32| -> i32 {
             if p == 0 {
                 let at = *x;
@@ -219,14 +225,14 @@ pub fn layout(active: [bool; 2], flags: &HudFlags) -> Vec<(Elem, Rect)> {
         v.push((Elem::Pods(p), Rect::new(px, (H - POD_R * 2) / 2, POD_W, POD_R * 2)));
     }
     if flags.charge_bar {
-        v.push((Elem::Charge, Rect::new((W - CHARGE_W) / 2, (H - CHARGE_H) / 2, CHARGE_W, CHARGE_H)));
+        v.push((Elem::Charge, Rect::new((width - CHARGE_W) / 2, (H - CHARGE_H) / 2, CHARGE_W, CHARGE_H)));
     }
     if flags.counter.is_some() {
         let w = DIGIT_W * DIGITS;
-        v.push((Elem::Counter, Rect::new(W / 2 + 104, (H - FONT_H) / 2, w, FONT_H)));
+        v.push((Elem::Counter, Rect::new(width / 2 + 104, (H - FONT_H) / 2, w, FONT_H)));
     }
     // 右端的標籤：有 P2 時排在 P2 區塊左邊。
-    let mut right = if active[1] { W - M - BLOCK_W - 16 } else { W - M };
+    let mut right = if active[1] { width - M - BLOCK_W - 16 } else { width - M };
     for (on, e, s) in [(flags.god, Elem::God, text::HUD_GOD), (flags.rules, Elem::Rules, text::HUD_RULES)] {
         if on {
             let w = tag_w(s);
@@ -297,12 +303,13 @@ fn player_tint(p: usize) -> Rgba {
 
 fn draw_plate(c: &mut Canvas) {
     let (top, bot) = (style::rgb(0x111B33), style::rgb(0x070B14));
+    let w = c.w;
     for y in 0..H {
         let col = mix(top, bot, y as f32 / (H - 1) as f32);
-        c.rect(Rect::new(0, y, W, 1), col);
+        c.rect(Rect::new(0, y, w, 1), col);
     }
     // 上緣 1 像素的半透明亮線。
-    c.rect(Rect::new(0, 0, W, 1), [255, 255, 255, 40]);
+    c.rect(Rect::new(0, 0, w, 1), [255, 255, 255, 40]);
 }
 
 fn draw_tag_chip(c: &mut Canvas, r: Rect, label: &str, tint: Rgba) {
@@ -405,10 +412,15 @@ fn draw_counter(c: &mut Canvas, r: Rect, v: u16) {
 
 /// 畫整條 HUD，回傳 1280×40 的 RGBA（不透明）。
 pub fn render(state: &HudState, players: &[HudStatus; 2], flags: &HudFlags, icons: &HudIcons, now_ms: u64) -> Vec<u8> {
-    let mut c = Canvas::new(W, H, color::BG);
+    render_in(W, state, players, flags, icons, now_ms)
+}
+
+/// 同 [`render`]，寬 `w`（戰場加大時 1536 或 1920），回傳 `w`×40 的 RGBA。
+pub fn render_in(w: i32, state: &HudState, players: &[HudStatus; 2], flags: &HudFlags, icons: &HudIcons, now_ms: u64) -> Vec<u8> {
+    let mut c = Canvas::new(w, H, color::BG);
     draw_plate(&mut c);
     let active = [players[0].active, players[1].active];
-    for (e, r) in layout(active, flags) {
+    for (e, r) in layout_in(w, active, flags) {
         match e {
             Elem::Tag(p) => draw_tag_chip(&mut c, r, if p == 0 { text::HUD_P1 } else { text::HUD_P2 }, player_tint(p)),
             Elem::Bar(p) => draw_hp(&mut c, r, p, &players[p], state, now_ms),
@@ -427,10 +439,11 @@ pub fn render(state: &HudState, players: &[HudStatus; 2], flags: &HudFlags, icon
     c.px
 }
 
-/// 把 HUD 蓋到 HD 畫面（1280×800 RGBA）的底部 40 列。
+/// 把 HUD 蓋到 HD 畫面（1280×800 RGBA，戰場加大時更寬）的底部 40 列。HUD 的寬就是畫面的寬。
 pub fn overlay(frame: &mut [u8], hud: &[u8]) {
-    let off = (Y0 * W * 4) as usize;
-    if frame.len() >= off + hud.len() && hud.len() == (W * H * 4) as usize {
+    let w = hud.len() as i32 / (H * 4);
+    let off = (Y0 * w * 4) as usize;
+    if w > 0 && frame.len() >= off + hud.len() && hud.len() == (w * H * 4) as usize {
         frame[off..off + hud.len()].copy_from_slice(hud);
     }
 }

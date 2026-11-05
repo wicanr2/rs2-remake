@@ -236,6 +236,8 @@ pub struct MonoHdSink {
     anomalies: u64,
     log: Vec<String>,
     seq: u64,
+    /// 戰場加大的關卡（`DrawCmd::Field`，欄數不是 40），單色不支援，同 `MonoSink`。
+    wide: bool,
 }
 
 impl MonoHdSink {
@@ -270,6 +272,7 @@ impl MonoHdSink {
             anomalies: 0,
             log: Vec::new(),
             seq: 0,
+            wide: false,
         }
     }
 
@@ -894,10 +897,26 @@ impl MonoHdSink {
 
     /// 依序套用一個命令。命令與 `MonoSink::apply` 相同；`EndOfFrameCopy`（MGA 的掃描線複製）在 HD 不動作。
     pub fn apply(&mut self, cmd: &DrawCmd) {
+        if let DrawCmd::Field { cols } = cmd {
+            let wide = *cols != 40;
+            if self.wide && !wide {
+                self.vmem.fill(0);
+                self.sa.fill(0);
+                self.sb.fill(0);
+                self.undo = None;
+            }
+            self.wide = wide;
+            self.seq += 1;
+            return;
+        }
+        if self.wide {
+            self.seq += 1;
+            return;
+        }
         match cmd {
             DrawCmd::Blit(c) => self.blit_op(c),
             DrawCmd::VramFill { off, words, value } => self.clear_one_page(*off, *words, *value),
-            DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } | DrawCmd::SetMapMask { .. } => {}
+            DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } | DrawCmd::SetMapMask { .. } | DrawCmd::Field { .. } => {}
         }
         self.seq += 1;
     }

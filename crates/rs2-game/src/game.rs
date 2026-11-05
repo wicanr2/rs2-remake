@@ -36,9 +36,44 @@ impl Fixes {
     pub const ALL: Fixes = Fixes { bullet_slot_carry: true, armor_cell_index: true, seeker_spawn_leak: true, no_hit_hang: true };
 }
 
+/// 戰場大小（規格 005「戰場大小」）：水平方向的欄數，一欄 8 像素，垂直維持原版的 19 列遊戲區。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldSize {
+    /// 100%：320×190，40 欄，原版。
+    #[default]
+    Normal,
+    /// 120%：384×190，48 欄。
+    Wide,
+    /// 150%：480×190，60 欄。
+    Wider,
+}
+
+impl FieldSize {
+    /// 欄數。
+    pub const fn cols(self) -> u16 {
+        match self {
+            FieldSize::Normal => 40,
+            FieldSize::Wide => 48,
+            FieldSize::Wider => 60,
+        }
+    }
+
+    /// 依 `options.rs` 的選項值（0、1、2）；其他值當 100%。
+    pub const fn from_index(i: u8) -> FieldSize {
+        match i {
+            1 => FieldSize::Wide,
+            2 => FieldSize::Wider,
+            _ => FieldSize::Normal,
+        }
+    }
+}
+
 /// 改變規則的強化選項（規格 005）。全關等於原版，對拍永遠全關。不屬於原版狀態，不進 `State`。
+///
+/// `field` 是進關時才讀的選項：關內改它不生效，下一次進關才取新值（規格 005「戰場大小」）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rules {
+    pub field: FieldSize,
     pub wave_charge: bool,
     pub auto_fire: bool,
     pub force_pod: bool,
@@ -51,6 +86,7 @@ pub struct Rules {
 
 impl Rules {
     pub const ORIGINAL: Rules = Rules {
+        field: FieldSize::Normal,
         wave_charge: false,
         auto_fire: false,
         force_pod: false,
@@ -488,6 +524,7 @@ impl Core {
         self.sound = sound;
         self.grids = grids;
         self.tape = tape;
+        self.sync_g2_slots();
     }
 
     /// 把控制權交回外面，恢復時處理這段期間送達的掃描碼。
@@ -640,8 +677,19 @@ impl Game {
     }
 
     pub fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Game {
+        Game::new_with_rules(image, dm1, start, fixes, Rules::ORIGINAL)
+    }
+
+    /// 同 [`Game::new`]，強化選項在第一關進場之前就位。戰場大小在進關時才讀，所以只有 `rules.field` 不是 100%
+    /// 時才需要，其他選項隨時用 [`Game::set_rules`] 改。`rules.field` 是 100% 時和 `Game::new` 完全相同。
+    pub fn new_with_rules(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes, rules: Rules) -> Game {
         let tables = parse_tables(image);
         let mut core = Core::new(Rc::clone(&tables), dm1, start, fixes);
+        core.port.borrow_mut().rules = rules;
+        if rules.field != FieldSize::Normal && !matches!(start, Start::Demo) {
+            core.draws.clear();
+            core.init_stage1();
+        }
         let state = core.snapshot();
         let port = core.port.clone();
         port.borrow_mut().draws.append(&mut core.draws);
@@ -656,6 +704,13 @@ impl Game {
             (p.integrity_checked, p.rules, p.split_held, p.terrain_scr)
         };
         let mut core = Core::new(Rc::clone(&self.tables), &[], start, self.fixes);
+        // 戰場大小在進關時讀選項（`Core::enter_field`），所以選項要在初始化之前就位。
+        {
+            let mut p = core.port.borrow_mut();
+            p.rules = rules;
+            p.split_held = split_held;
+            p.terrain_scr = terrain_scr;
+        }
         core.apply_state(self.state.clone());
         core.integrity_checked = checked;
         core.set_demo_mode(matches!(start, Start::Demo));
@@ -772,6 +827,12 @@ impl Game {
         self.port.borrow().display_start
     }
 
+    /// 目前這一關的戰場欄數：40 是原版，戰場加大時是 48 或 60（規格 005「戰場大小」）。進關時決定，關內不變；
+    /// 標題、過場與片尾是 40。前端用它決定輸出寬度（欄數 × 8 像素）與能不能切到單色模式。
+    pub fn field_cols(&self) -> u16 {
+        self.state.grids.cols()
+    }
+
     /// HUD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。
     pub fn hud_status(&self, player: usize) -> HudStatus {
         let players = &self.state.pl;
@@ -803,16 +864,18 @@ impl Game {
         let demo = self.state.flow.demo == b'Y';
         // 展示錄影不套用強化規則（`Core::rules`）。
         let fine = rules.fine_step && !demo;
+        // 右緣的界限跟著這一關的欄數（規格 005「戰場大小」）。
+        let right = crate::player::right_col_for(self.state.grids.cols());
         let reach = if fine {
             // 細步移動：同樣的邊界，垂直用繪製位置 y（原版的列界限 0 至 16 換成 0 至 160 像素）。
             (
                 (p.blit_y as i16) > 0,
                 (p.blit_y as i16) < (crate::player::BOTTOM_PIXELS),
                 p.can_move_left(),
-                p.can_move_right(),
+                p.can_move_right_to(right),
             )
         } else {
-            (p.can_move_up(), p.can_move_down(), p.can_move_left(), p.can_move_right())
+            (p.can_move_up(), p.can_move_down(), p.can_move_left(), p.can_move_right_to(right))
         };
         PlayerStatus {
             x: p.blit_x as i16,

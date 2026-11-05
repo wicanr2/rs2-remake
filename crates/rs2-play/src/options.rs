@@ -4,7 +4,9 @@
 //! 但畫成灰色並標「開發中」，不能切換，也不會影響遊戲。實作完一項就把那一列的 `implemented` 改成 `true`，
 //! 不用動設定畫面與設定檔。
 //!
-//! 現在已實作：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）、`hit_feedback`（打擊回饋，只在 HD 畫面生效），
+//! 現在全部已實作。`field_size`（戰場大小）由 `Settings::rules()` 交給核心的 `Rules::field`，進關時生效，
+//! CGA、MGA 不支援加寬（進關用 100%）。
+//! 另有：`invincible`（無敵）、`feel`（手感，值存在 `Settings::feel`）、`hit_feedback`（打擊回饋，只在 HD 畫面生效），
 //! 以及射擊與操控的四項：`wave_charge`（波動砲充能）、`auto_fire`（按住連射）、`force_pod`（砲座像 Force）、
 //! `fine_step`（細步移動）。四項的行為在 `rs2-game` 的 `player/enhanced.rs`，由 `Settings::rules()` 交給核心。
 //! 以及 AI 的四項 `ai_aim`、`ai_fire`、`ai_react`、`ai_boss`（核心的 `ai.rs`，由 `Settings::rules()` 交給 `Game::set_rules`）。
@@ -147,7 +149,7 @@ macro_rules! opt {
 
 /// 規格 005「選項」表，依畫面順序。
 pub const OPTIONS: [OptDef; 12] = [
-    opt!("field_size", Group::View, text::OPT_FIELD_SIZE, Kind::Size, 0, true, false),
+    opt!("field_size", Group::View, text::OPT_FIELD_SIZE, Kind::Size, 0, true, true),
     opt!("wave_charge", Group::Shoot, text::OPT_WAVE_CHARGE, Kind::Toggle, 0, true, true),
     opt!("auto_fire", Group::Shoot, text::OPT_AUTO_FIRE, Kind::Toggle, 0, true, true),
     opt!("force_pod", Group::Shoot, text::OPT_FORCE_POD, Kind::Toggle, 0, true, true),
@@ -222,9 +224,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_field_size_is_still_in_development() {
+    fn no_option_is_still_in_development() {
         let todo: Vec<&str> = OPTIONS.iter().filter(|o| !o.implemented).map(|o| o.id).collect();
-        assert_eq!(todo, vec!["field_size"]);
+        assert!(todo.is_empty(), "還在開發中的選項：{todo:?}");
     }
 
     #[test]

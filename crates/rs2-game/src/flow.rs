@@ -370,6 +370,7 @@ impl Core {
     pub(crate) fn end_stage(&mut self, exit: Exit) -> Exit {
         self.set_sound_key_enabled(false);
         self.stop_music();
+        self.leave_field();
         exit
     }
 

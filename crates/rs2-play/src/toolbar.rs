@@ -49,6 +49,10 @@ pub struct BarState {
     pub mode: DisplayMode,
     /// 單色圖庫載入成功，CGA、MGA 選得到。為假時狀態列常駐一段說明。
     pub mono_available: bool,
+    /// 這一關的戰場加大了（規格 005「戰場大小」）：CGA、MGA 在這一關不能選，狀態列說明。
+    pub field_wide: bool,
+    /// 顯示模式是 CGA、MGA，而戰場大小選項不是 100%：單色進關一律 100%，狀態列說明。
+    pub field_mono_note: bool,
     /// 最近一則訊息（手把接上、拔除等），空字串是沒有。
     pub notice: String,
     /// 滑鼠移過的按鈕（變亮）。觸控沒有。
@@ -68,6 +72,8 @@ impl Default for BarState {
             mobile: false,
             mode: DisplayMode::Vga,
             mono_available: true,
+            field_wide: false,
+            field_mono_note: false,
             notice: String::new(),
             hover: None,
             down: None,
@@ -254,6 +260,12 @@ pub fn status_parts(s: &BarState) -> Vec<(String, [u8; 4])> {
     }
     if !s.mono_available {
         v.push((text::ST_MONO_MISSING.to_string(), INK_WARN));
+    }
+    if s.field_wide {
+        v.push((text::ST_MONO_WIDE.to_string(), INK_NOTE));
+    }
+    if s.field_mono_note {
+        v.push((text::ST_FIELD_MONO.to_string(), INK_NOTE));
     }
     if !s.notice.is_empty() {
         v.push((s.notice.clone(), INK));

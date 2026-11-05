@@ -43,6 +43,8 @@ const MY_LIBRARY: u16 = b'M' as u16;
 const TOP_LIMIT: u16 = 0x13;
 const BOTTOM_LIMIT: u16 = 0x12;
 const SIDE_LIMIT: u16 = 0x27;
+/// 側邊出界門檻的欄數基準：戰場加大時門檻是 `SIDE_LIMIT` 加上多出來的欄數（敵彈離開新的左右緣才釋放）。
+const _: () = assert!(SIDE_LIMIT == crate::grid::GRID_COLS - 1);
 
 /// 寫 G3 時，敵彈只畫列 0 至 11h；列 >= 12h 的剩餘列都不畫。
 const G3_ROW_LIMIT: u16 = 0x12;
@@ -485,19 +487,20 @@ impl Bullet {
     }
 
     /// 往左（原版 `sub_1771C`）：繪製 x 減 `blit_dx`、欄減 `dcol`，欄 >= 27h（無號）出左界。
-    fn move_left(&mut self, release: &mut bool) {
+    /// `side` 是側邊的出界門檻：原版 27h，戰場加大時（規格 005）是新的欄數減 1。
+    fn move_left(&mut self, release: &mut bool, side: u16) {
         self.blit_x = self.blit_x.wrapping_sub(self.blit_dx);
         self.col = self.col.wrapping_sub(self.dcol);
-        if self.col >= SIDE_LIMIT {
+        if self.col >= side {
             self.leave(Edge::Left, release);
         }
     }
 
-    /// 往右（原版 `sub_17742`）：欄 >= 27h（無號）出右界。
-    fn move_right(&mut self, release: &mut bool) {
+    /// 往右（原版 `sub_17742`）：欄 >= 27h（無號）出右界。`side` 同上。
+    fn move_right(&mut self, release: &mut bool, side: u16) {
         self.blit_x = self.blit_x.wrapping_add(self.blit_dx);
         self.col = self.col.wrapping_add(self.dcol);
-        if self.col >= SIDE_LIMIT {
+        if self.col >= side {
             self.leave(Edge::Right, release);
         }
     }
@@ -781,26 +784,27 @@ impl Core {
     fn move_bullet(&self, bullet: &mut Bullet, code: u8) -> bool {
         let mut release = false;
         let mut code = code;
+        let side = self.side_limit();
         loop {
             match code {
                 1 => bullet.move_up(&mut release),
-                3 => bullet.move_right(&mut release),
+                3 => bullet.move_right(&mut release, side),
                 5 => bullet.move_down(&mut release),
-                7 => bullet.move_left(&mut release),
+                7 => bullet.move_left(&mut release, side),
                 2 => {
                     bullet.move_up(&mut release);
-                    bullet.move_right(&mut release);
+                    bullet.move_right(&mut release, side);
                 }
                 4 => {
                     bullet.move_down(&mut release);
-                    bullet.move_right(&mut release);
+                    bullet.move_right(&mut release, side);
                 }
                 6 => {
                     bullet.move_down(&mut release);
-                    bullet.move_left(&mut release);
+                    bullet.move_left(&mut release, side);
                 }
                 8 => {
-                    bullet.move_left(&mut release);
+                    bullet.move_left(&mut release, side);
                     bullet.move_up(&mut release);
                 }
                 9 => {

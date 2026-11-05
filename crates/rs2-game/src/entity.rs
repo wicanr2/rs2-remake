@@ -37,6 +37,7 @@ use crate::draw::Pool;
 use crate::ebullet::{Heading, turn_toward};
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
+use crate::grid::GRID_COLS;
 use crate::video::SCRATCH_B;
 
 /// 池的槽數。
@@ -454,6 +455,26 @@ pub(crate) enum Timetable {
     Ending,
 }
 
+impl Timetable {
+    /// 這一列是頭目的分件嗎（戰場加大時靠右對齊，見 [`Core::spawn_col`]）。位置是 `entities.json` 的時間表逐列對過的：
+    ///
+    /// | 關 | 頭目列 |
+    /// |---|---|
+    /// | 第一關 | 幀 623（計數超過 26Ch 的列：合成圖 59 欄的隱形本體、六個嵌在合成圖上的分件、核心） |
+    /// | 第二關 | 幀 263、264（中頭目第一層）、347、348（第二層）、630（頭目） |
+    /// | 第三關 | 幀 1133（計數超過 469h 的列：六個砲台與核心） |
+    /// | 第四關 | 幀 1060（計數超過 3E8h 的列：圓盤） |
+    pub(crate) fn is_boss_row(self, frame: u16) -> bool {
+        match self {
+            Timetable::Stage1 => frame > 0x26C,
+            Timetable::Stage2 => matches!(frame, 263 | 264 | 347 | 348 | 630),
+            Timetable::Stage3 => frame > 0x469,
+            Timetable::Stage4 => frame > 0x3E8,
+            Timetable::Ending => false,
+        }
+    }
+}
+
 /// 腳本一幀的內容。1 至 8 是八個方向（編號同 [`Heading`]），其餘照原版的派發表（`sub_15FD9`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Motion {
@@ -529,16 +550,45 @@ impl Core {
         let tables = self.tables();
         for &(frame, template) in tables.timetable(table) {
             if frame == self.stage_frame() {
-                self.spawn_enemy(template);
+                self.spawn_row(template, table.is_boss_row(frame));
             }
+        }
+    }
+
+    /// 戰場加大時（規格 005「戰場大小」）生成列的 x 平移，欄數 40 時原樣回傳：
+    ///
+    /// | 樣板的 x（欄） | 戰場加大時 |
+    /// |---|---|
+    /// | 40 以上（畫面右緣，或右緣之外交錯進場） | 加上多出來的欄數，整體平移到新右緣 |
+    /// | 頭目列（見 [`Timetable::is_boss_row`]），含 x 為負的合成圖分件 | 同上，和頭目合成圖（`restart_boss_layer`）一起靠右對齊 |
+    /// | 0 至 39 與負的其他列（畫面內、上下方與左緣進場） | x 乘 `cols / 40`（整數除法，往零取整） |
+    ///
+    /// 時間表的幀與腳本內的相對位移不改，所以進場距離變遠，敵人到達玩家面前的時間會晚。
+    pub(crate) fn spawn_col(&self, col: u16, boss: bool) -> u16 {
+        let extra = self.field_extra();
+        if extra == 0 {
+            return col;
+        }
+        let x = col as i16;
+        if boss || x >= GRID_COLS as i16 {
+            x.wrapping_add(extra as i16) as u16
+        } else {
+            (i32::from(x) * i32::from(self.field_cols()) / i32::from(GRID_COLS)) as u16
         }
     }
 
     /// 把樣板複製進第一個空槽（原版 `sub_15D41`），繪製位置跟著邏輯位置設：x 取欄，y 取列乘 10。
     /// 沒有空槽就放棄。傷害字組、動畫計數與亂數索引都是樣板的值，所以每個敵人的亂數序列從頭開始。
+    #[cfg(test)]
     pub(crate) fn spawn_enemy(&mut self, template: u16) {
+        self.spawn_row(template, false);
+    }
+
+    /// [`Core::spawn_enemy`]，`boss` 是時間表的這一列屬於頭目（戰場加大時 x 的平移規則見 [`Core::spawn_col`]）。
+    pub(crate) fn spawn_row(&mut self, template: u16, boss: bool) {
         let Some(slot) = self.en.first_free() else { return };
         let mut enemy = self.enemy_template(template);
+        enemy.col = self.spawn_col(enemy.col, boss);
         enemy.blit_x = enemy.col;
         enemy.blit_y = enemy.row.wrapping_mul(ROW_PIXELS);
         let s = &mut self.en.slots[slot];
@@ -1564,6 +1614,79 @@ mod tests {
         assert_eq!((got.col, got.blit_x, got.row, got.blit_y), (40, 40, 3, 30));
         assert_eq!((got.hp, got.spill), (5, 0x1234));
         assert_eq!(c.en.slots[0].enemy, Enemy::default(), "槽 0 不動");
+    }
+
+    /// 在 `cols` 欄的戰場生成 x 為 `x` 的樣板，回傳生成後的欄與繪製 x。
+    fn spawned_col(cols: u16, x: i16, boss: bool) -> (u16, u16) {
+        let mut c = core();
+        c.enter_field(cols);
+        put_template(&mut c, 0x7400, &Enemy { col: x as u16, row: 3, ..Enemy::default() });
+        c.spawn_row(0x7400, boss);
+        let e = c.en.slots[0].enemy;
+        (e.col, e.blit_x)
+    }
+
+    #[test]
+    fn a_wider_field_moves_right_edge_spawns_to_the_new_right_edge() {
+        // 欄 40 以上（右緣與交錯進場）整體加上多出來的欄數：120% 加 8，150% 加 20。
+        for (cols, extra) in [(48u16, 8i16), (60, 20)] {
+            for x in [40i16, 41, 52, 84] {
+                let (col, bx) = spawned_col(cols, x, false);
+                assert_eq!((col as i16, bx as i16), (x + extra, x + extra), "{cols} 欄 x={x}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wider_field_scales_inside_and_off_screen_spawns_in_proportion() {
+        // 畫面內與左緣進場的列：x × cols ÷ 40，整數除法往零取整。
+        for (cols, x, want) in [(48u16, 10i16, 12i16), (48, 38, 45), (60, 10, 15), (60, 38, 57), (60, 0, 0), (60, 39, 58), (60, -2, -3), (60, -10, -15), (48, -3, -3)] {
+            let (col, _) = spawned_col(cols, x, false);
+            assert_eq!(col as i16, want, "{cols} 欄 x={x}");
+        }
+    }
+
+    #[test]
+    fn a_wider_field_right_aligns_boss_rows_even_when_x_is_negative_or_inside() {
+        // 頭目分件（合成圖本體的 x = -20、嵌在合成圖上的砲台）和合成圖一起靠右對齊。
+        for (x, want) in [(-20i16, 0i16), (-19, 1), (19, 39), (7, 27), (34, 54)] {
+            let (col, bx) = spawned_col(60, x, true);
+            assert_eq!((col as i16, bx as i16), (want, want), "x={x}");
+        }
+    }
+
+    #[test]
+    fn a_normal_field_never_touches_the_spawn_column() {
+        for x in [-20i16, -2, 0, 10, 39, 40, 84] {
+            for boss in [false, true] {
+                assert_eq!(spawned_col(40, x, boss).0 as i16, x);
+            }
+        }
+        assert_eq!(c_none_emitted(), 0);
+    }
+
+    /// 欄數 40 接 40 不送 `Field`（命令串與原版相同）。
+    fn c_none_emitted() -> usize {
+        let mut c = core();
+        c.draws.clear();
+        c.enter_field(40);
+        c.begin_stage_field();
+        c.leave_field();
+        c.draws.len()
+    }
+
+    #[test]
+    fn the_boss_rows_of_each_timetable_are_the_documented_frames() {
+        assert!(Timetable::Stage1.is_boss_row(623) && !Timetable::Stage1.is_boss_row(585));
+        for f in [263, 264, 347, 348, 630] {
+            assert!(Timetable::Stage2.is_boss_row(f), "{f}");
+        }
+        for f in [24, 290, 300, 320, 350, 620] {
+            assert!(!Timetable::Stage2.is_boss_row(f), "{f}");
+        }
+        assert!(Timetable::Stage3.is_boss_row(1133) && !Timetable::Stage3.is_boss_row(1000));
+        assert!(Timetable::Stage4.is_boss_row(1060) && !Timetable::Stage4.is_boss_row(720));
+        assert!(!Timetable::Ending.is_boss_row(1));
     }
 
     #[test]

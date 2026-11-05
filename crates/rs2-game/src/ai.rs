@@ -260,10 +260,10 @@ impl AiState {
     }
 }
 
-/// 敵人是不是在畫面內（可以開火或反應的範圍）。
-fn on_field(enemy: &Enemy) -> bool {
+/// 敵人是不是在畫面內（可以開火或反應的範圍）。`extra` 是戰場多出來的欄數（規格 005「戰場大小」），右界跟著加。
+fn on_field(enemy: &Enemy, extra: i16) -> bool {
     let (col, row) = (enemy.col as i16, enemy.row as i16);
-    (FIELD_COL_MIN..=FIELD_COL_MAX).contains(&col) && (FIELD_ROW_MIN..=FIELD_ROW_BOTTOM).contains(&row)
+    (FIELD_COL_MIN..=FIELD_COL_MAX + extra).contains(&col) && (FIELD_ROW_MIN..=FIELD_ROW_BOTTOM).contains(&row)
 }
 
 impl Core {
@@ -305,7 +305,7 @@ impl Core {
         let (vc, vr) = self.ai.track[who].vel;
         let lead_c = vc.saturating_mul(AIM_LEAD_FRAMES).clamp(-AIM_LEAD_MAX_COLS, AIM_LEAD_MAX_COLS);
         let lead_r = vr.saturating_mul(AIM_LEAD_FRAMES).clamp(-AIM_LEAD_MAX_ROWS, AIM_LEAD_MAX_ROWS);
-        let c = (col as i16).wrapping_add(PLAYER_CENTER_COLS).wrapping_add(lead_c).clamp(FIELD_COL_MIN, FIELD_COL_MAX + 2);
+        let c = (col as i16).wrapping_add(PLAYER_CENTER_COLS).wrapping_add(lead_c).clamp(FIELD_COL_MIN, FIELD_COL_MAX + 2 + self.field_extra() as i16);
         let r = (row as i16).wrapping_add(PLAYER_CENTER_ROWS).wrapping_add(lead_r).clamp(FIELD_ROW_MIN, FIELD_ROW_BOTTOM);
         Some((c, r))
     }
@@ -368,7 +368,7 @@ impl Core {
     ///
     /// 只在敵人進到畫面內時；場上敵彈已有 [`LIVE_BULLET_CAP`] 顆就不加。
     pub(crate) fn ai_extra_fire(&mut self, enemy: &Enemy, slot: usize) {
-        if !self.is_plain_grunt(enemy, slot) || !on_field(enemy) || self.eb.active_count() >= LIVE_BULLET_CAP {
+        if !self.is_plain_grunt(enemy, slot) || !on_field(enemy, self.field_extra() as i16) || self.eb.active_count() >= LIVE_BULLET_CAP {
             return;
         }
         let level = self.ai_level();
@@ -392,7 +392,7 @@ impl Core {
     ///
     /// 兩種都有每個敵人一生的步數上限，離開畫面上下緣的動作一律不做。腳本走移動模式以外的碼（追蹤、右跳、發射、結束）時不插手。
     pub(crate) fn ai_react(&mut self, enemy: &Enemy, slot: usize, code: u8) -> u8 {
-        if !self.is_plain_grunt(enemy, slot) || !on_field(enemy) {
+        if !self.is_plain_grunt(enemy, slot) || !on_field(enemy, self.field_extra() as i16) {
             return code;
         }
         let motion = Motion::from_code(code);
@@ -514,7 +514,7 @@ impl Core {
     /// 發射點 (`col`, `row`) 在畫面內，而且離每一位在場玩家都不近於 [`BOSS_SAFE_RANGE`]（欄差加列差）。
     fn boss_may_fire(&self, col: u16, row: u16) -> bool {
         let (c, r) = (col as i16, row as i16);
-        if !(FIELD_COL_MIN..=BOSS_COL_MAX).contains(&c) || !(FIELD_ROW_MIN..=FIELD_ROW_BOTTOM).contains(&r) {
+        if !(FIELD_COL_MIN..=BOSS_COL_MAX + self.field_extra() as i16).contains(&c) || !(FIELD_ROW_MIN..=FIELD_ROW_BOTTOM).contains(&r) {
             return false;
         }
         (0..2).filter(|&who| self.player_alive(who)).all(|who| {

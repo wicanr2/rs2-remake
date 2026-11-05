@@ -928,6 +928,7 @@ impl Pair {
                         DrawCmd::EgaAttr { .. } => "EgaAttr".to_string(),
                         DrawCmd::VramFill { .. } => "VramFill".to_string(),
                         DrawCmd::SetMapMask { .. } => "SetMapMask".to_string(),
+                        DrawCmd::Field { .. } => "Field".to_string(),
                     };
                     *ops.entry(k).or_default() += 1;
                 }

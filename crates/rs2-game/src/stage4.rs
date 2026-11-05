@@ -70,6 +70,7 @@ impl Tunnel {
 impl Core {
     /// 第四關完整入口，含載入（原版 `sub_13DAF`）。
     pub(crate) async fn play_stage4(&mut self) -> Exit {
+        self.begin_stage_field();
         self.dos_allocate_buffers(StageBuffers::Stage4);
         self.dos_free_buffers(StageBuffers::Stage4);
         self.show_page(Page::One);
@@ -106,12 +107,17 @@ impl Core {
     }
 
     /// 通道壁寫進暫存區 A 兩份，再載入 `SHT4`（原版 `sub_13D70`）：`BH4` 第 0 項，x = 0 與 28h。
+    ///
+    /// 戰場加大時（規格 005）多畫一份（x = 50h）：壁的水平相位最大 39，視窗要從相位取 `cols` 欄。
     fn compose_stage4_backdrop(&mut self) {
         self.load_sht_bank(ShtGroup::Bh4);
         self.clear_scratch_a();
         self.select_scratch(SCRATCH_A);
         self.draw_tile_to_scratch(0, 0, 0);
         self.draw_tile_to_scratch(0x28, 0, 0);
+        if self.layout().wide() {
+            self.draw_tile_to_scratch(0x50, 0, 0);
+        }
         self.load_sht_bank(ShtGroup::Sht4);
     }
 

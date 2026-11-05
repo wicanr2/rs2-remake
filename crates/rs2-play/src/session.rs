@@ -260,9 +260,29 @@ impl Session {
         fixes: Fixes,
         view: ViewOpts,
     ) -> Session {
+        Session::new_with_rules(inputs, assets, mono, hd, begin, fixes, view, Rules::ORIGINAL)
+    }
+
+    /// 同 [`Session::new`]，強化選項在第一關進場之前就位。戰場大小在進關時才讀（規格 005「戰場大小」），
+    /// 直接從第一關開始（`Begin::Stage1`）時，第一關要加大就得從這裡給。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_rules(
+        inputs: &Inputs,
+        assets: Assets,
+        mono: Option<Arc<MonoAssets>>,
+        hd: Option<HdAssets>,
+        begin: Begin,
+        fixes: Fixes,
+        view: ViewOpts,
+        rules: Rules,
+    ) -> Session {
         let mut game = match begin {
-            Begin::Title => Game::boot(inputs.game_files(), fixes),
-            Begin::Stage1(start) => Game::new(&inputs.image, &inputs.dm1, start, fixes),
+            Begin::Title => {
+                let mut g = Game::boot(inputs.game_files(), fixes);
+                g.set_rules(rules);
+                g
+            }
+            Begin::Stage1(start) => Game::new_with_rules(&inputs.image, &inputs.dm1, start, fixes, rules),
         };
         let init = game.take_draws();
         let hd_available = hd.is_some();
@@ -286,7 +306,7 @@ impl Session {
             steps: 0,
             ticks: 0,
             hold: false,
-            rules: Rules::ORIGINAL,
+            rules,
             speaker_on: true,
             assets,
             audio: Vec::new(),
@@ -516,10 +536,13 @@ impl Session {
     }
 
     /// HD 畫面上的介面層：命中光暈，再蓋 HUD。HUD 只在玩家機在畫面上時畫（標題與過場原版也是黑的）。
-    fn draw_hd_ui(&mut self) {
+    ///
+    /// `w` 是 HD 畫面的寬（1280，戰場加大時 1536 或 1920）。HUD 蓋在最後 40 列，也就是原版第 190 到 199 列的黑條，
+    /// 不蓋遊戲區；寬度跟著畫面，P1 靠左、P2 靠右、充能條與幀計數在中央。
+    fn draw_hd_ui(&mut self, w: usize) {
         if self.feedback_active() {
             let t = self.ui.clock_ms;
-            self.ui.feedback.draw_glows(&mut self.frame, 1280, 800, t);
+            self.ui.feedback.draw_glows(&mut self.frame, w, 800, t);
         }
         let st = self.hud_status();
         self.ui.hud_state.update(self.ui.clock_ms, &st);
@@ -528,7 +551,7 @@ impl Session {
         }
         self.ensure_hud_icons();
         let flags = HudFlags { counter: if self.view.counter { self.layer.counter_value() } else { None }, ..self.ui.hud_flags };
-        let bar = hud::render(&self.ui.hud_state, &st, &flags, &self.ui.hud_icons, self.ui.clock_ms);
+        let bar = hud::render_in(w as i32, &self.ui.hud_state, &st, &flags, &self.ui.hud_icons, self.ui.clock_ms);
         hud::overlay(&mut self.frame, &bar);
     }
 
@@ -572,14 +595,19 @@ impl Session {
     pub fn fit(&self) -> Fit {
         match self.mode {
             DisplayMode::Cga | DisplayMode::Mga => Fit::MONO,
-            DisplayMode::Vga | DisplayMode::Ega => {
-                if self.hd_effective() {
-                    Fit::HD
-                } else {
-                    Fit::SD
-                }
-            }
+            // 戰場加大的關卡（規格 005）畫面更寬，視窗比例不變，上下留邊。欄數 40 時等於 `Fit::SD`、`Fit::HD`。
+            DisplayMode::Vga | DisplayMode::Ega => Fit::frame(self.layer.field_cols(), self.hd_effective()),
         }
+    }
+
+    /// 目前這一關的戰場欄數：40 是原版，戰場加大時是 48 或 60。畫面輸出寬是欄數 × 8 像素（HD 再乘 4）。
+    pub fn field_cols(&self) -> u16 {
+        self.layer.field_cols()
+    }
+
+    /// 這一關的戰場加大了（欄數不是 40）。單色模式（CGA、MGA）在這種關卡不能選。
+    pub fn field_wide(&self) -> bool {
+        self.layer.field_cols() != 40
     }
 
     /// 強化選項（規格 005）：變動時才交給核心，全關時不碰模擬。
@@ -674,7 +702,8 @@ impl Session {
                 Some(hd_sink) => (w, h) = hd_sink.render_rgba(page, &mut self.frame),
                 None => (w, h) = sink.render_rgba(page, &mut self.frame),
             }
-        } else if !self.view.tween && !hd {
+        } else if !self.view.tween && !hd && !self.vga.is_wide() {
+            // 戰場加大的關卡（`VgaSink` 只有 40 欄）改走下面的 `LayerSink`，補間關閉時逐像素等於原版圖的畫法。
             let page = self.layer.draw_page();
             if self.mode == DisplayMode::Ega {
                 self.vga.render_page_ega(page, &mut self.rgb);
@@ -702,8 +731,8 @@ impl Session {
             (w, h) = (iw, ih);
         }
         // 規格 005「HD 介面」：HD 畫面才有現代化的 HUD 與回饋。原貌模式（上面第一個分支）不碰，逐像素等於 `VgaSink`。
-        if hd && (w, h) == (1280, 800) {
-            self.draw_hd_ui();
+        if hd && h == 800 && w >= 1280 {
+            self.draw_hd_ui(w);
             if self.mode.is_mono() {
                 desaturate(&mut self.frame);
             }

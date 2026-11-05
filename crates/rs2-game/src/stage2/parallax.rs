@@ -93,7 +93,7 @@ impl Core {
         let strip = self.scenes.stage2.strip_a;
         self.set_blit_x(strip.start);
         self.set_obj(Pool::Background, 1);
-        for _ in 0..STRIP_A.copies {
+        for _ in 0..self.strip_copies(&STRIP_A) {
             for row in STRIP_A.rows {
                 self.set_blit_y(row);
                 self.draw_strip_piece(&STRIP_A, strip.phase);
@@ -104,11 +104,16 @@ impl Core {
         self.scenes.stage2.strip_a.advance(&STRIP_A);
     }
 
+    /// 近景條的份數。戰場加大時（規格 005）多畫幾份，讓條一路排到新的右緣。
+    fn strip_copies(&self, shape: &StripShape) -> u16 {
+        shape.copies + self.field_extra().div_ceil(shape.gap)
+    }
+
     /// 近景條 B 與它的遮罩層（原版 `sub_135EB`）：每份先畫兩個像素列的條，再畫一份遮罩層。
     pub(crate) fn draw_stage2_strip_b(&mut self) {
         let strip = self.scenes.stage2.strip_b;
         self.set_blit_x(strip.start);
-        for _ in 0..STRIP_B.copies {
+        for _ in 0..self.strip_copies(&STRIP_B) {
             self.set_obj(Pool::Background, 2);
             for row in STRIP_B.rows {
                 self.set_blit_y(row);
@@ -127,7 +132,7 @@ impl Core {
         let strip = self.scenes.stage2.strip_c;
         self.set_blit_x(strip.start);
         self.set_obj(Pool::Background, 3);
-        for _ in 0..STRIP_C.copies {
+        for _ in 0..self.strip_copies(&STRIP_C) {
             for row in STRIP_C.rows {
                 self.set_blit_y(row);
                 self.draw_strip_piece(&STRIP_C, strip.phase);
@@ -140,7 +145,8 @@ impl Core {
 
     /// 一份近景條（原版 `sub_135CD`、`sub_13641`、`sub_136AC`）：目的位置已由呼叫端設好。
     fn draw_strip_piece(&mut self, shape: &StripShape, phase: u16) {
-        self.set_blit_shift(phase.wrapping_shl(1).wrapping_add(shape.shift_base));
+        // 戰場加大時相位圖在暫存區裡整組右移多出來的欄數（`compose_stage2_backdrop`）。
+        self.set_blit_shift(phase.wrapping_shl(1).wrapping_add(shape.shift_base).wrapping_add(self.field_extra()));
         self.set_blit_source(0, STRIP_SOURCE_ROW);
         self.copy_scratch_rows(RowCopy::LatchPairs, shape.height);
     }
@@ -169,7 +175,7 @@ impl Core {
         self.set_blit_shift(0);
         self.set_blit_source(PILLAR_SOURCE_COL, 0);
         self.set_obj(Pool::Background, 5);
-        for _ in 0..PILLAR_COPIES {
+        for _ in 0..PILLAR_COPIES + self.field_extra().div_ceil(PILLAR_GAP) {
             self.select_scratch(SCRATCH_B);
             self.copy_scratch_rows(RowCopy::LatchPairs, PILLAR_ROWS);
             self.select_scratch(SCRATCH_A);

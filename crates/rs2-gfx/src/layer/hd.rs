@@ -18,14 +18,15 @@ use super::recolor::Colors;
 use super::Off;
 use crate::assets::Assets;
 use crate::font::DIGITS;
-use crate::sink::scratch_src;
+use crate::geom::Geom;
 use rs2_game::{BlitCmd, Op};
 
 pub const S: i32 = SCALE as i32;
-/// 顯示頁寬、高（HD 像素）。
+/// 原版版面（40 欄）的顯示頁寬、高（HD 像素）。畫布自己記寬（[`Canvas::w`]），戰場加大時（規格 005）頁更寬，高不變。
 pub const PW: i32 = 320 * S;
 pub const PH: i32 = 200 * S;
-/// 暫存區寬（640 邏輯像素）與列數（310 列，涵蓋 `A19Ah` 表的 300 多列）。
+/// 原版版面的暫存區寬（640 邏輯像素）與列數（310 列，涵蓋 `A19Ah` 表的 300 多列）。戰場加大時暫存區寬 960 邏輯像素。
+#[cfg(test)]
 pub const SW: i32 = 640 * S;
 pub const SH: i32 = 310 * S;
 /// 遊戲區只有 190 列（`y > 189` 的列不畫）。
@@ -34,6 +35,8 @@ const GAME_ROWS: i32 = 190 * S;
 #[derive(Clone)]
 pub struct Canvas {
     pub px: Vec<u8>,
+    /// 畫布寬（HD 像素）。空畫布是 0。
+    pub w: i32,
 }
 
 impl Canvas {
@@ -44,11 +47,16 @@ impl Canvas {
                 p.copy_from_slice(&fill);
             }
         }
-        Canvas { px }
+        Canvas { px, w: w as i32 }
+    }
+
+    /// 已有像素資料的畫布，`w` 是寬（HD 像素）。
+    pub fn from_px(px: Vec<u8>, w: i32) -> Canvas {
+        Canvas { px, w }
     }
 
     pub fn empty() -> Canvas {
-        Canvas { px: Vec::new() }
+        Canvas { px: Vec::new(), w: 0 }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -72,23 +80,27 @@ pub struct HdMem {
     /// 序列器 map mask。HD 畫布沒有平面，只有 `0Fh`（全平面）的填色與清除有意義，
     /// 其他值下的 `VramFill`、`ClearScratchA`、`ClearScratchB` 略過（`VgaSink` 與索引色引擎才有逐平面的效果）。
     pub map_mask: u8,
+    /// 版面：顯示頁與暫存區的欄數（`Geom`），決定畫布寬與位址換算。
+    pub g: Geom,
 }
 
 impl HdMem {
-    pub fn new() -> HdMem {
-        let page = || Canvas::new(PW as usize, PH as usize, [0, 0, 0, 255]);
-        let scr = || Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]);
-        HdMem { pages: [page(), page()], scratch: [scr(), scr()], scr_tag: [None, None], map_mask: 0x0F }
+    pub fn new(g: Geom) -> HdMem {
+        let pw = g.px_width() * SCALE;
+        let sw = g.scols() as usize * 8 * SCALE;
+        let page = || Canvas::new(pw, PH as usize, [0, 0, 0, 255]);
+        let scr = || Canvas::new(sw, SH as usize, [0, 0, 0, 0]);
+        HdMem { pages: [page(), page()], scratch: [scr(), scr()], scr_tag: [None, None], map_mask: 0x0F, g }
     }
 
-    pub fn from_parts(pages: [Canvas; 2], scratch: [Canvas; 2]) -> HdMem {
-        HdMem { pages, scratch, scr_tag: [None, None], map_mask: 0x0F }
+    pub fn from_parts(g: Geom, pages: [Canvas; 2], scratch: [Canvas; 2]) -> HdMem {
+        HdMem { pages, scratch, scr_tag: [None, None], map_mask: 0x0F, g }
     }
 }
 
 impl Default for HdMem {
     fn default() -> Self {
-        HdMem::new()
+        HdMem::new(Geom::ORIGINAL)
     }
 }
 
@@ -155,13 +167,14 @@ fn sx(v: u16) -> i32 {
     v as i16 as i32
 }
 
-/// 圖畫到顯示頁。裁切：欄 `[0, 1280)`、列 `[0, 760)`，負座標的列欄跳過。
+/// 圖畫到顯示頁。裁切：欄 `[0, 頁寬)`（原版 1280）、列 `[0, 760)`，負座標的列欄跳過。
 fn blit_img(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32, mode: Mode) {
     if page.is_empty() {
         return;
     }
+    let pw = page.w;
     let xs = (-x0).max(0);
-    let xe = (img.w as i32).min(PW - x0);
+    let xe = (img.w as i32).min(pw - x0);
     if xs >= xe {
         return;
     }
@@ -175,7 +188,7 @@ fn blit_img(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32, mode: Mode) {
         }
         let so = iy as usize * img.w;
         let srow = &img.rgba[(so + xs as usize) * 4..(so + xe as usize) * 4];
-        let drow = &mut page.px[((y * PW + x0 + xs) as usize) * 4..((y * PW + x0 + xe) as usize) * 4];
+        let drow = &mut page.px[((y * pw + x0 + xs) as usize) * 4..((y * pw + x0 + xe) as usize) * 4];
         for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
             match mode {
                 Mode::Or => over(d, s),
@@ -189,8 +202,9 @@ fn mask_apply(page: &mut Canvas, m: &HdMask, x0: i32, y0: i32, white: Option<[u8
     if page.is_empty() {
         return;
     }
+    let pw = page.w;
     let xs = (-x0).max(0);
-    let xe = (m.w as i32).min(PW - x0);
+    let xe = (m.w as i32).min(pw - x0);
     if xs >= xe {
         return;
     }
@@ -204,7 +218,7 @@ fn mask_apply(page: &mut Canvas, m: &HdMask, x0: i32, y0: i32, white: Option<[u8
         }
         let so = iy as usize * m.w;
         let srow = &m.v[so + xs as usize..so + xe as usize];
-        let drow = &mut page.px[((y * PW + x0 + xs) as usize) * 4..((y * PW + x0 + xe) as usize) * 4];
+        let drow = &mut page.px[((y * pw + x0 + xs) as usize) * 4..((y * pw + x0 + xe) as usize) * 4];
         for (d, &v) in drow.chunks_exact_mut(4).zip(srow) {
             match white {
                 None => {
@@ -233,14 +247,20 @@ enum Reg {
     Scratch(usize),
 }
 
-/// 64 KB 位址落在哪一塊：頁 0（40 位元組一列）、暫存區 A（80 位元組一列）、頁 1、暫存區 B。
-fn addr_region(a: u16) -> (Reg, i32, i32) {
+/// 位址空間落在哪一塊：頁 0（`cols` 位元組一列）、暫存區 A（`scols` 位元組一列）、頁 1、暫存區 B。
+/// 原版是 64 KB 的位址空間（頁 0 在 0，暫存區 A 在 1F40h，頁 1 在 8000h，暫存區 B 在 9F40h）。
+fn addr_region(g: Geom, a: u32) -> (Reg, i32, i32) {
     let a = a as i32;
-    match a {
-        0..0x1F40 => (Reg::Page(0), a / 40, a % 40),
-        0x1F40..0x8000 => (Reg::Scratch(0), (a - 0x1F40) / 80, (a - 0x1F40) % 80),
-        0x8000..0x9F40 => (Reg::Page(1), (a - 0x8000) / 40, (a - 0x8000) % 40),
-        _ => (Reg::Scratch(1), (a - 0x9F40) / 80, (a - 0x9F40) % 80),
+    let (cols, scols) = (i32::from(g.cols()), i32::from(g.scols()));
+    let (page, base, set1) = (g.page_bytes() as i32, g.scratch_base() as i32, g.set1() as i32);
+    if a < page {
+        (Reg::Page(0), a / cols, a % cols)
+    } else if a < set1 {
+        (Reg::Scratch(0), (a - base) / scols, (a - base) % scols)
+    } else if a < set1 + page {
+        (Reg::Page(1), (a - set1) / cols, (a - set1) % cols)
+    } else {
+        (Reg::Scratch(1), (a - set1 - base) / scols, (a - set1 - base) % scols)
     }
 }
 
@@ -249,11 +269,12 @@ fn scratch_put(sc: &mut Canvas, img: &HdImg, stride: u16, c: &BlitCmd) {
     if sc.is_empty() {
         return;
     }
+    let sw = sc.w;
     let w_eff = ((stride & !1) as usize * 8 * SCALE).min(img.w);
     let x0 = sx(c.x) * 8 * S;
     let y0 = sx(c.y) * S;
     let xs = (-x0).max(0) as usize;
-    let xe = (w_eff as i32).min(SW - x0).max(0) as usize;
+    let xe = (w_eff as i32).min(sw - x0).max(0) as usize;
     if xs >= xe {
         return;
     }
@@ -263,7 +284,7 @@ fn scratch_put(sc: &mut Canvas, img: &HdImg, stride: u16, c: &BlitCmd) {
             continue;
         }
         let so = iy as usize * img.w;
-        let (d0, d1) = ((y * SW + x0 + xs as i32) as usize, (y * SW + x0 + xe as i32) as usize);
+        let (d0, d1) = ((y * sw + x0 + xs as i32) as usize, (y * sw + x0 + xe as i32) as usize);
         sc.px[d0 * 4..d1 * 4].copy_from_slice(&img.rgba[(so + xs) * 4..(so + xe) * 4]);
     }
 }
@@ -292,24 +313,30 @@ struct Shape {
 }
 
 impl Shape {
-    const FULL: Shape = Shape { shifted: false, mirror: false, bytes: 40, ylim: GAME_ROWS, count_up: false };
+    /// 整列版：每列寫顯示頁的全部 `cols` 個位元組。
+    const fn full(cols: u16) -> Shape {
+        Shape { shifted: false, mirror: false, bytes: cols as i32, ylim: GAME_ROWS, count_up: false }
+    }
 }
 
 /// 暫存區列複製到顯示頁：`sub_19BA4`、`19D08`（`shifted`）、`19DA8`（OR）、`1A09F`（AND）。
 fn copy_hd(mem: &mut HdMem, c: &BlitCmd, off: Off, mode: CopyMode, shifted: bool) {
-    copy_hd_ex(mem, c, off, mode, Shape { shifted, ..Shape::FULL });
+    let shape = Shape { shifted, ..Shape::full(mem.g.cols()) };
+    copy_hd_ex(mem, c, off, mode, shape);
 }
 
 /// 暫存區列複製到顯示頁，含鏡射與 2 位元組寬的變體。
 fn copy_hd_ex(mem: &mut HdMem, c: &BlitCmd, off: Off, mode: CopyMode, shape: Shape) {
     let (shifted, mirror) = (shape.shifted, shape.mirror);
+    let g = mem.g;
     let HdMem { pages, scratch, .. } = mem;
     let dst = &mut pages[pg(c)];
     if dst.is_empty() {
         return;
     }
+    let pw = dst.w;
     // 位址不含 shift：負的 shift（頭目合成圖）會讓含 shift 的位址落到暫存區之外的頁，欄位移在下面另算。
-    let (reg, srow, scol) = addr_region(scratch_src(c).wrapping_sub(c.shift));
+    let (reg, srow, scol) = addr_region(g, g.scratch_src(c).wrapping_sub(Geom::rel(c.shift)) & g.mask());
     let src = match reg {
         Reg::Scratch(i) => &scratch[i],
         Reg::Page(_) => return,
@@ -328,13 +355,14 @@ fn copy_hd_ex(mem: &mut HdMem, c: &BlitCmd, off: Off, mode: CopyMode, shape: Sha
     }
     let x0 = sx(c.x) * 8 * S + off.ox;
     let col0 = (scol + sx(c.shift)) * 8 * S + off.sox;
-    // 位移版每個位元組的計數 `shift + i` 要落在 [0, 80)，換成 HD 像素。
+    // 位移版每個位元組的計數 `shift + i` 要落在 [0, 暫存區列寬)（原版 80），換成 HD 像素。
     let shift_dev = sx(c.shift) * 8 * S + off.sox;
+    let sw = src.w;
     let mut klo = (-x0).max(0);
-    let mut khi = PW.min(PW - x0).min(shape.bytes * 8 * S);
+    let mut khi = pw.min(pw - x0).min(shape.bytes * 8 * S);
     if shifted {
         klo = klo.max(-shift_dev);
-        khi = khi.min(640 * S - shift_dev);
+        khi = khi.min(sw - shift_dev);
     }
     for t in 0..rows {
         // 鏡射：來源第 t 個 HD 列畫在目的 y0 + S - 1 - t，列號往上走。
@@ -355,13 +383,13 @@ fn copy_hd_ex(mem: &mut HdMem, c: &BlitCmd, off: Off, mode: CopyMode, shape: Sha
         let mut k = klo;
         while k < khi {
             let sc = col0 + k;
-            let sr = sr0 + sc.div_euclid(SW);
-            let sc = sc.rem_euclid(SW);
-            let seg = (khi - k).min(SW - sc);
-            let d0 = ((y * PW + x0 + k) as usize) * 4;
+            let sr = sr0 + sc.div_euclid(sw);
+            let sc = sc.rem_euclid(sw);
+            let seg = (khi - k).min(sw - sc);
+            let d0 = ((y * pw + x0 + k) as usize) * 4;
             let drow = &mut dst.px[d0..d0 + seg as usize * 4];
             if (0..SH).contains(&sr) {
-                let s0 = ((sr * SW + sc) as usize) * 4;
+                let s0 = ((sr * sw + sc) as usize) * 4;
                 let srow_px = &src.px[s0..s0 + seg as usize * 4];
                 match mode {
                     CopyMode::Over => {
@@ -408,9 +436,10 @@ fn fill_rect(page: &mut Canvas, x0: i32, y0: i32, x1: i32, y1: i32, rgb: [u8; 3]
     if page.is_empty() {
         return;
     }
+    let pw = page.w;
     for y in y0.max(0)..y1.min(row_limit) {
-        for x in x0.max(0)..x1.min(PW) {
-            let o = ((y * PW + x) as usize) * 4;
+        for x in x0.max(0)..x1.min(pw) {
+            let o = ((y * pw + x) as usize) * 4;
             page.px[o..o + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
         }
     }
@@ -424,7 +453,8 @@ fn fill_hd(mem: &mut HdMem, vis: &[[u8; 3]; 16], c: &BlitCmd, off: Off) {
     }
     let y0 = sx(c.y) * S + off.oy;
     let x0 = sx(c.x) * 8 * S + off.ox;
-    fill_rect(&mut mem.pages[pg(c)], x0, y0, x0 + PW, y0 + rows, vis[(c.dx & 15) as usize], GAME_ROWS);
+    let pw = mem.pages[pg(c)].w;
+    fill_rect(&mut mem.pages[pg(c)], x0, y0, x0 + pw, y0 + rows, vis[(c.dx & 15) as usize], GAME_ROWS);
 }
 
 /// `sub_1929F`：血條的一格，7 列各 8 個像素，兩頁同寫，不裁 y 上限。
@@ -438,11 +468,14 @@ fn bar_hd(mem: &mut HdMem, vis: &[[u8; 3]; 16], c: &BlitCmd) {
 
 /// `sub_19CF9`：清 190 列成色號 0 的顏色。
 fn clear_page_hd(mem: &mut HdMem, vis: &[[u8; 3]; 16], c: &BlitCmd) {
-    fill_rect(&mut mem.pages[pg(c)], 0, 0, PW, GAME_ROWS, vis[0], GAME_ROWS);
+    let page = &mut mem.pages[pg(c)];
+    let pw = page.w;
+    fill_rect(page, 0, 0, pw, GAME_ROWS, vis[0], GAME_ROWS);
 }
 
 /// `sub_1152D`（暫存區 B，`which` = 1）與 `sub_11504`（暫存區 A，`which` = 0）：
-/// 前 `417Eh` 位元組（209 列又 46 位元組）清成透明。map mask 不是 0Fh 時只清部分平面，HD 畫布表達不了，略過。
+/// 前 `417Eh` 位元組（209 列又 46 位元組，戰場加大時同樣是 209 列又 46 位元組）清成透明。
+/// map mask 不是 0Fh 時只清部分平面，HD 畫布表達不了，略過。
 fn clear_scratch_hd(mem: &mut HdMem, which: usize) {
     if mem.map_mask != 0x0F {
         return;
@@ -451,11 +484,14 @@ fn clear_scratch_hd(mem: &mut HdMem, which: usize) {
     if sc.is_empty() {
         return;
     }
-    let full = (0x417E / 80) as i32 * S;
-    let part = (0x417E % 80) as i32 * 8 * S;
+    let sw = sc.w;
+    let bytes = mem.g.scratch_clear_bytes() as i32;
+    let scols = i32::from(mem.g.scols());
+    let full = (bytes / scols) * S;
+    let part = (bytes % scols) * 8 * S;
     for y in 0..(full + S).min(SH) {
-        let w = if y < full { SW } else { part };
-        let o = (y * SW) as usize * 4;
+        let w = if y < full { sw } else { part };
+        let o = (y * sw) as usize * 4;
         sc.px[o..o + w as usize * 4].fill(0);
     }
 }
@@ -481,11 +517,9 @@ pub fn counter(pages: &mut [Canvas; 2], vis: &[[u8; 3]; 16], col: u16, row: u16,
                     continue;
                 }
                 let x = (col as i32 + i as i32) * 8 + bit;
-                if x >= 320 {
-                    continue;
-                }
                 for (pi, page) in pages.iter_mut().enumerate() {
-                    if (!both && pi != 0) || page.is_empty() {
+                    // 頁寬之外（原版 320 像素）不畫。
+                    if (!both && pi != 0) || page.is_empty() || x * S >= page.w {
                         continue;
                     }
                     fill_rect(page, x * S, y * S, (x + 1) * S, (y + 1) * S, rgb, PH);
@@ -498,6 +532,7 @@ pub fn counter(pages: &mut [Canvas; 2], vis: &[[u8; 3]; 16], col: u16, row: u16,
 /// 快照入口：兩個顯示頁用索引色記憶體（`idx_px`，每像素一個位元組）依 `vis` 上色後最近鄰放大 4 倍帶入，
 /// 暫存區留空（透明）。入口之前畫上去的 HD 圖已經不可考，所以這是原版圖的放大，不是 HD 圖。
 pub fn load_pages(mem: &mut HdMem, idx_px: &[u8], vis: &[[u8; 3]; 16]) {
+    assert!(!mem.g.wide(), "快照只有原版的 64 KB 版面");
     for (p, base) in [(0usize, 0usize), (1, 0x8000)] {
         let page = &mut mem.pages[p];
         if page.is_empty() {
@@ -526,8 +561,9 @@ fn blit_inv(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32, bg: [u8; 3]) {
     if page.is_empty() {
         return;
     }
+    let pw = page.w;
     let xs = (-x0).max(0);
-    let xe = (img.w as i32).min(PW - x0);
+    let xe = (img.w as i32).min(pw - x0);
     if xs >= xe {
         return;
     }
@@ -541,7 +577,7 @@ fn blit_inv(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32, bg: [u8; 3]) {
         }
         let so = iy as usize * img.w;
         let srow = &img.rgba[(so + xs as usize) * 4..(so + xe as usize) * 4];
-        let drow = &mut page.px[((y * PW + x0 + xs) as usize) * 4..((y * PW + x0 + xe) as usize) * 4];
+        let drow = &mut page.px[((y * pw + x0 + xs) as usize) * 4..((y * pw + x0 + xe) as usize) * 4];
         for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
             d.copy_from_slice(&[bg[0], bg[1], bg[2], 255]);
             over(d, &[255 - s[0], 255 - s[1], 255 - s[2], s[3]]);
@@ -556,6 +592,7 @@ fn fill_round_grad(page: &mut Canvas, x0: i32, y0: i32, w: i32, h: i32, rad: f32
     }
     let (hw, hh) = (w as f32 / 2.0, h as f32 / 2.0);
     let rad = rad.min(hw).min(hh);
+    let pw = page.w;
     for iy in 0..h {
         let y = y0 + iy;
         if y < 0 || y >= GAME_ROWS {
@@ -563,7 +600,7 @@ fn fill_round_grad(page: &mut Canvas, x0: i32, y0: i32, w: i32, h: i32, rad: f32
         }
         for ix in 0..w {
             let x = x0 + ix;
-            if x < 0 || x >= PW {
+            if x < 0 || x >= pw {
                 continue;
             }
             let (px, py) = (ix as f32 + 0.5 - hw, iy as f32 + 0.5 - hh);
@@ -583,7 +620,7 @@ fn fill_round_grad(page: &mut Canvas, x0: i32, y0: i32, w: i32, h: i32, rad: f32
             for k in 0..3 {
                 c[k] = (c[k] as f32 + (edge[k] as f32 - c[k] as f32) * e).round() as u8;
             }
-            let o = ((y * PW + x) as usize) * 4;
+            let o = ((y * pw + x) as usize) * 4;
             over(&mut page.px[o..o + 4], &[c[0], c[1], c[2], (cov * 255.0).round() as u8]);
         }
     }
@@ -596,8 +633,9 @@ fn add_over_bg(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32) {
         return;
     }
     let bg = [img.rgba[0] as i32, img.rgba[1] as i32, img.rgba[2] as i32];
+    let pw = page.w;
     let xs = (-x0).max(0);
-    let xe = (img.w as i32).min(PW - x0);
+    let xe = (img.w as i32).min(pw - x0);
     if xs >= xe {
         return;
     }
@@ -611,7 +649,7 @@ fn add_over_bg(page: &mut Canvas, img: &HdImg, x0: i32, y0: i32) {
         }
         let so = iy as usize * img.w;
         let srow = &img.rgba[(so + xs as usize) * 4..(so + xe as usize) * 4];
-        let drow = &mut page.px[((y * PW + x0 + xs) as usize) * 4..((y * PW + x0 + xe) as usize) * 4];
+        let drow = &mut page.px[((y * pw + x0 + xs) as usize) * 4..((y * pw + x0 + xe) as usize) * 4];
         for (d, s) in drow.chunks_exact_mut(4).zip(srow.chunks_exact(4)) {
             let a = s[3] as i32;
             for k in 0..3 {
@@ -651,10 +689,11 @@ fn scratch_put_tile(sc: &mut Canvas, img: &HdImg, c: &BlitCmd) {
         return;
     }
     let (w, h) = (img.w.min(8 * SCALE) as i32, img.h.min(10 * SCALE) as i32);
+    let sw = sc.w;
     let x0 = sx(c.x) * 8 * S;
     let y0 = sx(c.y) * S;
     let xs = (-x0).max(0);
-    let xe = w.min(SW - x0);
+    let xe = w.min(sw - x0);
     if xs >= xe {
         return;
     }
@@ -664,7 +703,7 @@ fn scratch_put_tile(sc: &mut Canvas, img: &HdImg, c: &BlitCmd) {
             continue;
         }
         let so = iy as usize * img.w;
-        let (d0, d1) = ((y * SW + x0 + xs) as usize, (y * SW + x0 + xe) as usize);
+        let (d0, d1) = ((y * sw + x0 + xs) as usize, (y * sw + x0 + xe) as usize);
         sc.px[d0 * 4..d1 * 4].copy_from_slice(&img.rgba[(so + xs as usize) * 4..(so + xe as usize) * 4]);
     }
 }
@@ -672,7 +711,8 @@ fn scratch_put_tile(sc: &mut Canvas, img: &HdImg, c: &BlitCmd) {
 /// `sub_18894`：兩頁的 200 列清成色號 0 的顏色。
 fn clear_both_pages_hd(mem: &mut HdMem, vis: &[[u8; 3]; 16]) {
     for p in mem.pages.iter_mut() {
-        fill_rect(p, 0, 0, PW, PH, vis[0], PH);
+        let pw = p.w;
+        fill_rect(p, 0, 0, pw, PH, vis[0], PH);
     }
 }
 
@@ -689,11 +729,12 @@ pub fn vram_fill(mem: &mut HdMem, vis: &[[u8; 3]; 16], off: u16, words: u16, val
         return;
     }
     let (lo, hi) = (value as u8, (value >> 8) as u8);
-    let mut a = off;
+    let g = mem.g;
+    let mut a = if g.wide() { g.seg(off) } else { u32::from(off) };
     for i in 0..words as usize * 2 {
         let b = if i % 2 == 0 { lo } else { hi };
-        let (reg, row, col) = addr_region(a);
-        a = a.wrapping_add(1);
+        let (reg, row, col) = addr_region(g, a);
+        a = g.wrap(a.wrapping_add(1));
         let (canvas, is_page) = match reg {
             Reg::Page(p) => (&mut mem.pages[p], true),
             Reg::Scratch(p) => (&mut mem.scratch[p], false),
@@ -701,7 +742,7 @@ pub fn vram_fill(mem: &mut HdMem, vis: &[[u8; 3]; 16], off: u16, words: u16, val
         if canvas.is_empty() {
             continue;
         }
-        let (cw, ch) = if is_page { (PW, PH) } else { (SW, SH) };
+        let (cw, ch) = (canvas.w, if is_page { PH } else { SH });
         for bit in 0..8i32 {
             let on = (b >> (7 - bit)) & 1 != 0;
             let px: [u8; 4] = if on {
@@ -729,10 +770,10 @@ pub fn vram_fill(mem: &mut HdMem, vis: &[[u8; 3]; 16], off: u16, words: u16, val
     }
 }
 
-/// 暫存區位元組串流位置（每列 80 位元組）換成（邏輯列，位元組欄）。
+/// 暫存區位元組串流位置（每列 `scols` 位元組，原版 80）換成（邏輯列，位元組欄）。
 #[inline]
-fn spos(pos: i32) -> (i32, i32) {
-    (pos.div_euclid(80), pos.rem_euclid(80))
+fn spos(scols: i32, pos: i32) -> (i32, i32) {
+    (pos.div_euclid(scols), pos.rem_euclid(scols))
 }
 
 /// 暫存區 `s` 的（HD 列 `sy`，HD 欄 `sx`）起 `len` 個 HD 像素，複製到暫存區 `d` 的（`dy`，`dx`）。超出畫布略過。
@@ -740,10 +781,11 @@ fn move_px(sc: &mut [Canvas; 2], s: usize, sy: i32, sx: i32, d: usize, dy: i32, 
     if len <= 0 || sc[s].is_empty() || sc[d].is_empty() {
         return;
     }
-    if !(0..SH).contains(&sy) || !(0..SH).contains(&dy) || sx < 0 || dx < 0 || sx + len > SW || dx + len > SW {
+    let sw = sc[s].w;
+    if !(0..SH).contains(&sy) || !(0..SH).contains(&dy) || sx < 0 || dx < 0 || sx + len > sw || dx + len > sw {
         return;
     }
-    let (so, dof, n) = (((sy * SW + sx) as usize) * 4, ((dy * SW + dx) as usize) * 4, len as usize * 4);
+    let (so, dof, n) = (((sy * sw + sx) as usize) * 4, ((dy * sw + dx) as usize) * 4, len as usize * 4);
     if s == d {
         sc[s].px.copy_within(so..so + n, dof);
     } else {
@@ -754,8 +796,8 @@ fn move_px(sc: &mut [Canvas; 2], s: usize, sy: i32, sx: i32, d: usize, dy: i32, 
 }
 
 /// `sub_17EBA`、`sub_17F26` 的一個位元組：高低半位元組對調複製（A 到 B）。
-fn hd_swap_byte(sc: &mut [Canvas; 2], s: usize, sp: i32, d: usize, dp: i32) {
-    let ((sr, scol), (dr, dcol)) = (spos(sp), spos(dp));
+fn hd_swap_byte(sc: &mut [Canvas; 2], scols: i32, s: usize, sp: i32, d: usize, dp: i32) {
+    let ((sr, scol), (dr, dcol)) = (spos(scols, sp), spos(scols, dp));
     for line in 0..S {
         let (sy, dy) = (sr * S + line, dr * S + line);
         move_px(sc, s, sy, (scol * 8 + 4) * S, d, dy, dcol * 8 * S, 4 * S);
@@ -764,8 +806,8 @@ fn hd_swap_byte(sc: &mut [Canvas; 2], s: usize, sp: i32, d: usize, dp: i32) {
 }
 
 /// `sub_17EEA`、`sub_17F5D` 的一個位元組：暫存區 `d` 內位元組 `to` 的像素 4 至 7 取自位元組 `from` 的像素 4 至 7。
-fn hd_low_nibble(sc: &mut [Canvas; 2], d: usize, from: i32, to: i32) {
-    let ((fr, fc), (tr, tc)) = (spos(from), spos(to));
+fn hd_low_nibble(sc: &mut [Canvas; 2], scols: i32, d: usize, from: i32, to: i32) {
+    let ((fr, fc), (tr, tc)) = (spos(scols, from), spos(scols, to));
     for line in 0..S {
         move_px(sc, d, fr * S + line, (fc * 8 + 4) * S, d, tr * S + line, (tc * 8 + 4) * S, 4 * S);
     }
@@ -781,34 +823,36 @@ fn hd_scroll_pair(mem: &mut HdMem, c: &BlitCmd) {
     let s = ((c.scratch >> 15) & 1) as usize;
     let d = s ^ 1;
     let x = sx(c.x);
+    let scols = i32::from(mem.g.scols());
     let sc = &mut mem.scratch;
     match c.op {
-        // 3E80h 位元組 = 200 列。
+        // 200 列（原版 3E80h 位元組）。
         Op::ScrollRotateCopy => {
-            for i in 0..0x3E80 {
-                hd_swap_byte(sc, s, x + i, d, x + i);
+            for i in 0..200 * scols {
+                hd_swap_byte(sc, scols, s, x + i, d, x + i);
             }
         }
         Op::ScrollShiftLeft4 => {
-            for i in 0..0x3E80 {
-                hd_low_nibble(sc, d, x + i + 1, x + i);
+            for i in 0..200 * scols {
+                hd_low_nibble(sc, scols, d, x + i + 1, x + i);
             }
         }
         Op::ScrollRotateColumn => {
             for r in 0..200 {
-                hd_swap_byte(sc, s, x + r * 80, d, x + r * 80);
+                hd_swap_byte(sc, scols, s, x + r * scols, d, x + r * scols);
             }
         }
         Op::ScrollMergeSeam => {
             for r in 0..200 {
-                hd_low_nibble(sc, d, x + r * 80, x + r * 80 - 1);
+                hd_low_nibble(sc, scols, d, x + r * scols, x + r * scols - 1);
             }
         }
         _ => {}
     }
 }
 
-/// `sub_17FA0`、`sub_18031`：暫存區（`word_2685C`）第 `word_25BC4` 欄起的 40 欄 x 190 列，寫到顯示頁。覆寫，透明處變黑。
+/// `sub_17FA0`、`sub_18031`：暫存區（`word_2685C`）第 `word_25BC4` 欄起的一個顯示頁寬（原版 40 欄）x 190 列，寫到顯示頁。
+/// 覆寫，透明處變黑。視窗左緣 `word_25BC4` 在 0 至 40 之間，是背景圖的週期，與版面無關。
 fn hd_scroll_view(mem: &mut HdMem, c: &BlitCmd) {
     let HdMem { pages, scratch, .. } = mem;
     let dst = &mut pages[pg(c)];
@@ -816,11 +860,12 @@ fn hd_scroll_view(mem: &mut HdMem, c: &BlitCmd) {
     if dst.is_empty() || src.is_empty() {
         return;
     }
+    let (pw, sw) = (dst.w, src.w);
     let x0 = sx(c.x).clamp(0, 40) * 8 * S;
-    let w = PW.min(SW - x0);
+    let w = pw.min(sw - x0);
     for y in 0..190 * S {
-        let so = ((y * SW + x0) as usize) * 4;
-        let d0 = ((y * PW) as usize) * 4;
+        let so = ((y * sw + x0) as usize) * 4;
+        let d0 = ((y * pw) as usize) * 4;
         let srow = &src.px[so..so + w as usize * 4];
         let drow = &mut dst.px[d0..d0 + w as usize * 4];
         if srow.chunks_exact(4).all(|p| p[3] == 255) {
@@ -833,21 +878,25 @@ fn hd_scroll_view(mem: &mut HdMem, c: &BlitCmd) {
     }
 }
 
-/// `sub_180C6` 進位時的搬移：暫存區 A、B 的位元組串流整體左移 28h 位元組（半列），共 190 列。
+/// `sub_180C6` 進位時的搬移：暫存區 A、B 的位元組串流整體左移 28h 位元組（背景圖的一個週期），共 190 列。
+/// 一列分成 40 位元組一段（原版兩段，戰場加大三段）：每段取自右鄰的一段，最後一段取自下一列的第一段。
 fn hd_scroll_left(mem: &mut HdMem) {
-    let half = 40 * 8 * S;
+    let half = (40 * 8 * S) as usize;
+    let segs = mem.g.scols() as usize / 40;
     for sc in mem.scratch.iter_mut() {
         if sc.is_empty() {
             continue;
         }
+        let sw = sc.w;
         for r in 0..190 {
             for line in 0..S {
                 let y = r * S + line;
-                let row = (y * SW) as usize;
-                // 欄 0 至 39 取自本列的欄 40 至 79；欄 40 至 79 取自下一列的欄 0 至 39。
-                sc.px.copy_within((row + half as usize) * 4..(row + 2 * half as usize) * 4, row * 4);
-                let next = ((y + S) * SW) as usize;
-                sc.px.copy_within(next * 4..(next + half as usize) * 4, (row + half as usize) * 4);
+                let row = (y * sw) as usize;
+                for k in 0..segs - 1 {
+                    sc.px.copy_within((row + (k + 1) * half) * 4..(row + (k + 2) * half) * 4, (row + k * half) * 4);
+                }
+                let next = ((y + S) * sw) as usize;
+                sc.px.copy_within(next * 4..(next + half) * 4, (row + (segs - 1) * half) * 4);
             }
         }
     }
@@ -927,10 +976,11 @@ pub fn apply(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: 
         }
     };
     // 2 位元組寬（16 像素）的變體。
-    let narrow = Shape { bytes: 2, ..Shape::FULL };
+    let full = Shape::full(mem.g.cols());
+    let narrow = Shape { bytes: 2, ..full };
     // 第四關通道上壁等鏡射版。`ScratchReplaceMirrored` 沒有 189 列上限，`bx` 遞減；其餘兩個 `bx` 遞增。
-    let mirror = Shape { mirror: true, ylim: PH, ..Shape::FULL };
-    let mirror_up = Shape { mirror: true, count_up: true, ..Shape::FULL };
+    let mirror = Shape { mirror: true, ylim: PH, ..full };
+    let mirror_up = Shape { mirror: true, count_up: true, ..full };
     match c.op {
         Op::MyOverwrite => img_op(mem, hd, Lib::My, Mode::Mov),
         Op::MyOverlay | Op::MyOverlayPlayerShot | Op::MyOverlayEffect => img_op(mem, hd, Lib::My, Mode::Or),
@@ -999,13 +1049,27 @@ mod tests {
 
     #[test]
     fn region_mapping_covers_the_address_space() {
-        assert!(matches!(addr_region(0), (Reg::Page(0), 0, 0)));
-        assert!(matches!(addr_region(0x1F3F), (Reg::Page(0), 199, 39)));
-        assert!(matches!(addr_region(0x1F40), (Reg::Scratch(0), 0, 0)));
-        assert!(matches!(addr_region(0x1F40 + 80 * 5 + 7), (Reg::Scratch(0), 5, 7)));
-        assert!(matches!(addr_region(0x8000), (Reg::Page(1), 0, 0)));
-        assert!(matches!(addr_region(0x9F40), (Reg::Scratch(1), 0, 0)));
-        assert!(matches!(addr_region(0xFFFF), (Reg::Scratch(1), 309, 47)));
+        let g = Geom::ORIGINAL;
+        assert!(matches!(addr_region(g, 0), (Reg::Page(0), 0, 0)));
+        assert!(matches!(addr_region(g, 0x1F3F), (Reg::Page(0), 199, 39)));
+        assert!(matches!(addr_region(g, 0x1F40), (Reg::Scratch(0), 0, 0)));
+        assert!(matches!(addr_region(g, 0x1F40 + 80 * 5 + 7), (Reg::Scratch(0), 5, 7)));
+        assert!(matches!(addr_region(g, 0x8000), (Reg::Page(1), 0, 0)));
+        assert!(matches!(addr_region(g, 0x9F40), (Reg::Scratch(1), 0, 0)));
+        assert!(matches!(addr_region(g, 0xFFFF), (Reg::Scratch(1), 309, 47)));
+    }
+
+    #[test]
+    fn region_mapping_follows_the_wide_geometry() {
+        for cols in [48u16, 60] {
+            let g = Geom::new(cols);
+            let page = 200 * u32::from(cols);
+            assert!(matches!(addr_region(g, page - 1), (Reg::Page(0), 199, c) if c == i32::from(cols) - 1));
+            assert!(matches!(addr_region(g, page), (Reg::Scratch(0), 0, 0)));
+            assert!(matches!(addr_region(g, page + 120 * 5 + 7), (Reg::Scratch(0), 5, 7)));
+            assert!(matches!(addr_region(g, 0x10000), (Reg::Page(1), 0, 0)));
+            assert!(matches!(addr_region(g, 0x10000 + page), (Reg::Scratch(1), 0, 0)));
+        }
     }
 
     #[test]
@@ -1057,7 +1121,7 @@ mod tests {
 
     #[test]
     fn scratch_copy_roundtrip_with_wrap_and_shift() {
-        let mut mem = HdMem::from_parts([page(), Canvas::empty()], [Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]), Canvas::empty()]);
+        let mut mem = HdMem::from_parts(Geom::ORIGINAL, [page(), Canvas::empty()], [Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]), Canvas::empty()]);
         // 暫存區 A 第 0 列：每個 HD 像素的 R 等於欄號低位元組，用來辨認來源欄。
         for y in 0..S {
             for x in 0..SW {
@@ -1108,7 +1172,7 @@ mod tests {
 
     #[test]
     fn and_uses_source_luminance_and_alpha() {
-        let mut mem = HdMem::from_parts([page(), Canvas::empty()], [Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]), Canvas::empty()]);
+        let mut mem = HdMem::from_parts(Geom::ORIGINAL, [page(), Canvas::empty()], [Canvas::new(SW as usize, SH as usize, [0, 0, 0, 0]), Canvas::empty()]);
         fill_rect(&mut mem.pages[0], 0, 0, 8, 1, [100, 100, 100], PH);
         // 來源：欄 0 白不透明、欄 1 黑不透明、欄 2 白透明（等於沒寫）
         mem.scratch[0].px[..12].copy_from_slice(&[255, 255, 255, 255, 0, 0, 0, 255, 255, 255, 255, 0]);
@@ -1140,7 +1204,7 @@ mod tests {
 
     #[test]
     fn clear_scratch_b_clears_exactly_the_original_range() {
-        let mut mem = HdMem::from_parts([Canvas::empty(), Canvas::empty()], [Canvas::empty(), Canvas::new(SW as usize, SH as usize, [9, 9, 9, 9])]);
+        let mut mem = HdMem::from_parts(Geom::ORIGINAL, [Canvas::empty(), Canvas::empty()], [Canvas::empty(), Canvas::new(SW as usize, SH as usize, [9, 9, 9, 9])]);
         clear_scratch_hd(&mut mem, 1);
         let sc = &mem.scratch[1];
         let px = |x: i32, y: i32| sc.px[((y * SW + x) as usize) * 4];

@@ -34,7 +34,9 @@ use crate::draw::Pool;
 use crate::entity::ARMOR_CELL;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
-use crate::grid::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end};
+#[cfg(test)]
+use crate::grid::GRID1_ROW_BYTES;
+use crate::grid::GRID1_START;
 use crate::video::MyCopy;
 
 /// 池的槽數。
@@ -43,6 +45,7 @@ pub const POOL_SIZE: usize = 20;
 /// 出界門檻（無符號）：列 >= 12h、欄 >= 27h。往上與往下共用同一個列門檻（敵彈往上是 13h，這裡不同）。
 const ROW_LIMIT: u16 = 0x12;
 const COL_LIMIT: u16 = 0x27;
+const _: () = assert!(COL_LIMIT == crate::grid::GRID_COLS - 1);
 
 /// 腳本位元組低 4 位元為 0Ah：追蹤指令。
 const SEEK_CODE: u8 = 0x0A;
@@ -354,33 +357,34 @@ impl PlayerBullet {
         self.row >= ROW_LIMIT
     }
 
-    /// 往左（原版 `sub_168D4`）：繪製 x 減 `blit_dx`、欄減 `dcol`。
-    fn move_left(&mut self) -> bool {
+    /// 往左（原版 `sub_168D4`）：繪製 x 減 `blit_dx`、欄減 `dcol`。`side` 是側邊出界門檻
+    /// （原版 [`COL_LIMIT`]，戰場加大時是新的欄數減 1，見 `Core::side_limit`）。
+    fn move_left(&mut self, side: u16) -> bool {
         self.blit_x = self.blit_x.wrapping_sub(self.blit_dx);
         self.col = self.col.wrapping_sub(self.dcol);
-        self.col >= COL_LIMIT
+        self.col >= side
     }
 
     /// 往右（原版 `sub_168F7`）。
-    fn move_right(&mut self) -> bool {
+    fn move_right(&mut self, side: u16) -> bool {
         self.blit_x = self.blit_x.wrapping_add(self.blit_dx);
         self.col = self.col.wrapping_add(self.dcol);
-        self.col >= COL_LIMIT
+        self.col >= side
     }
 
     /// 依移動碼走一步（原版 `sub_16817`）。碼 1、3、5、7 是上、右、下、左，2、4、6、8 是右上、右下、左下、左上，
     /// 其他碼（含追蹤指令未選出方向時的 0Ah）不動。斜向的兩段都會執行，出界旗標是兩段的聯集。
     /// 回傳是否出界：出界的這一幀仍會畫、寫格網、做碰撞，釋放在最後。
-    fn advance(&mut self, code: u8) -> bool {
+    fn advance(&mut self, code: u8, side: u16) -> bool {
         match code {
             1 => self.move_up(),
-            3 => self.move_right(),
+            3 => self.move_right(side),
             5 => self.move_down(),
-            7 => self.move_left(),
-            2 => self.move_up() | self.move_right(),
-            4 => self.move_down() | self.move_right(),
-            6 => self.move_down() | self.move_left(),
-            8 => self.move_left() | self.move_up(),
+            7 => self.move_left(side),
+            2 => self.move_up() | self.move_right(side),
+            4 => self.move_down() | self.move_right(side),
+            6 => self.move_down() | self.move_left(side),
+            8 => self.move_left(side) | self.move_up(),
             _ => false,
         }
     }
@@ -550,7 +554,7 @@ impl Core {
             }
             _ => {
                 let code = self.next_code(bullet);
-                let out_of_field = bullet.advance(code);
+                let out_of_field = bullet.advance(code, self.side_limit());
                 let vanishes = self.draw_and_collide(bullet);
                 out_of_field | vanishes
             }
@@ -596,12 +600,13 @@ impl Core {
     /// 原版比到左邊時只更新方向碼，不更新距離（`16BEBh` 之後直接 `retn`）。呼叫端只用距離是否為 FFh 判斷有沒有找到，
     /// 所以只有左邊有東西、其餘三向都找不到時，回傳的距離仍是 FFh，視同沒找到。
     fn seek_direction(&self, bullet: &PlayerBullet) -> (u16, u16) {
+        let lay = self.layout();
         let start = self.grid1_row_start(bullet.row);
-        let end = grid1_row_end(start);
+        let end = self.grid1_row_end_of(start);
         let cell = start.wrapping_add(bullet.col);
-        let up = self.distance_to_wall(cell, |at| at.wrapping_sub(GRID1_ROW_BYTES), |at| at > GRID1_START);
+        let up = self.distance_to_wall(cell, |at| at.wrapping_sub(lay.row_bytes()), |at| at > GRID1_START);
         let right = self.distance_to_wall(cell, |at| at.wrapping_add(1), |at| at < end);
-        let down = self.distance_to_wall(cell, |at| at.wrapping_add(GRID1_ROW_BYTES), |at| at < GRID1_END);
+        let down = self.distance_to_wall(cell, |at| at.wrapping_add(lay.row_bytes()), |at| at < lay.g1_end());
         let left = self.distance_to_wall(cell, |at| at.wrapping_sub(1), |at| at > start);
         let (mut distance, mut code) = (up, 1);
         if distance >= right {
@@ -734,7 +739,7 @@ impl Core {
     /// 雷射的掃描：回傳 (光束長度, 命中的格值或 [`NO_ENTITY`])。
     fn scan_beam(&self, bullet: &PlayerBullet, facing: Facing) -> (u16, u8) {
         let start = self.grid1_row_start(bullet.row);
-        let end = grid1_row_end(start);
+        let end = self.grid1_row_end_of(start);
         let mut cell = start.wrapping_add(bullet.col);
         let mut terrain = self.grid4_cell_addr(bullet.row.wrapping_sub(1), bullet.col);
         let mut length = 1u16;
@@ -912,23 +917,29 @@ mod tests {
     fn movement_limits_and_diagonals() {
         let b = |col, row| PlayerBullet { col, row, dcol: 1, drow: 1, blit_dx: 1, blit_dy: 1, ..PlayerBullet::default() };
         let mut x = b(0x25, 5);
-        assert!(!x.advance(3) && x.col == 0x26, "欄 26h 還在內");
-        assert!(x.advance(3) && x.col == 0x27, "欄 27h 出界");
+        assert!(!x.advance(3, COL_LIMIT) && x.col == 0x26, "欄 26h 還在內");
+        assert!(x.advance(3, COL_LIMIT) && x.col == 0x27, "欄 27h 出界");
         let mut y = b(5, 0x10);
-        assert!(!y.advance(5) && y.row == 0x11);
-        assert!(y.advance(5), "列 12h 出界，往上往下同門檻");
+        assert!(!y.advance(5, COL_LIMIT) && y.row == 0x11);
+        assert!(y.advance(5, COL_LIMIT), "列 12h 出界，往上往下同門檻");
         let mut z = b(5, 0);
-        assert!(z.advance(1) && z.row == 0xFFFF, "負列（無號）出界");
+        assert!(z.advance(1, COL_LIMIT) && z.row == 0xFFFF, "負列（無號）出界");
         // 斜向兩段都執行，旗標是聯集。
         let mut d = b(0x26, 5);
-        assert!(d.advance(2));
+        assert!(d.advance(2, COL_LIMIT));
         assert_eq!((d.col, d.row), (0x27, 4));
         let mut e = b(0, 0);
-        assert!(e.advance(8), "左上：欄 0 減 1 得 FFFFh，出界");
+        assert!(e.advance(8, COL_LIMIT), "左上：欄 0 減 1 得 FFFFh，出界");
         assert_eq!((e.col, e.row), (0xFFFF, 0xFFFF));
         let mut f = b(5, 5);
-        assert!(!f.advance(0) && !f.advance(9) && !f.advance(0x13), "其他碼不動");
+        assert!(!f.advance(0, COL_LIMIT) && !f.advance(9, COL_LIMIT) && !f.advance(0x13, COL_LIMIT), "其他碼不動");
         assert_eq!((f.col, f.row), (5, 5));
+        // 戰場加大（規格 005）：側邊門檻是新的欄數減 1，欄 38 與 39 在 40 欄時已出界，60 欄時還在內。
+        let mut w = b(0x26, 5);
+        assert!(!w.advance(3, 59) && w.col == 0x27, "60 欄：欄 27h 還在內");
+        let mut w = b(57, 5);
+        assert!(!w.advance(3, 59) && w.col == 58);
+        assert!(w.advance(3, 59) && w.col == 59, "欄 59 出界");
     }
 
     #[test]
@@ -1137,7 +1148,7 @@ mod tests {
         assert_eq!(code, 0x0A);
         assert_eq!(b.script, 0x7101, "指標 7106h 減 5");
         let mut moving = PlayerBullet { dcol: 1, drow: 1, blit_dx: 1, blit_dy: 1, ..b };
-        assert!(!moving.advance(code));
+        assert!(!moving.advance(code, COL_LIMIT));
         assert_eq!((moving.col, moving.row), (10, 8), "碼 0Ah 不在移動表內，不動");
         assert!(c.fx.slots.iter().all(|s| !s.is_active()), "沒有再選方向，所以沒有尾跡");
     }

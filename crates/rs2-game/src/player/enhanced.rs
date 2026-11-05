@@ -21,8 +21,8 @@
 
 use super::draw::{POD_DX, POD_LEFT_SHIFT};
 use super::{
-    BOTTOM_ROW, BodyImages, COL_STEP, FACING_LEFT, FACING_RIGHT, InputBit, LEFT_COL, NO, PLAIN_WEAPON, PLAYER_COUNT, Player, RIGHT_COL, ROW_PIXELS,
-    STYLES, YES,
+    BOTTOM_ROW, BodyImages, COL_STEP, FACING_LEFT, FACING_RIGHT, InputBit, LEFT_COL, NO, PLAIN_WEAPON, PLAYER_COUNT, Player, ROW_PIXELS, STYLES,
+    YES,
 };
 use crate::game::{Core, Rules};
 use crate::flow::FireFlag;
@@ -182,10 +182,10 @@ impl Player {
         }
     }
 
-    /// 細步右移 `cols` 欄，停在欄 33（`RIGHT_COL`）。尾焰旗標設 `Y`。
-    fn fine_right(&mut self, cols: u16) {
-        if self.col < RIGHT_COL {
-            self.col = (self.col + cols).min(RIGHT_COL);
+    /// 細步右移 `cols` 欄，停在欄 33（`RIGHT_COL`，戰場加大時是 `right`）。尾焰旗標設 `Y`。
+    fn fine_right(&mut self, cols: u16, right: u16) {
+        if self.col < right {
+            self.col = (self.col + cols).min(right);
             self.blit_x = self.col;
             self.flame = YES;
         }
@@ -204,10 +204,11 @@ impl Core {
     /// 選項被關掉時收尾：細步位置對齊整格、砲座接回、充能清掉。選項沒開過就什麼都不做。
     pub(super) fn settle_options(&mut self, who: usize, rules: Rules) {
         let e = self.enh.ship[who];
+        let right = self.right_col();
         if e.fine && !rules.fine_step {
             let p = &mut self.pl.ship[who];
             // 整步移動的欄是奇數（起點 5，每步 2），半步位置的欄可能是偶數。
-            p.col = (p.col | 1).min(RIGHT_COL);
+            p.col = (p.col | 1).min(right);
             p.blit_x = p.col;
             p.blit_y = p.row * ROW_PIXELS;
             let e = &mut self.enh.ship[who];
@@ -239,6 +240,7 @@ impl Core {
         let right = self.any_held(style.keys.rightward());
         let dy: i8 = if up { -1 } else if down { 1 } else { 0 };
         let dx: i8 = if left { -1 } else if right { 1 } else { 0 };
+        let right_col = self.right_col();
         let e = &mut self.enh.ship[who];
         let (prev_x, prev_y) = (e.move_x, e.move_y);
         (e.move_x, e.move_y, e.fine) = (dx, dy, true);
@@ -260,7 +262,7 @@ impl Core {
                 p.input_bits |= InputBit::Left as u8;
             }
             1 => {
-                p.fine_right(if prev_x == dx { COL_STEP } else { HALF_COLS });
+                p.fine_right(if prev_x == dx { COL_STEP } else { HALF_COLS }, right_col);
                 p.input_bits |= InputBit::Right as u8;
             }
             _ => {}
@@ -409,8 +411,9 @@ impl Core {
     fn launch_pods(&mut self, who: usize) {
         let style = &STYLES[who].pod;
         let max_row = BOTTOM_ROW as i16 - style.row_offset as i16;
+        let max_col = self.pod_max_col();
         let p = &mut self.pl.ship[who];
-        let col = (p.pods.col as i16).clamp(0, POD_MAX_COL);
+        let col = (p.pods.col as i16).clamp(0, max_col);
         let y = (p.pods.blit_y as i16).clamp(0, max_row * ROW_PIXELS as i16 + HALF_PIXELS as i16);
         p.pods.col = col as u16;
         p.pods.blit_x = col as u16;
@@ -456,11 +459,12 @@ impl Core {
             return;
         }
         let max_y = (BOTTOM_ROW as i16 - style.row_offset as i16) * ROW_PIXELS as i16 + HALF_PIXELS as i16;
+        let (max_col, range) = (self.pod_max_col(), self.pod_range_cols());
         let p = &mut self.pl.ship[who];
         let (sc, pc, py) = (p.col as i16, p.pods.col as i16, p.pods.blit_y as i16);
         let (col, y, arrived) = match e.pod {
             PodMode::Launched => {
-                let limit = (e.launch_col as i16 + POD_RANGE_COLS).min(POD_MAX_COL);
+                let limit = (e.launch_col as i16 + range).min(max_col);
                 ((pc + POD_LAUNCH_COLS).min(limit).max(pc), py, false)
             }
             PodMode::Recalling => {
@@ -485,6 +489,16 @@ impl Core {
         }
     }
 
+    /// 分離砲座能飛到的最右欄：原版畫面的 [`POD_MAX_COL`] 加上戰場多出來的欄數（規格 005「戰場大小」）。
+    fn pod_max_col(&self) -> i16 {
+        POD_MAX_COL + self.field_extra() as i16
+    }
+
+    /// 分離砲座的射程（欄）：原版畫面的 [`POD_RANGE_COLS`]，戰場加大時依欄數等比放大（16 × `cols` ÷ 40）。
+    fn pod_range_cols(&self) -> i16 {
+        POD_RANGE_COLS * self.field_cols() as i16 / crate::grid::GRID_COLS as i16
+    }
+
     /// 砲座已分離（發射中或收回中）。
     pub(super) fn pods_detached(&self, who: usize) -> bool {
         self.enh.ship[who].pod != PodMode::Docked
@@ -498,6 +512,7 @@ const POD_FRONT_BIAS: i16 = 1;
 #[cfg(test)]
 mod tests {
     use super::super::test_support::{core, place, set_shapes};
+    use super::super::RIGHT_COL;
     use super::*;
     use crate::game::Rules;
 

@@ -83,6 +83,7 @@ impl Core {
         if self.password_rejected() {
             panic!("word_1D3B0 非 0：原版 jmp sub_13205 無限遞迴（防拷檢查未通過）");
         }
+        self.begin_stage_field();
         self.dos_allocate_buffers(StageBuffers::Stage2);
         self.dos_free_buffers(StageBuffers::Stage2);
         self.show_page(Page::One);
@@ -122,20 +123,30 @@ impl Core {
     ///
     /// 暫存區 A：`BH2` 第 0 至 3 項各兩份、第 4 項橫排 20 塊、第 5 至 12 項（8 個相位）、第 13 至 16 項（4 個相位）、
     /// 第 17、18 項（2 個相位）。暫存區 B：第 19 至 22 項（遮罩層的圖）、第 23 至 26 項（遮罩）、第 27 項（柱）。
+    ///
+    /// 戰場加大時（規格 005）：火焰面的磚多畫一份（x = 50h，視窗相位最大 40，要取 `cols` 欄），
+    /// 背景磚的橫排畫滿 `cols` 欄（每塊 2 欄），相位圖整組右移多出來的欄數，讓出背景磚的位置，
+    /// 近景條的位移基底（`StripShape::shift_base`）跟著加。欄數 40 時和原版完全相同。
     fn compose_stage2_backdrop(&mut self) {
+        let extra = self.field_extra();
         self.load_sht_bank(ShtGroup::Bh2);
         self.select_scratch(SCRATCH_A);
         for (x, y, index) in [(0, 0, 0), (0x28, 0, 0), (0, 0x22, 1), (0x28, 0x22, 1), (0, 0x44, 2), (0x28, 0x44, 2), (0, 0x5A, 3), (0x28, 0x5A, 3)] {
             self.draw_tile_to_scratch(x, y, index);
         }
-        self.draw_tile_run(0, 0x70, 4, 0x14, false);
+        if extra != 0 {
+            for (y, index) in [(0, 0), (0x22, 1), (0x44, 2), (0x5A, 3)] {
+                self.draw_tile_to_scratch(0x50, y, index);
+            }
+        }
+        self.draw_tile_run(0, 0x70, 4, 0x14 + extra / 2, false);
         // 第 5 至 12 項：原版每畫一張檢查 `byte_1D3A2` 必須是 `Y`，否則在 `130A2h` 無限迴圈。
         if !self.password_accepted() {
             panic!("byte_1D3A2 不是 Y：原版在 130A2 無限迴圈（防拷檢查未通過）");
         }
-        self.draw_tile_run(0x28, 0x70, 5, 8, true);
-        self.draw_tile_run(0x38, 0x70, 0x0D, 4, true);
-        self.draw_tile_run(0x40, 0x70, 0x11, 2, true);
+        self.draw_tile_run(0x28 + extra, 0x70, 5, 8, true);
+        self.draw_tile_run(0x38 + extra, 0x70, 0x0D, 4, true);
+        self.draw_tile_run(0x40 + extra, 0x70, 0x11, 2, true);
         self.select_scratch(SCRATCH_B);
         self.draw_tile_run(0, 0, 0x13, 4, true);
         self.draw_tile_run(8, 0, 0x17, 4, true);

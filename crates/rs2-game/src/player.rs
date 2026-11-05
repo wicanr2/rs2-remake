@@ -102,6 +102,10 @@ const BOTTOM_ROW: u16 = 0x10;
 const LEFT_COL: i16 = 1;
 /// 右移要求欄小於這個值（無號比較）。
 const RIGHT_COL: u16 = 0x21;
+/// 戰場有 `cols` 欄時玩家活動範圍的右緣界限：原版 [`RIGHT_COL`] 加上多出來的欄數（規格 005「戰場大小」）。
+pub(crate) const fn right_col_for(cols: u16) -> u16 {
+    RIGHT_COL + (cols - crate::grid::GRID_COLS)
+}
 /// 每關開始的位置。
 const START_COL: u16 = 5;
 const START_ROW: u16 = 10;
@@ -376,8 +380,14 @@ impl Player {
     }
 
     /// 右移的條件：欄小於 21h（無號）。
+    #[cfg(test)]
     pub(crate) fn can_move_right(&self) -> bool {
-        self.col < RIGHT_COL
+        self.can_move_right_to(RIGHT_COL)
+    }
+
+    /// 右移的條件：欄小於 `right`（無號）。原版 `right` 是 [`RIGHT_COL`]，戰場加大時（規格 005）加上多出來的欄數。
+    pub(crate) fn can_move_right_to(&self, right: u16) -> bool {
+        self.col < right
     }
 
     /// 上移一步，圖換成上移圖。到邊界不動，圖也不換。
@@ -398,9 +408,9 @@ impl Player {
         }
     }
 
-    /// 右移一步，尾焰旗標設 `Y`。
-    fn move_right(&mut self) {
-        if self.can_move_right() {
+    /// 右移一步，尾焰旗標設 `Y`。`right` 是右緣的界限，見 [`Player::can_move_right_to`]。
+    fn move_right(&mut self, right: u16) {
+        if self.can_move_right_to(right) {
             self.col = self.col.wrapping_add(COL_STEP);
             self.blit_x = self.blit_x.wrapping_add(COL_STEP);
             self.flame = YES;
@@ -596,6 +606,7 @@ impl Core {
     /// 往下再往右走一步，並在位置播特效。受擊旗標沒有清，所以每幀都回到這裡。
     fn die_step(&mut self, who: usize) {
         let style = &STYLES[who];
+        let right = self.right_col();
         let p = &mut self.pl.ship[who];
         p.dying = p.dying.wrapping_sub(1);
         if p.dying == 0 {
@@ -604,7 +615,7 @@ impl Core {
             return;
         }
         p.move_down(&style.images);
-        p.move_right();
+        p.move_right(right);
         let (col, row) = (p.col, p.row);
         self.spawn_effect(EffectKind::PlayerDeath, col, row);
     }
@@ -620,6 +631,7 @@ impl Core {
         let down = self.any_held(style.keys.downward());
         let left = self.any_held(style.keys.leftward());
         let right = self.any_held(style.keys.rightward());
+        let right_col = self.right_col();
         let p = &mut self.pl.ship[who];
         if up {
             p.move_up(&style.images);
@@ -632,9 +644,15 @@ impl Core {
             p.move_left();
             p.input_bits |= InputBit::Left as u8;
         } else if right {
-            p.move_right();
+            p.move_right(right_col);
             p.input_bits |= InputBit::Right as u8;
         }
+    }
+
+    /// 玩家活動範圍的右緣界限（右移要求欄小於它）：原版是 [`RIGHT_COL`]，戰場加大時（規格 005）加上多出來的欄數，
+    /// 所以 120% 到欄 41、150% 到欄 53。
+    pub(crate) fn right_col(&self) -> u16 {
+        right_col_for(self.field_cols())
     }
 
     fn any_held(&self, scans: [u8; 3]) -> bool {
@@ -835,7 +853,7 @@ mod tests {
         assert_eq!((p.col, p.row, p.blit_y, p.image), (1, 0, 0, 0), "欄 1 不能再左，列 0 不能再上，圖也不換");
         assert!(!p.can_move_up() && !p.can_move_left() && p.can_move_down() && p.can_move_right());
         let mut p = Player { col: 0x21, row: 0x10, blit_x: 0x21, blit_y: 0x100, ..Player::default() };
-        p.move_right();
+        p.move_right(RIGHT_COL);
         p.move_down(&images);
         assert_eq!((p.col, p.row, p.flame, p.image), (0x21, 0x10, 0, 0), "欄 21h 不能再右（無號），列 10h 不能再下");
         assert!(!p.can_move_right() && !p.can_move_down());

@@ -111,9 +111,11 @@ impl BossLayer {
 }
 
 impl Core {
-    /// 第 `layer` 層從頭開始：位置與腳本。
+    /// 第 `layer` 層從頭開始：位置與腳本。戰場加大時（規格 005）頭目靠右對齊新右緣：起點 x 加上多出來的欄數，
+    /// 腳本內的相對位移不改，所以頭目從新的右緣進場，合成圖在暫存區裡的位置不變。
     pub(crate) fn restart_boss_layer(&mut self, layer: usize, y: u16, x: u16, script: BossScript) {
         let start = self.tables.boss_start(script as usize);
+        let x = x.wrapping_add(self.field_extra());
         self.scenes.boss.layers[layer].restart(y, x, start);
     }
 

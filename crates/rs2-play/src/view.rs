@@ -29,7 +29,9 @@ pub fn window_size(scale: u32, toolbar_visible: bool) -> (u32, u32) {
 pub struct Fit {
     /// 顯示比例（寬, 高）。
     pub aspect: (u32, u32),
-    /// 放得下就放整數倍，放不下 1 倍才縮小（以比例的最小整數矩形為 1 倍，8:5 是 320×200）。為假則填滿可用區域。
+    /// 1 倍的邊長單位：比例乘它就是 1 倍的大小。8:5 的單位是 40，1 倍是 320×200。
+    pub unit: u32,
+    /// 放得下就放整數倍，放不下 1 倍才縮小（以比例乘 `unit` 的矩形為 1 倍）。為假則填滿可用區域。
     pub integer: bool,
     /// 線性縮放。為假是最近鄰（原版圖的像素不糊）。
     pub smooth: bool,
@@ -37,12 +39,21 @@ pub struct Fit {
 
 impl Fit {
     /// VGA、EGA 的原版圖，320×200：8:5，整數倍，最近鄰。
-    pub const SD: Fit = Fit { aspect: (8, 5), integer: true, smooth: false };
+    pub const SD: Fit = Fit { aspect: (8, 5), unit: 40, integer: true, smooth: false };
     /// HD 圖，1280×800：8:5，整數倍，線性。
-    pub const HD: Fit = Fit { aspect: (8, 5), integer: true, smooth: true };
+    pub const HD: Fit = Fit { aspect: (8, 5), unit: 40, integer: true, smooth: true };
     /// CGA 640×200、MGA 640×300：原版在 4:3 螢幕上都是 4:3。填滿可用區域，線性縮放
     /// （水平不是整數倍，最近鄰會讓 1 位元的點陣花紋忽寬忽窄）。
-    pub const MONO: Fit = Fit { aspect: (4, 3), integer: false, smooth: true };
+    pub const MONO: Fit = Fit { aspect: (4, 3), unit: 40, integer: false, smooth: true };
+
+    /// 戰場加大時（規格 005）的 VGA、EGA 畫面：`cols` 欄寬 × 200 列（384×200、480×200），1 倍是 `cols × 8` 乘 200。
+    /// 欄數 40 就是 [`Fit::SD`]（`hd` 為真是 [`Fit::HD`]）。視窗比例不變，所以加寬的畫面上下留邊。
+    pub const fn frame(cols: u16, hd: bool) -> Fit {
+        if cols == 40 {
+            return if hd { Fit::HD } else { Fit::SD };
+        }
+        Fit { aspect: (cols as u32, 25), unit: 8, integer: true, smooth: hd }
+    }
 }
 
 /// 遊戲畫面在視窗中的位置：可用區域是工具列以下，依 `fit` 放（見 `Fit`）。置中，剩下的邊填黑。
@@ -50,7 +61,7 @@ impl Fit {
 pub fn fit_rect_for(win_w: u32, win_h: u32, bar_h: u32, fit: Fit, mobile: bool) -> BarRect {
     let avail_h = win_h.saturating_sub(bar_h);
     let (aw, ah) = (win_w as f64, avail_h as f64);
-    let (uw, uh) = (fit.aspect.0 as f64 * 40.0, fit.aspect.1 as f64 * 40.0);
+    let (uw, uh) = (fit.aspect.0 as f64 * fit.unit as f64, fit.aspect.1 as f64 * fit.unit as f64);
     let k = (aw / uw).min(ah / uh);
     let k = if fit.integer && !mobile && k >= 1.0 { k.floor() } else { k };
     let w = ((uw * k).round() as i32).max(1);
@@ -68,9 +79,10 @@ pub fn fill_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
     fit_rect_for(win_w, win_h, bar_h, Fit::SD, true)
 }
 
-/// 震動位移換成視窗像素：只有 1280 寬的 HD 畫面震動，`frame_w` 是畫面寬，`shown_w` 是貼到視窗的寬。
+/// 震動位移換成視窗像素：只有 HD 畫面（寬 1280，戰場加大時 1536、1920）震動，`frame_w` 是畫面寬，
+/// `shown_w` 是貼到視窗的寬。原版圖與單色畫面（最寬 640）不震動。
 pub fn shake_px(shake: (i32, i32), frame_w: usize, shown_w: i32) -> (i32, i32) {
-    if frame_w != 1280 || shake == (0, 0) {
+    if frame_w < 1280 || shake == (0, 0) {
         return (0, 0);
     }
     let k = shown_w as f32 / frame_w as f32;

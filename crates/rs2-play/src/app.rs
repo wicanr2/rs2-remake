@@ -17,7 +17,7 @@ use crate::ui::panel::{self, Cx, Page, Panel, PanelOut};
 use crate::ui::{self, text};
 use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size};
 use rs2_audio::Engine;
-use rs2_game::{Fixes, Start};
+use rs2_game::{Fixes, Rules, Start};
 use rs2_gfx::{Assets, HdAssets, MonoAssets};
 use rs2_trace::{Inputs, load_inputs, parse_sc};
 use sdl2::controller::{Axis, GameController};
@@ -212,9 +212,9 @@ pub fn run(args: Args) -> Result<i32, String> {
     }
 }
 
-fn build_session(cx: &Ctx, hd: Option<HdAssets>, view: ViewOpts) -> Session {
+fn build_session(cx: &Ctx, hd: Option<HdAssets>, view: ViewOpts, rules: Rules) -> Session {
     let fixes = if cx.args.original_bugs { Fixes::NONE } else { Fixes::ALL };
-    Session::new(&cx.inputs, cx.assets.clone(), cx.mono.clone(), hd, begin_of(&cx.args), fixes, view)
+    Session::new_with_rules(&cx.inputs, cx.assets.clone(), cx.mono.clone(), hd, begin_of(&cx.args), fixes, view, rules)
 }
 
 /// 無敵（規格 005）：開著時每步呼叫，從沒開過就不呼叫，所以全部選項為預設時模擬與原版逐位元組相同。
@@ -352,7 +352,9 @@ fn split_codes(sc: &[u8]) -> ([bool; 2], Vec<u8>) {
 }
 
 /// 把前端的開關交給 `Session`：畫面選項、HUD 右端的標籤、打擊回饋。
-fn sync_session(session: &mut Session, ctl: &Controls) {
+fn sync_session(session: &mut Session, ctl: &mut Controls) {
+    // 這一關的戰場加大了就不能選 CGA、MGA（規格 005「戰場大小」）。
+    ctl.set_field_wide(session.field_wide());
     session.set_view(ctl.view());
     session.set_hud_flags(ctl.hud_flags());
     session.set_hit_feedback(ctl.settings.hit_feedback());
@@ -391,8 +393,8 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         None => None,
     };
     let hd = finish_hd(cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone())))?;
-    let mut session = build_session(&cx, hd, ctl.view());
-    sync_session(&mut session, &ctl);
+    let mut session = build_session(&cx, hd, ctl.view(), ctl.settings.rules());
+    sync_session(&mut session, &mut ctl);
     log_missing(&mut session);
     eprintln!(
         "[headless] 起點 {:?}，{steps} 步，補間 {}，幀計數 {}，HD {}，顯示模式 {}",
@@ -426,7 +428,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
                 true
             }
         });
-        sync_session(&mut session, &ctl);
+        sync_session(&mut session, &mut ctl);
         // 沒有真實時鐘：介面層的時間用步數換算（一步約 110 毫秒），同樣的輸入得到同樣的畫面。
         session.set_clock_ms(session.steps() * 110);
         apply_invincible(&mut session, ctl.settings.invincible(), &mut god_applied);
@@ -664,7 +666,7 @@ fn panel_size(canvas: &WindowCanvas, ctl: &Controls) -> (u32, u32) {
 
 /// 處理一個動作的後續：視窗大小、全螢幕、授權頁、存檔、開關設定畫面，並讓輸入層跟上。回傳要不要離開。
 fn apply_effect(eff: Effect, front: &mut Front, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>, now_us: u64) -> bool {
-    sync_session(session, &front.ctl);
+    sync_session(session, &mut front.ctl);
     if eff.about {
         // Android 的 AboutActivity 收這個網址（android/AndroidManifest.xml）。桌面版沒有對應程式，開不了就算了。
         if let Err(e) = sdl2::url::open_url("rs2about://license") {
@@ -819,8 +821,8 @@ fn window_loop<'a>(
         }
     }
     let hd = finish_hd(hd_handle)?;
-    let mut session = build_session(&cx, hd, ctl.view());
-    sync_session(&mut session, &ctl);
+    let mut session = build_session(&cx, hd, ctl.view(), ctl.settings.rules());
+    sync_session(&mut session, &mut ctl);
     log_missing(&mut session);
     let output = if cx.args.no_audio {
         None

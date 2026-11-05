@@ -38,6 +38,10 @@ pub const ST_GOD: &str = "無敵";
 /// 單色圖庫（CGA、MGA 用的 21 個檔）載入失敗時，狀態列常駐的說明，完整原因在標準錯誤輸出。
 /// 內附點陣沒有「圖庫」「缺檔」的字，所以用現有的字措辭。
 pub const ST_MONO_MISSING: &str = "CGA、MGA 不能選：畫面沒有取到";
+/// 戰場加大的關卡（規格 005「戰場大小」）裡，顯示模式的循環跳過 CGA、MGA，狀態列說明。
+pub const ST_MONO_WIDE: &str = "戰場加大時 CGA、MGA 不能選";
+/// 顯示模式是 CGA、MGA，戰場大小選項不是 100% 時的說明：單色進關一律 100%。
+pub const ST_FIELD_MONO: &str = "CGA、MGA 的戰場固定 100%";
 /// 狀態列各段之間的間隔（全形空白）。
 pub const ST_SEP: &str = "　";
 

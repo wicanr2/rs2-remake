@@ -14,7 +14,7 @@
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
 use crate::mode::DisplayMode;
 use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS, index_of};
-use rs2_game::Rules;
+use rs2_game::{FieldSize, Rules};
 use crate::resources::{Env, Os, non_empty};
 use crate::ui::text;
 use std::io::Write;
@@ -107,13 +107,22 @@ impl Settings {
         self.opts.get(HIT_FEEDBACK_INDEX) != 0
     }
 
+    /// 戰場大小選項的值（0、1、2 對應 100%、120%、150%）。沒實作算 100%。
+    pub fn field_size(&self) -> FieldSize {
+        let i = index_of("field_size").expect("選項表沒有 field_size");
+        if OPTIONS[i].implemented { FieldSize::from_index(self.opt_value(i)) } else { FieldSize::Normal }
+    }
+
     /// 交給核心的強化選項。沒實作的選項一律算關，把 `options.rs` 那一列的 `implemented` 打開才生效。
+    ///
+    /// 戰場大小只支援 VGA、EGA：顯示模式是 CGA、MGA 時一律 100%（進關時讀，所以關內切換模式不影響這一關）。
     pub fn rules(&self) -> Rules {
         let on = |id: &str| {
             let i = index_of(id).expect("選項表沒有這個 id");
             OPTIONS[i].implemented && self.opt_value(i) != 0
         };
         Rules {
+            field: if self.mode.is_mono() { FieldSize::Normal } else { self.field_size() },
             wave_charge: on("wave_charge"),
             auto_fire: on("auto_fire"),
             force_pod: on("force_pod"),

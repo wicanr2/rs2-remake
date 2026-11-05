@@ -185,6 +185,7 @@ fn run_a5(show_counter: bool, drop_every: Option<usize>) -> Outcome {
             DrawCmd::EgaAttr { .. } => "EgaAttr".to_string(),
             DrawCmd::VramFill { .. } => "VramFill".to_string(),
             DrawCmd::SetMapMask { .. } => "SetMapMask".to_string(),
+            DrawCmd::Field { .. } => "Field".to_string(),
         };
         *ops.entry(name).or_default() += 1;
         cmds.push(c);

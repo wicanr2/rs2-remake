@@ -262,6 +262,9 @@ pub struct VgaSink {
     st: State,
     seq: u64,
     watch_seq: Option<u64>,
+    /// 核心在戰場加大的關卡（`DrawCmd::Field`，欄數不是 40）。`VgaSink` 是 64 KB 的逐位元組重現，只有原版的 40 欄，
+    /// 這段期間的命令一律略過，前端改用 `LayerSink` 出圖；換回 40 欄時平面清成 0（接著的標題與過場會全部重畫）。
+    wide: bool,
 }
 
 impl VgaSink {
@@ -277,7 +280,13 @@ impl VgaSink {
             st: State { dump: None, stride_reg: 0, anomalies: 0, log: Vec::new(), max_disp_row: 0, max_scratch_row: 0 },
             seq: 0,
             watch_seq: None,
+            wide: false,
         }
+    }
+
+    /// 核心目前在戰場加大的關卡，這個接收端不畫（見 `wide` 欄位）。
+    pub fn is_wide(&self) -> bool {
+        self.wide
     }
 
     /// 對拍用：之後對這組圖庫的越界圖號照原版讀傾印來畫，見 `BankDump`。
@@ -397,6 +406,20 @@ impl VgaSink {
 
     /// 依序套用一個命令。
     pub fn apply(&mut self, cmd: &DrawCmd) {
+        if let DrawCmd::Field { cols } = cmd {
+            let wide = *cols != 40;
+            if self.wide && !wide {
+                self.vga = Vga::new();
+            }
+            self.wide = wide;
+            self.seq += 1;
+            return;
+        }
+        // 調色盤照常套用（換關的淡入淡出在加大的關卡裡也要跟上），畫圖與填色略過。
+        if self.wide && matches!(cmd, DrawCmd::Blit(_) | DrawCmd::VramFill { .. } | DrawCmd::SetMapMask { .. }) {
+            self.seq += 1;
+            return;
+        }
         match cmd {
             DrawCmd::SetDac { start, rgb } => {
                 for i in 0..16usize {
@@ -411,6 +434,7 @@ impl VgaSink {
             DrawCmd::VramFill { off, words, value } => vram_fill(&mut self.vga, *off, *words, *value),
             DrawCmd::SetMapMask { mask } => set_map_mask(&mut self.vga, *mask),
             DrawCmd::Blit(c) => self.blit(c),
+            DrawCmd::Field { .. } => unreachable!("Field 在上面處理"),
         }
         if self.vga.take_watch_hit() {
             self.watch_seq = Some(self.seq);

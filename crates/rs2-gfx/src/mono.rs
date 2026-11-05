@@ -293,6 +293,9 @@ pub struct MonoSink {
     anomalies: u64,
     log: Vec<String>,
     seq: u64,
+    /// 核心在戰場加大的關卡（`DrawCmd::Field`，欄數不是 40）。單色不支援，這段期間的命令一律略過，
+    /// 換回 40 欄時記憶體清成 0（接著的標題與過場會全部重畫）。
+    wide: bool,
 }
 
 impl MonoSink {
@@ -310,6 +313,7 @@ impl MonoSink {
             anomalies: 0,
             log: Vec::new(),
             seq: 0,
+            wide: false,
         }
     }
 
@@ -892,11 +896,28 @@ impl MonoSink {
 
     /// 依序套用一個命令。
     pub fn apply(&mut self, cmd: &DrawCmd) {
+        if let DrawCmd::Field { cols } = cmd {
+            // 戰場大小（規格 005）：單色只有 40 欄。加大的關卡整段略過，換回 40 欄時清掉記憶體。
+            let wide = *cols != 40;
+            if self.wide && !wide {
+                self.vmem.fill(0);
+                self.sa.fill(0);
+                self.sb.fill(0);
+                self.undo = None;
+            }
+            self.wide = wide;
+            self.seq += 1;
+            return;
+        }
+        if self.wide {
+            self.seq += 1;
+            return;
+        }
         match cmd {
             DrawCmd::Blit(c) => self.blit_op(c),
             DrawCmd::VramFill { off, words, value } => self.clear_one_page(*off, *words, *value),
             // 調色盤與序列器的 map mask 是 E 專用的硬體操作，單色沒有。
-            DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } | DrawCmd::SetMapMask { .. } => {}
+            DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } | DrawCmd::SetMapMask { .. } | DrawCmd::Field { .. } => {}
         }
         self.seq += 1;
     }
