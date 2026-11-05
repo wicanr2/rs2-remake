@@ -27,6 +27,8 @@ adb shell svc power stayon true || true
 adb shell settings put system accelerometer_rotation 0 || true
 # 第一次全螢幕的系統提示（ImmersiveModeConfirmation）會吃掉觸控。真機上玩家按一次就沒了，測試先略過。
 adb shell settings put secure immersive_mode_confirmations confirmed || true
+# 開機完成後系統還在套用資源覆蓋，這時啟動的 Activity 會被重建（Config changes=80000000）。等它穩定。
+sleep 25
 adb logcat -c
 
 fail() { echo "失敗：$*"; adb logcat -d > /out/logcat-full.txt || true; adb logcat -d -s rs2:* SDL:* AndroidRuntime:* > /out/logcat.txt || true; exit 1; }
@@ -53,6 +55,10 @@ adb logcat -d -s rs2:* | grep '\[install\]'
 wait_log '\[window\]' 240
 sleep 8
 alive "進遊戲"
+for _ in $(seq 1 30); do
+  adb shell dumpsys window | grep -E 'mCurrentFocus' | head -1 | grep -q MainActivity && break
+  sleep 1
+done
 adb shell dumpsys window | grep -E 'mCurrentFocus' | head -1 | grep -q MainActivity || fail "遊戲不在前景，觸控會被別的視窗吃掉"
 adb logcat -d -s rs2:* | grep -E '\[資源\]|\[init\]|\[hd\]|\[window\]|\[audio\]' | cut -d: -f4- | cut -c1-160 | head -14
 adb shell wm size

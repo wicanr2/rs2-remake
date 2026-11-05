@@ -82,6 +82,7 @@
 | 資料 | 原版檔與 HD 放 APK 的 `assets/rs2-data.pak`，第一次啟動解到內部儲存，逐檔驗 SHA-256。解完才進遊戲，已經解過而且雜湊相符就略過 |
 | 路徑 | `SDL_GetPrefPath` 在 Android 回傳內部儲存，設定與資料都放那裡。不用 cwd |
 | 切到背景 | SDL 預設在背景停住事件迴圈。回前景時重設 `Pacer`，不補步。遊戲等於暫停 |
+| 系統設定變更 | Manifest 宣告自己處理字型大小、顯示大小、深色模式等，Activity 不重建。資源路徑變更（`assetsPaths`）無法宣告，發生時 Activity 重建，遊戲從標題重來 |
 | GL context 遺失 | 收到 `RenderDeviceReset` 或 `RenderTargetsReset` 時重建貼圖 |
 | 授權 | `SDL_OpenURL("rs2about://license")` 開 `AboutActivity`，顯示 `assets/LICENSE` 全文 |
 
