@@ -48,6 +48,12 @@ if test -d "$HD"; then
   base+=(-v "$HD:/hd:ro" -e RS2_HD=/hd)
 fi
 
+# 單色收據（選用）：存在才唯讀掛載。worktree 裡是符號連結，透過 /project 讀會斷，所以另外掛。
+MODES="$WP/dosrun-modes"
+if test -d "$MODES"; then
+  base+=(-v "$MODES:/dosrun-modes:ro" -e RS2_DOSRUN_MODES=/dosrun-modes)
+fi
+
 # rs2-play 用：選映像並準備共用參數。只有 play-* 子命令呼叫，其他子命令不受影響。
 SDL_IMAGE=""
 PLAY_CARGO="$WP/cargo-play"
