@@ -2,6 +2,19 @@
 
 大宇資訊（Softstar）1990 年 DOS 橫向捲軸射擊遊戲《RS-2》的逆向分析、素材解析工具與 Rust 重製。目的是保存台灣早期遊戲的製作成果與技術細節。
 
+![第一關的實際執行畫面](docs/images/game/window-stage1.png)
+
+重製程式的實際視窗，第一關示範模式，HD 圖，補間開啟。上方是工具列。
+
+| | |
+|---|---|
+| ![第一關頭目，HD](docs/images/game/stage1-boss-hd.png) | ![第二關頭目，HD](docs/images/game/stage2-boss-hd.png) |
+| 第一關頭目 | 第二關頭目 |
+| ![第三關，HD](docs/images/game/stage3-eyes-hd.png) | ![第四關頭目，HD](docs/images/game/stage4-fish-hd.png) |
+| 第三關 | 第四關頭目 |
+
+原版與 HD 的對照見[素材：原版與 HD](#素材原版與-hd)。
+
 ## 原版素材
 
 本儲存庫不含原版的執行檔、資料檔與音樂，也不含抽出的單張圖片與音訊。例外是 `docs/images/` 的原版與 HD 對照圖，裡面有各素材庫的完整總覽，所以這個 repo 維持私人，不公開。
@@ -133,7 +146,8 @@ CGA 與 MGA 的單色版另有 1,526 張，由 HD 彩色圖推導，這裡沒有
 | Rust 重製 | 從標題玩到片尾，含開場動畫、示範、選單、雙人、四關、過場、片尾。模擬與畫面和原版逐筆相同（20 份收據 19,284 筆） |
 | 音樂與音效 | 重製自帶 OPL2 合成器。暫存器寫入和原版驅動逐筆相同，喇叭事件也相同。波形只和參考實作比過品質 |
 | 尚未驗證 | 真實桌面的視窗與音效裝置、GPU 繪圖器、全螢幕都沒測過，只在虛擬環境跑過。手感沒有真人驗證 |
-| 尚未開始 | CGA、MGA 顯示模式 |
+| 尚未開始 | CGA、MGA 顯示模式與切換。Linux、Windows、macOS、Android 發行包 |
+| 核心的寫法 | 遊戲沒有模擬 x86，dosgolem 只用來量原版行為，不進遊戲。但 `rs2-core` 目前是照機器碼逐函式翻成 Rust，啟動時還要讀 `S.EXE` 的資料段。改成真正重寫的計畫在[規格 004](docs/spec/004-rewrite-and-delivery.md) |
 
 唯一現況入口是 [CONTEXT.md](CONTEXT.md)。
 
