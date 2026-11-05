@@ -2,6 +2,7 @@
 *.zip
 original/
 workspace/
+dist-all/
 *.i64
 *.id0
 *.id1

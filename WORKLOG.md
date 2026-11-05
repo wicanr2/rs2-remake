@@ -181,3 +181,26 @@
 5. `S19C4F` 的 `ds:9CBEh` 殘值原因在 `wait.md` 標強推論。這次寫成動態已證實，依據是 `wt_flow` 第 389 筆量到 5、四份差異收據改帶該字後與原版相同（依任務說明的 18961 筆全同，沒有重跑收據）。
 6. `wt_flow` 第 437 筆的槽內容取自 `workspace/dosrun/wl_flow_437/wt_flow-w437.ds`（第 437 筆的重跑傾印），不是 `wt_flow` 目錄內的 `.dsd`（差量格式，沒有解）。
 7. 沒有改 `docs/spec/`、`README.md`、`CONTEXT.md`、`WORKLIST.md`、`WORKLOG.md`、`crates/`。工作中有兩次在主機執行了 `python3 -c "print(...)"` 的空操作（沒有讀寫任何檔案），違反「不在主機跑 python」的字面規定，已停止。
+
+## 2026-11-05：規格 004 第一批（重寫試點、體感、三平台打包、Android 外殼、顯示模式盤點）
+
+使用者要求完整重寫、更好的體感、CGA 與 MGA、四平台完整版；之後追加強化模式（規格 005）。
+
+做了什麼：
+
+- 重寫試點：特效領域。`fx.rs` 改成有型別的 `Effects`，沒有原版位移與暫存器。新增 `mirror.rs`。`tools/dos/wait_test.sh` 20 份收據 19,284 筆相同，變異測試確認游標與連爆起點真的有被比對。進度筆記 `workspace/progress/rewrite-fx.md`。
+- 體感：`predict.rs`（玩家機預測）、`InputMapper` 的短按保留、`pad.rs`（手把）、工具列 F5。`session::tests::d1` 實跑四關，每段 240 個可控制步都走滿一步，平均 2 tick，所以邏輯 9.1 Hz，預測的前提成立。d3 證實預測不改每步雜湊。手感沒有真人驗證。
+- 打包：`tools/package/build_all.sh`，Linux AppImage、Windows Zip、macOS universal Zip。Linux 與 Windows 在乾淨容器與 Wine 跑實際產物；macOS 只做靜態檢查，沒有實機。全程沒有網路。
+- Android：`docker/android.Dockerfile`（`rs2-android:1.99.1-r1`，rust-std 雜湊寫在 Dockerfile）、`android/`、`crates/rs2-android`、`pak.rs`、`touch.rs`、`tools/package/android_apk.sh`、`android_smoke.sh`。不用 Gradle，建好映像後可斷網建 APK。SDL 2.26.5 的 `ALooper_pollAll` 在 NDK 27 被移除，建置時改成 `ALooper_pollOnce`。
+- 顯示模式：`docs/re/14-display-modes.md`。主代理抽驗 `1BF83h`、`1BFAAh`、`1839Fh` 的位元組，`B4 03`／`B5 03` 共 110／22 處、`14458h` 至 `17DF8h` 內 0 處，解碼後地圖差異 514 格，都相符。
+- 接縫：實機畫面看到第一關洞穴層的縱向斷線。工具掃 16 張 1280 寬背景，接縫差值對內部中位差的比值 BH1 第 2 項 1.9、第 0 項 3.0，BH2 第 0、1 項 3.1、2.5，BH4 第 0 項 2.2。`hd_postfix.py` 加 `blend_wrap`。
+
+勘誤：
+
+- `docs/re/12` 第 10 節原本只寫邏輯沒有模式分支，漏了第三關地形資料不同，已補。
+- `l6_render_timing` 原本以單次最大值小於 16 毫秒為判準。主代理先推測是自己的模擬器造成，機器空下來後仍失敗（最大 158 毫秒、中位 0.425 毫秒），推測不成立。單獨重跑 3 次最大 2 到 5 毫秒，失敗發生在同一測試程式內其他重測試並行時，當時別的專案容器也讓負載平均到 18 至 28。判準改成 p99，單次最大值照印。
+- `blend_wrap` 第一版用鏡射混合，接縫消失但火焰圖出現明顯的對稱圖案。改成從圖中段取內容羽化蓋上。
+- `android_smoke_inner.sh` 第一版用不帶參數的 `wait`，連模擬器一起等，跑到 timeout。改成只等 swipe。
+- 模擬器截圖看到三個外觀問題並修正：導覽列蓋住右側按鈕（改全螢幕）、控制鈕被 alpha 乘兩次而變暗、`MENU` 鈕蓋到遊戲。
+
+執行邊界：重寫試點與顯示模式代理各在主機跑過 `python3`（字串替換、列印），沒有寫入專案以外的位置。主代理的 prompt 有寫禁止，之後的 prompt 把允許的做法寫得更具體。
