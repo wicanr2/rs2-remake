@@ -9,6 +9,7 @@
 
 README 對照圖（docs/images/）是唯一放行的圖片，規則見 README_IMAGE 與 png_outside_idat。
 """
+import hashlib
 import os
 import re
 import struct
@@ -28,6 +29,10 @@ README_IMAGE = re.compile(r"^docs/images/(?:game|overview)/[A-Za-z0-9-]+\.png$")
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 MAX_IMAGE = 8 * 1024 * 1024
 PNG_CHUNKS_OK = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
+# 介面字型（規格 005）：tools/ui_font_bake.py 從 Noto Sans CJK TC（OFL）烘出來的點陣，不含原版素材。
+# 只放行這個路徑加確切的雜湊，內容一變就重新擋下。重烘之後要更新雜湊並重跑 --selftest。原版位元組與密碼表照樣掃。
+FONT_ASSET = "crates/rs2-play/assets/ui-font.bin"
+FONT_SHA256 = "042250196bc69944fcc9369d40f708fd95d16a929e572fa87f026c5bddde5026"
 WIN = 32
 HEXWIN = 24
 HEXRUN = re.compile(rb"(?:\b(?:0x)?[0-9A-Fa-f]{2}h?\b[ ,\t]*){%d,}" % HEXWIN)
@@ -78,9 +83,10 @@ def scan(name, data, win, hexwin, pw_raw, pw_letters, allow):
     hits = []
     ext = os.path.splitext(name)[1].lower()
     readme_image = bool(README_IMAGE.match(name)) and data.startswith(PNG_SIG)
-    if ext in DENY_EXT and not (ext == ".go" and SOURCE_GO_OK.match(name)) and not readme_image:
+    font = name == FONT_ASSET and hashlib.sha256(data).hexdigest() == FONT_SHA256
+    if ext in DENY_EXT and not (ext == ".go" and SOURCE_GO_OK.match(name)) and not readme_image and not font:
         hits.append(("副檔名", ext))
-    if len(data) > (MAX_IMAGE if readme_image else MAX_SIZE):
+    if len(data) > (MAX_IMAGE if readme_image else MAX_SIZE) and not font:
         hits.append(("過大", len(data)))
     pw_data = data
     if readme_image:
@@ -174,6 +180,10 @@ def selftest(orig, unp):
     cases.append(("docs/images/game/a.png", ok_png(extra=[(b"PLTE", secret)]), True))
     cases.append(("docs/images/game/a.png", ok_png(extra=[(b"PLTE", bytes((v + 0x41) & 0xFF for v in table[5:40]))]), True))
     cases.append(("docs/images/game/a.png", good[:-1] + bytes([good[-1] ^ 1]), True))
+    # 介面字型的例外：路徑與雜湊都要對。
+    cases.append((FONT_ASSET, b"x", True))
+    cases.append((FONT_ASSET, b"x" * (MAX_SIZE + 1), True))
+    cases.append(("crates/rs2-play/assets/other.bin", b"x", True))
     bad = 0
     for name, data, expect in cases:
         hit = bool(scan(name, data, win, hexwin, pw_raw, pw_letters, set()))
