@@ -127,7 +127,7 @@ impl Core {
         self.s15c92();
         self.s164bb();
         self.update_enemy_bullets();
-        self.s1673e();
+        self.update_player_bullets();
         self.s14704();
         self.s14f92();
         self.s15232();
@@ -162,7 +162,7 @@ impl Core {
         self.s164d7();
         self.s15c92();
         self.update_enemy_bullets();
-        self.s1673e();
+        self.update_player_bullets();
         self.s14704();
         self.s14f92();
         self.s15232();
@@ -289,7 +289,7 @@ impl Core {
         self.r.ax = 0;
         self.ds.fill16(0x2294, 0x10, 0);
         self.eb.release_all();
-        self.ds.fill16(0x2607, 0x14, 0);
+        self.pb.release_all();
         self.r.cx = 0;
         self.r.di = 0x2607 + 0x28;
         for o in [0xA91Bu16, 0xA916, 0xA918, 0xA913, 0xA901] {
@@ -299,7 +299,7 @@ impl Core {
         self.s14f47();
         self.s158ba();
         self.ds.w16(0x9004, 0);
-        self.ds.w16(0x25E8, 0);
+        self.pb.seekers_in_flight = 0;
         self.ds.w8(0x03ED, b'N');
         self.ds.w8(0x03EE, 0);
         for o in [0xA8E8u16, 0xA8DE, 0xA8EB, 0xA8DC, 0xA8F9] {

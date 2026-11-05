@@ -237,7 +237,8 @@ impl Core {
     /// 把形狀以 `or` 寫進 G3，左上角在 (`x`, `y`)（原版 `sub_17D2C`）。
     /// 形狀寬同時寫進繪製的每列位元組殘值（`word_2687E`），後面的繪製命令會記下它。
     /// 位址落在 G3 範圍之外的格略過，列號超過 13h 的列都落在越界列。
-    fn stamp_shape(&mut self, shape: u16, x: u16, y: u16) {
+    /// 玩家子彈（原版 `sub_1698C`）用同一套規則，共用這個函式。
+    pub(crate) fn stamp_shape(&mut self, shape: u16, x: u16, y: u16) {
         let width = self.table_word(shape);
         let height = self.table_word(shape.wrapping_add(2));
         self.set_stride_reg(width);

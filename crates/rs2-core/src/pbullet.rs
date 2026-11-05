@@ -1,1169 +1,1158 @@
-//! 背景繪製、實體繪製與玩家子彈。
-//! 逐函式移植自機器碼，查法見 `tools/q.sh`。規格：`docs/spec/001-rust-first-stage.md`。
+//! 玩家子彈：發射、移動、繪製、碰撞與命中結算。
 //!
-//! 位址慣例：`a(0x1F1A8)` 是 IDA 線性位址名稱 `word_1F1A8`，直接寫偏移的（`0x2294`、`0x1B32`）
-//! 是機器碼裡的 `ds:` 立即值。
+//! 池有 20 槽。每槽一筆記錄（[`PlayerBullet`]，原版 16 個字組）加一個池指標；指標為 0 表示空槽，
+//! 使用中時等於這一槽記錄的位址。發射（原版 `sub_165CF`、`sub_1669F`）依武器字母與朝向查
+//! [`Weapon::steps`] 的步驟表，每一步從樣板表複製一筆記錄、填入起點（原版 `sub_16578`）。
+//! 每幀（原版 `sub_1673E`）對每個使用中的槽讀一個腳本位元組、移動、畫圖、寫格網 G3、
+//! 對 G1（實體）與 G4（第三關地形）做碰撞、結算命中，出界或命中就釋放。
+//! 語意見 `docs/re/11-entities-combat.md` 第 5、6 節。
 //!
-//! 玩家子彈池：20 槽，指標表 `ds:2607h`，記錄 16 字組（32 位元組），基底 `ds:262Fh`。
-//! `sub_16779` 把記錄複製到工作區 `ds:28B1h`（`word_1F471` 起），`sub_1678E` 複製回去，
-//! `word_1F46F`（`ds:28AFh`）存記錄位址，也是 `sub_16578` 讀取樣板位址的變數。
+//! 狀態與資料段位移的對應在 `mirror.rs`，這個檔案不出現原版位移。
+//!
+//! 對外的入口：
+//!
+//! | 入口 | 原版 |
+//! |---|---|
+//! | [`Core::fire_player_bullets`] | `sub_165CF`（朝右）、`sub_1669F`（朝左）。呼叫端：主機普通彈 `sub_14501`、`sub_1502F`，砲座 `sub_1480A`、`sub_15338` |
+//! | [`Core::fire_sweep`] | `sub_165CF` 的 `F` 分支。呼叫端：主機放開右 Shift 的大掃射 `sub_14501`、`sub_1502F` |
+//! | [`Core::update_player_bullets`] | `sub_1673E`（各關每幀） |
+//! | [`PlayerBullets::release_all`] | `sub_10E33` 內清池指標表的那一段 |
+//!
+//! 武器派發表（[`Weapon`]、[`Step`]、[`Shot`]）與子彈的傷害、穿透（[`Behavior`]）各自獨立，
+//! 之後的強化模式（規格 005）只換這幾處。
+//!
+//! 已查證不移植的碼：`sub_16C7D`（命中計數器，每次碰到格子都會呼叫）只有在記錄的 `owner` 是
+//! `1`（31h）或 `2`（32h）時才有作用，而 `owner` 取自發射時的武器字母（`word_1F1BC`）。`word_1F1BC` 的寫入端是
+//! `sub_14501`（`1460Ch` 寫 `F`、`14661h` 寫 0）、`sub_1502F`（`1513Ah`、`1518Fh`）、
+//! `sub_1480A`（`1488Bh`、`148AAh`，值取自 `word_1DAA9`）與 `sub_15338`（`153B9h`、`153D8h`，值取自 `word_1DB0B`）；
+//! 後兩個武器字組的寫入端只寫 `L`、`B`、`K`、`S`、0（`14D2Ah` 至 `14D3Fh`、`14F73h`、`15858h` 至 `1586Dh`、`158E6h`）。
+//! 所以 `owner` 不會是 31h 或 32h，那兩個計數器（`word_1F1B8`、`word_1F1BA`）從不被寫入。
+//! `sub_165CF` 在 `165FCh` 至 `16619h` 的雙彈碼前面是 `retn`，無跳入，也不移植。
 
 use crate::draw::Pool;
-use crate::dseg::a;
-use crate::fx::EffectKind;
+use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
+use crate::mirror::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end, pb_record_link};
+
+/// 池的槽數。
+pub(crate) const POOL_SIZE: usize = 20;
+
+/// 出界門檻（無符號）：列 >= 12h、欄 >= 27h。往上與往下共用同一個列門檻（敵彈往上是 13h，這裡不同）。
+const ROW_LIMIT: u16 = 0x12;
+const COL_LIMIT: u16 = 0x27;
+
+/// 腳本位元組低 4 位元為 0Ah：追蹤指令。
+const SEEK_CODE: u8 = 0x0A;
+/// 腳本位元組高 4 位元為 Fh：往回跳，低 4 位元是往回的位元組數。
+const JUMP_BACK: u8 = 0xF0;
+
+/// 同時在飛的追蹤彈超過這個數就不再發射（原版 `cmp word_1F1A8, 5; ja`）。
+const SEEKER_LIMIT: u16 = 5;
+/// 追蹤彈沿某方向找不到格的距離。
+const NOT_FOUND: u16 = 0xFF;
+
+/// G1 的格值：裝甲，不記錄為傷害目標，但子彈仍會消失。
+const ARMOR_CELL: u8 = 0xFE;
+/// 裝甲格的實體索引（格值減 1）。雷射與砲座沒有裝甲檢查，會以這個索引讀實體指標表（文件第 5.3 節）。
+const ARMOR_INDEX: u8 = ARMOR_CELL - 1;
+/// 命中結算的目標：沒有實體要扣血（命中地形，或雷射沒打到東西），仍播命中特效。
+const NO_ENTITY: u8 = 0xFF;
+
+/// 雷射光束的圖：繪製頁為 0 用圖 4，否則用圖 19h。
+const BEAM_IMAGE: u16 = 4;
+const BEAM_IMAGE_ODD_PAGE: u16 = 0x19;
+
+/// 玩家機與砲座的朝向。原版以字組 `>`（3Eh）表示朝右，玩家朝左時是 `<`（3Ch），判斷只看是不是 3Eh。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Facing {
+    Right,
+    Left,
+}
+
+impl Facing {
+    pub(crate) fn from_word(word: u16) -> Facing {
+        if word == u16::from(b'>') { Facing::Right } else { Facing::Left }
+    }
+}
+
+/// 武器種類，由發射時的字母決定。字母同時寫進記錄的 `owner`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Weapon {
+    /// 其他字母（含 0）：主機的普通彈。
+    Plain,
+    /// `K`：4×3 大彈。
+    Big,
+    /// `S`：兩顆，前 3 幀分別斜上、斜下，之後直線。
+    Spread,
+    /// `B`：兩顆追蹤彈。
+    Seeker,
+    /// `L`：雷射。
+    Laser,
+    /// `F`：主機放開右 Shift 的大掃射，六顆穿透彈。
+    Sweep,
+}
+
+impl Weapon {
+    /// 原版派發的比較順序是 `K`、`S`、`B`、`L`、`F`，其餘為普通彈。
+    pub(crate) fn from_letter(letter: u16) -> Weapon {
+        match letter {
+            0x4B => Weapon::Big,
+            0x53 => Weapon::Spread,
+            0x42 => Weapon::Seeker,
+            0x4C => Weapon::Laser,
+            0x46 => Weapon::Sweep,
+            _ => Weapon::Plain,
+        }
+    }
+
+    /// 這種武器朝這個方向依序要做的事（原版 `sub_165CF` 與 `sub_1669F` 的分支）。
+    pub(crate) fn steps(self, facing: Facing) -> &'static [Step] {
+        match (self, facing) {
+            (Weapon::Plain, _) => PLAIN,
+            (Weapon::Big, _) => BIG,
+            (Weapon::Spread, Facing::Right) => SPREAD_RIGHT,
+            (Weapon::Spread, Facing::Left) => SPREAD_LEFT,
+            (Weapon::Seeker, _) => SEEKERS,
+            (Weapon::Laser, Facing::Right) => LASER_RIGHT,
+            (Weapon::Laser, Facing::Left) => LASER_LEFT,
+            (Weapon::Sweep, _) => SWEEP,
+        }
+    }
+}
+
+/// 樣板表裡的一筆記錄，生成時複製進池。每種有朝右與朝左兩份（掃射兩邊共用同一份向右的），
+/// 位址換算在 `mirror.rs`（[`Shot::table_offset`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shot {
+    /// 普通彈：每幀 4 欄，直線。
+    Plain,
+    /// 4×3 大彈（圖 5 與 60）：每幀 5 欄，直線。
+    Big,
+    /// `S` 武器的第一顆：腳本前 3 幀斜上。
+    SpreadUp,
+    /// `S` 武器的第二顆：腳本前 3 幀斜下。
+    SpreadDown,
+    /// `B` 武器的第一顆追蹤彈，初始朝向右上。
+    SeekerUp,
+    /// `B` 武器的第二顆追蹤彈，初始朝向右下。
+    SeekerDown,
+    /// 雷射，沿列掃描，生成當幀就畫光束並釋放。
+    Laser,
+    /// 大掃射的穿透彈，傷害 3。
+    Sweep,
+}
+
+/// 武器圖案的一步。起點（欄、列）從呼叫端給的位置起算，`Shift` 與 `SetRow` 累積往後的步驟。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// 起點平移。
+    Shift { cols: i16, rows: i16 },
+    /// 起點列改成固定值（掃射從列 1 起）。
+    SetRow(u16),
+    /// 從樣板生成一顆。池滿了這顆放棄，後面的步驟照常做。
+    Fire(Shot),
+    /// 在飛的追蹤彈超過 [`SEEKER_LIMIT`] 就放棄整個圖案。
+    SeekerGate,
+    /// 在飛的追蹤彈計數加上這個數。原版不看前面的 `Fire` 是否真的配到槽，一律加 2；
+    /// `Fixes::seeker_spawn_leak` 開啟時改加實際配到的顆數。
+    CountSeekers(u16),
+}
+
+const fn shift(cols: i16, rows: i16) -> Step {
+    Step::Shift { cols, rows }
+}
+
+const fn fire(shot: Shot) -> Step {
+    Step::Fire(shot)
+}
+
+const PLAIN: &[Step] = &[shift(0, 1), fire(Shot::Plain)];
+const BIG: &[Step] = &[fire(Shot::Big)];
+/// 朝右列 +1（`1661Ah`），朝左不修正（`166D7h`）。
+const SPREAD_RIGHT: &[Step] = &[shift(0, 1), fire(Shot::SpreadUp), fire(Shot::SpreadDown)];
+const SPREAD_LEFT: &[Step] = &[fire(Shot::SpreadUp), fire(Shot::SpreadDown)];
+const SEEKERS: &[Step] = &[shift(0, 1), Step::SeekerGate, fire(Shot::SeekerUp), fire(Shot::SeekerDown), Step::CountSeekers(2)];
+/// 雷射：右 +3 欄、左 -2 欄，列 +1。
+const LASER_RIGHT: &[Step] = &[shift(3, 1), fire(Shot::Laser)];
+const LASER_LEFT: &[Step] = &[shift(-2, 1), fire(Shot::Laser)];
+/// 掃射：列 1、4、7、10、13、16 各一顆，欄不變。
+const SWEEP: &[Step] = &[
+    Step::SetRow(1),
+    fire(Shot::Sweep),
+    shift(0, 3),
+    fire(Shot::Sweep),
+    shift(0, 3),
+    fire(Shot::Sweep),
+    shift(0, 3),
+    fire(Shot::Sweep),
+    shift(0, 3),
+    fire(Shot::Sweep),
+    shift(0, 3),
+    fire(Shot::Sweep),
+];
+
+/// 子彈的行為，由記錄的 `kind` 字組決定。傷害與穿透都從這裡取。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Behavior {
+    /// 0 與其他值：直線飛行，傷害 1，命中消失。
+    Plain,
+    /// `A`：追蹤彈，傷害 3，消失時在飛計數減 1。
+    Seeker,
+    /// `L`：朝右的雷射。
+    LaserRight,
+    /// `l`：朝左的雷射。
+    LaserLeft,
+    /// `S`：掃射，傷害 3，命中不消失。
+    Piercing,
+}
+
+impl Behavior {
+    fn from_word(kind: u16) -> Behavior {
+        match kind {
+            0x41 => Behavior::Seeker,
+            0x4C => Behavior::LaserRight,
+            0x6C => Behavior::LaserLeft,
+            0x53 => Behavior::Piercing,
+            _ => Behavior::Plain,
+        }
+    }
+
+    /// 命中實體時累計的傷害（原版 `16962h` 至 `16972h`：型別 `S`、`A` 先加 2 再加 1）。
+    pub(crate) const fn damage(self) -> u8 {
+        match self {
+            Behavior::Seeker | Behavior::Piercing => 3,
+            Behavior::Plain | Behavior::LaserRight | Behavior::LaserLeft => 1,
+        }
+    }
+
+    /// 命中實體後是否繼續飛（原版 `16B8Fh`：型別 `S` 不設釋放旗標）。
+    pub(crate) const fn pierces(self) -> bool {
+        matches!(self, Behavior::Piercing)
+    }
+}
+
+/// 一顆玩家子彈的記錄。欄位是原版的 16 個字組，順序與位移對應見 `mirror.rs`，數值沿用原版字組寬度。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PlayerBullet {
+    /// 行為字組：0 普通、`A` 追蹤、`L`、`l` 雷射、`S` 穿透，見 [`PlayerBullet::behavior`]。
+    pub kind: u16,
+    /// `MY.GO` 圖庫索引。
+    pub image: u16,
+    /// 繪製位置，單位是位元組（8 像素）。
+    pub blit_x: u16,
+    /// 繪製位置，單位是像素列。
+    pub blit_y: u16,
+    /// 每步的繪製位移：x（位元組）、y（像素列）。
+    pub blit_dx: u16,
+    pub blit_dy: u16,
+    /// 追蹤彈的朝向：樣板給 2、4、6、8（斜向），選定方向後存 1、3、5、7。
+    pub heading: u16,
+    /// 發射時的武器字母（原版 `word_1F1BC`），邏輯不讀。
+    pub owner: u16,
+    /// 沒有程式碼讀寫的字組（所有樣板都是 0），只在複製記錄時帶著走。
+    pub spare: u16,
+    /// 格網位置：欄、列。
+    pub col: u16,
+    pub row: u16,
+    /// 每步的格網位移：欄、列。
+    pub dcol: u16,
+    pub drow: u16,
+    /// 腳本讀取位置，原版為資料段指標。
+    pub script: u16,
+    /// 形狀指標，指向 `寬, 高, 寬 × 高 位元組` 的格值。
+    pub shape: u16,
+    /// 命中特效字母：`>`、`<`、`B`，見 [`EffectKind::from_letter`]。
+    pub hit_effect: u16,
+}
+
+impl PlayerBullet {
+    pub(crate) fn behavior(&self) -> Behavior {
+        Behavior::from_word(self.kind)
+    }
+
+    /// 往上（原版 `sub_1688E`）：繪製 y 減 `blit_dy`、列減 `drow`。回傳是否出界。
+    fn move_up(&mut self) -> bool {
+        self.blit_y = self.blit_y.wrapping_sub(self.blit_dy);
+        self.row = self.row.wrapping_sub(self.drow);
+        self.row >= ROW_LIMIT
+    }
+
+    /// 往下（原版 `sub_168B1`）。
+    fn move_down(&mut self) -> bool {
+        self.blit_y = self.blit_y.wrapping_add(self.blit_dy);
+        self.row = self.row.wrapping_add(self.drow);
+        self.row >= ROW_LIMIT
+    }
+
+    /// 往左（原版 `sub_168D4`）：繪製 x 減 `blit_dx`、欄減 `dcol`。
+    fn move_left(&mut self) -> bool {
+        self.blit_x = self.blit_x.wrapping_sub(self.blit_dx);
+        self.col = self.col.wrapping_sub(self.dcol);
+        self.col >= COL_LIMIT
+    }
+
+    /// 往右（原版 `sub_168F7`）。
+    fn move_right(&mut self) -> bool {
+        self.blit_x = self.blit_x.wrapping_add(self.blit_dx);
+        self.col = self.col.wrapping_add(self.dcol);
+        self.col >= COL_LIMIT
+    }
+
+    /// 依移動碼走一步（原版 `sub_16817`）。碼 1、3、5、7 是上、右、下、左，2、4、6、8 是右上、右下、左下、左上，
+    /// 其他碼（含追蹤指令未選出方向時的 0Ah）不動。斜向的兩段都會執行，出界旗標是兩段的聯集。
+    /// 回傳是否出界：出界的這一幀仍會畫、寫格網、做碰撞，釋放在最後。
+    fn advance(&mut self, code: u8) -> bool {
+        match code {
+            1 => self.move_up(),
+            3 => self.move_right(),
+            5 => self.move_down(),
+            7 => self.move_left(),
+            2 => self.move_up() | self.move_right(),
+            4 => self.move_down() | self.move_right(),
+            6 => self.move_down() | self.move_left(),
+            8 => self.move_left() | self.move_up(),
+            _ => false,
+        }
+    }
+}
+
+/// 池的一槽。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Slot {
+    /// 池指標表的項：0 表示空槽，使用中等於這一槽記錄的資料段位址（只有生成會寫，見 `mirror.rs` 的 `pb_record_link`）。
+    /// 載入傾印時保留原值，只為了寫回時位元組相同；邏輯只看是否為 0。
+    pub link: u16,
+    /// 記錄。空槽也保留舊內容：原版釋放只清指標，記錄原封不動，資料段比對會看到它。
+    pub bullet: PlayerBullet,
+}
+
+impl Slot {
+    pub(crate) fn is_active(&self) -> bool {
+        self.link != 0
+    }
+}
+
+/// 玩家子彈領域的全部狀態。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlayerBullets {
+    pub(crate) slots: [Slot; POOL_SIZE],
+    /// 在飛的追蹤彈數（原版 `word_1F1A8`）。`B` 武器發射時加，型別 `A` 的子彈釋放時減；
+    /// 關卡初始化歸零（`sub_10E33` 的 `10E9Fh`）。超過 [`SEEKER_LIMIT`] 就不再發射追蹤彈。
+    pub(crate) seekers_in_flight: u16,
+}
+
+impl PlayerBullets {
+    fn first_free(&self) -> Option<usize> {
+        self.slots.iter().position(|s| !s.is_active())
+    }
+
+    /// 關卡初始化：全部槽釋放（只清指標，記錄不動）。
+    pub(crate) fn release_all(&mut self) {
+        for s in &mut self.slots {
+            s.link = 0;
+        }
+    }
+}
+
+/// 一顆子彈這一幀撞到什麼。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Impact {
+    /// 命中結算的目標（原版 `byte_1F1C0`）：0 沒有，1 至 FDh 是實體格值（槽號加 1），[`NO_ENTITY`] 只播特效。
+    target: u8,
+    /// 子彈是否消失。
+    vanishes: bool,
+}
 
 impl Core {
-    /// `sub_16302`：第一關背景五層（天空、波浪、倒懸岩、山影遮罩、山影圖），再填上方空白。
-    pub(crate) fn s16302(&mut self) {
-        // 天空（層 0）。
-        self.set_obj(Pool::Background, 0);
-        self.ds.w16(a(0x2685C), 0);
-        self.ds.w16(a(0x26888), 0x0F);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0x6E);
-        self.ds.w16(a(0x26880), 0);
-        let ax = self.ds.r16(a(0x1E6BA));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = 0x59;
-        self.ds.w16(a(0x26868), 0);
-        self.s19ba4();
-        self.s1641b();
-        // 波浪（層 1）。
-        self.set_obj(Pool::Background, 1);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        let ax = self.ds.r16(a(0x1E6B8)).wrapping_add(0x95);
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = 0x29;
-        let ax = self.ds.r16(a(0x1E6BC));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26868), ax);
-        self.s19ba4();
-        self.s1643f();
-        // 倒懸岩（層 2）。
-        self.set_obj(Pool::Background, 2);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0x28);
-        self.ds.w16(a(0x26880), 0);
-        let ax = self.ds.r16(a(0x1E6B8)).wrapping_add(0x52);
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = 0x45;
-        let ax = self.ds.r16(a(0x1E6BE));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26868), ax);
-        self.s19ba4();
-        // 山影遮罩（層 3），AND。
-        self.set_obj(Pool::Background, 3);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0xF3);
-        self.ds.w16(a(0x26880), 0);
-        let ax = self.ds.r16(a(0x1E6B8)).wrapping_add(0x28);
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = 0x2B;
-        let ax = self.ds.r16(a(0x1E6BE));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26868), ax);
-        self.s1a09f();
-        // 山影圖（層 4），OR。
-        self.set_obj(Pool::Background, 4);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0xC8);
-        self.ds.w16(a(0x26880), 0);
-        let ax = self.ds.r16(a(0x1E6B8)).wrapping_add(0x28);
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = 0x2B;
-        let ax = self.ds.r16(a(0x1E6BE));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26868), ax);
-        self.s19da8();
-        self.clear_obj();
-        self.s16453();
-        if self.ds.r16(a(0x1CFE2)) <= 0xFA {
-            self.ds.w16(a(0x1E6B8), 0);
-            self.ds.w16(a(0x1E6BA), 0);
-            return;
-        }
-        // 163EC：計數超過 250 後所有層一起下移。
-        let v = self.ds.r16(a(0x1E6B8)).wrapping_add(1);
-        self.ds.w16(a(0x1E6B8), v);
-        if self.ds.r16(a(0x1CFE2)) <= 0x113 {
-            return;
-        }
-        // 163F9：只有 word_26872 非 0 的頁先加 1，填色列數用加完的值。
-        if self.ds.r16(a(0x26872)) != 0 {
-            let v = self.ds.r16(a(0x1E6BA)).wrapping_add(1);
-            self.ds.w16(a(0x1E6BA), v);
-        }
-        self.ds.w16(a(0x26880), 0);
-        self.ds.w16(a(0x26882), 0);
-        self.r.cx = self.ds.r16(a(0x1E6BA));
-        self.r.dx = 0;
-        self.s1a287();
-    }
-
-    /// `sub_1641B`：計數超過 250 時，在天空下方以色號 1 填 `word_1E6B8` 列。屬於天空層。
-    pub(crate) fn s1641b(&mut self) {
-        if self.ds.r16(a(0x1CFE2)) <= 0xFA {
-            return;
-        }
-        self.ds.w16(a(0x26880), 0);
-        let ax = 0x59u16.wrapping_add(self.ds.r16(a(0x1E6BA)));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26882), ax);
-        self.r.cx = self.ds.r16(a(0x1E6B8));
-        self.r.dx = 1;
-        self.s1a287();
-    }
-
-    /// `sub_1643F`：波浪相位 `word_1E6BC` 加 2，到 40 歸零。
-    pub(crate) fn s1643f(&mut self) {
-        let v = self.ds.r16(a(0x1E6BC)).wrapping_add(2);
-        self.ds.w16(a(0x1E6BC), v);
-        if v >= 0x28 {
-            self.ds.w16(a(0x1E6BC), 0);
-        }
-    }
-
-    /// `sub_16453`：倒懸岩與山影相位 `word_1E6BE` 加 1，到 40 歸零。
-    pub(crate) fn s16453(&mut self) {
-        let v = self.ds.r16(a(0x1E6BE)).wrapping_add(1);
-        self.ds.w16(a(0x1E6BE), v);
-        if v >= 0x28 {
-            self.ds.w16(a(0x1E6BE), 0);
-        }
-    }
-
-    /// `sub_164BB`：畫 15 個實體的本體（遮罩加平面）。
-    pub(crate) fn s164bb(&mut self) {
-        self.r.bx = 0;
-        self.r.cx = 0x0F;
-        loop {
-            let cx = self.r.cx;
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2294));
-            if self.r.ax != 0 {
-                let bx = self.r.bx;
-                self.set_obj(Pool::Entity, (bx >> 1) as u8);
-                self.s164f3();
-                self.clear_obj();
-                self.r.bx = bx;
-            }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            self.r.cx = cx.wrapping_sub(1);
-            if self.r.cx == 0 {
-                break;
-            }
-        }
-    }
-
-    /// `sub_164D7`：畫 15 個實體的第二輪（只有種類 `S` 會畫，頭目段在實體之上）。
-    pub(crate) fn s164d7(&mut self) {
-        self.r.bx = 0;
-        self.r.cx = 0x0F;
-        loop {
-            let cx = self.r.cx;
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2294));
-            if self.r.ax != 0 {
-                let bx = self.r.bx;
-                self.set_obj(Pool::Entity, (bx >> 1) as u8);
-                self.s16541();
-                self.clear_obj();
-                self.r.bx = bx;
-            }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            self.r.cx = cx.wrapping_sub(1);
-            if self.r.cx == 0 {
-                break;
-            }
-        }
-    }
-
-    /// `sub_164F3`：畫 `bx` 指向的實體。種類 `N`、`K`、`S` 不在這一輪畫。
-    /// 閃白旗標 `word_1E6B6` 為 `Y` 時只畫白色遮罩，否則遮罩後 y 加 1 再畫平面。
-    pub(crate) fn s164f3(&mut self) {
-        let bx = self.r.bx;
-        let ax = self.ds.r16(bx.wrapping_add(0x21EC));
-        self.ds.w16(a(0x26888), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x220C));
-        self.ds.w16(a(0x26880), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x222C));
-        self.ds.w16(a(0x26882), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x226C));
-        self.ds.w16(a(0x1E6B6), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x224C));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F19A), ax);
-        let kind = self.ds.r16(a(0x1F19A));
-        if kind == 0x4E || kind == 0x4B || kind == 0x53 {
-            return;
-        }
-        self.s18f1a();
-        if self.ds.r16(a(0x1E6B6)) == 0x59 {
-            self.s19025();
-            return;
-        }
-        let y = self.ds.r16(a(0x26882)).wrapping_add(1);
-        self.ds.w16(a(0x26882), y);
-        self.s18f5d();
-    }
-
-    /// `sub_16541`：畫 `bx` 指向的實體的第二輪，只有種類 `S` 以 `sub_18FC1` 覆寫。
-    pub(crate) fn s16541(&mut self) {
-        let bx = self.r.bx;
-        let ax = self.ds.r16(bx.wrapping_add(0x21EC));
-        self.ds.w16(a(0x26888), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x220C));
-        self.ds.w16(a(0x26880), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x222C));
-        self.ds.w16(a(0x26882), ax);
-        let ax = self.ds.r16(bx.wrapping_add(0x224C));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F19A), ax);
-        let kind = self.ds.r16(a(0x1F19A));
-        if kind == 0x4E || kind == 0x4B {
-            return;
-        }
-        if kind == 0x53 {
-            self.s18fc1();
-        }
-    }
-
-    /// `sub_16578`：在玩家彈池找空槽，複製 `word_1F46F` 指的樣板，
-    /// 寫入欄 `word_1F1C1`、列 `word_1F1C3`、`列 × 10`、型別 `word_1F1BC`。池滿則放棄。
-    /// 結束時 `bx` = 10、`dx` = 乘法高位、`ax` = 型別，這是原版殘值。
-    pub(crate) fn s16578(&mut self) {
-        self.r.bx = 0;
-        self.r.dx = 0x262F;
-        self.r.cx = 0x14;
-        loop {
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2607));
-            if self.r.ax == 0 {
-                break;
-            }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            self.r.dx = self.r.dx.wrapping_add(0x20);
-            self.r.cx = self.r.cx.wrapping_sub(1);
-            if self.r.cx == 0 {
-                return;
-            }
-        }
-        // 16593
-        self.r.ax = self.r.dx;
-        self.ds.w16(self.r.bx.wrapping_add(0x2607), self.r.ax);
-        self.bump_gen(Pool::PlayerBullet, (self.r.bx >> 1) as u8);
-        self.pb_spawned = self.pb_spawned.wrapping_add(1);
-        let tmpl = self.ds.r16(a(0x1F46F));
-        let rec = self.r.dx;
-        self.ds.copy16(rec, tmpl, 0x10);
-        self.r.cx = 0;
-        self.r.si = tmpl;
-        self.r.di = rec;
-        let ax = self.ds.r16(a(0x1F1C1));
-        self.r.ax = ax;
-        self.ds.w16(rec.wrapping_add(0x12), ax);
-        self.ds.w16(rec.wrapping_add(4), ax);
-        let ax = self.ds.r16(a(0x1F1C3));
-        self.ds.w16(rec.wrapping_add(0x14), ax);
-        self.r.bx = 0x0A;
-        let prod = ax as u32 * 0x0A;
-        self.r.ax = prod as u16;
-        self.r.dx = (prod >> 16) as u16;
-        self.ds.w16(rec.wrapping_add(6), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1F1BC));
-        self.ds.w16(rec.wrapping_add(0x0E), self.r.ax);
-    }
-
-    /// `sub_165CF`：朝右的武器派發。`word_1F1BE` 不是 `3Eh` 時改走朝左的 `sub_1669F`。
-    /// 型別字母在 `word_1F1BC`：`K` 大彈、`S` 兩彈、`B` 兩顆追蹤彈、`L` 雷射、`F` 掃射六顆、其他普通彈。
-    /// `165FCh` 至 `16619h` 的雙彈碼在 `retn` 之後無跳入，不移植。
-    pub(crate) fn s165cf(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1F1BC));
-        if self.ds.r16(a(0x1F1BE)) != 0x3E {
-            self.s1669f();
-            return;
-        }
-        match self.r.ax {
-            0x4B => {
-                // K
-                self.r.ax = self.ds.r16(a(0x1F1C3));
-                self.ds.w16(a(0x1F46F), 0x2935);
-                self.s16578();
-            }
-            0x53 => {
-                // S
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                self.ds.w16(a(0x1F46F), 0x2955);
-                self.s16578();
-                self.ds.w16(a(0x1F46F), 0x2975);
-                self.s16578();
-            }
-            0x42 => {
-                // B：word_1F1A8 > 5 時不射。
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                if self.ds.r16(a(0x1F1A8)) > 5 {
-                    return;
+    /// 依武器字母在 (`col`, `row`) 發射（原版 `sub_165CF`、`sub_1669F`）。`letter` 同時寫進記錄的 `owner`；
+    /// 池滿了該顆放棄，後面的步驟照常做。
+    pub(crate) fn fire_player_bullets(&mut self, letter: u16, facing: Facing, col: u16, row: u16) {
+        let (mut col, mut row) = (col, row);
+        let mut spawned = 0u16;
+        for step in Weapon::from_letter(letter).steps(facing) {
+            match *step {
+                Step::Shift { cols, rows } => {
+                    col = col.wrapping_add(cols as u16);
+                    row = row.wrapping_add(rows as u16);
                 }
-                self.pb_spawned = 0;
-                self.ds.w16(a(0x1F46F), 0x2995);
-                self.s16578();
-                self.ds.w16(a(0x1F46F), 0x29B5);
-                self.s16578();
-                // 不看 sub_16578 是否配到槽，一律加 2（seeker_spawn_leak 的原版行為）。
-                let n = if self.fixes.seeker_spawn_leak { self.pb_spawned } else { 2 };
-                let v = self.ds.r16(a(0x1F1A8)).wrapping_add(n);
-                self.ds.w16(a(0x1F1A8), v);
-            }
-            0x4C => {
-                // L：欄 +3，列 +1。
-                self.ds.w16(a(0x1F46F), 0x29D5);
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                let v = self.ds.r16(a(0x1F1C1)).wrapping_add(3);
-                self.ds.w16(a(0x1F1C1), v);
-                self.s16578();
-            }
-            0x46 => {
-                // F：列 1、4、7、10、13、16 各一顆。
-                self.r.cx = 6;
-                self.ds.w16(a(0x1F1C3), 1);
-                loop {
-                    let cx = self.r.cx;
-                    self.ds.w16(a(0x1F46F), 0x2B35);
-                    self.s16578();
-                    let v = self.ds.r16(a(0x1F1C3)).wrapping_add(3);
-                    self.ds.w16(a(0x1F1C3), v);
-                    self.r.cx = cx.wrapping_sub(1);
-                    if self.r.cx == 0 {
-                        break;
+                Step::SetRow(r) => row = r,
+                Step::Fire(shot) => {
+                    if self.spawn_player_bullet(shot, facing, letter, col, row) {
+                        spawned += 1;
                     }
                 }
-            }
-            _ => {
-                // 普通彈：列 +1。
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                self.ds.w16(a(0x1F46F), 0x28D5);
-                self.s16578();
+                Step::SeekerGate => {
+                    if self.pb.seekers_in_flight > SEEKER_LIMIT {
+                        return;
+                    }
+                }
+                Step::CountSeekers(n) => {
+                    let added = if self.fixes.seeker_spawn_leak { spawned } else { n };
+                    self.pb.seekers_in_flight = self.pb.seekers_in_flight.wrapping_add(added);
+                }
             }
         }
     }
 
-    /// `sub_1669F`：朝左的武器派發，型別字母由 `sub_165CF` 留在 `ax`。
-    pub(crate) fn s1669f(&mut self) {
-        match self.r.ax {
-            0x4B => {
-                // K
-                self.r.ax = self.ds.r16(a(0x1F1C3));
-                self.ds.w16(a(0x1F46F), 0x2A75);
-                self.s16578();
-            }
-            0x4C => {
-                // L：列 +1，欄 -2。
-                self.ds.w16(a(0x1F46F), 0x29F5);
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                let v = self.ds.r16(a(0x1F1C1)).wrapping_sub(2);
-                self.ds.w16(a(0x1F1C1), v);
-                self.s16578();
-            }
-            0x53 => {
-                // S：朝左不修正列。
-                self.ds.w16(a(0x1F46F), 0x2A95);
-                self.s16578();
-                self.ds.w16(a(0x1F46F), 0x2AB5);
-                self.s16578();
-            }
-            0x42 => {
-                // B
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                if self.ds.r16(a(0x1F1A8)) > 5 {
-                    return;
-                }
-                self.pb_spawned = 0;
-                self.ds.w16(a(0x1F46F), 0x2AD5);
-                self.s16578();
-                self.ds.w16(a(0x1F46F), 0x2AF5);
-                self.s16578();
-                let n = if self.fixes.seeker_spawn_leak { self.pb_spawned } else { 2 };
-                let v = self.ds.r16(a(0x1F1A8)).wrapping_add(n);
-                self.ds.w16(a(0x1F1A8), v);
-            }
-            0x46 => {
-                // F：朝左仍是同一份向右的樣板。
-                self.r.cx = 6;
-                self.ds.w16(a(0x1F1C3), 1);
-                loop {
-                    let cx = self.r.cx;
-                    self.ds.w16(a(0x1F46F), 0x2B35);
-                    self.s16578();
-                    let v = self.ds.r16(a(0x1F1C3)).wrapping_add(3);
-                    self.ds.w16(a(0x1F1C3), v);
-                    self.r.cx = cx.wrapping_sub(1);
-                    if self.r.cx == 0 {
-                        break;
-                    }
-                }
-            }
-            _ => {
-                // 普通彈：列 +1。
-                let v = self.ds.r16(a(0x1F1C3)).wrapping_add(1);
-                self.ds.w16(a(0x1F1C3), v);
-                self.ds.w16(a(0x1F46F), 0x2A15);
-                self.s16578();
-            }
-        }
+    /// 主機放開右 Shift（或砲座同型的左 Shift）時的大掃射，從玩家所在的欄射出（原版 `sub_14501` 的 `14606h`）。
+    /// 掃射從列 1 起，不看玩家的列，兩個朝向用同一份向右的樣板。
+    pub(crate) fn fire_sweep(&mut self, col: u16) {
+        self.fire_player_bullets(u16::from(b'F'), Facing::Right, col, 0);
     }
 
-    /// `sub_1673E`：更新 20 顆玩家子彈。每槽複製進工作區、移動繪製碰撞、複製回去；
-    /// `word_1F1C5` 為 `Y` 時釋放槽，型別 `A` 的追蹤彈同時讓 `word_1F1A8` 減 1。
-    pub(crate) fn s1673e(&mut self) {
-        self.r.bx = 0;
-        self.r.cx = 0x14;
-        loop {
-            let cx = self.r.cx;
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2607));
-            if self.r.ax != 0 {
-                let bx = self.r.bx;
-                self.set_obj(Pool::PlayerBullet, (bx >> 1) as u8);
-                self.s16779();
-                self.s167a3();
-                self.s1678e();
-                self.r.bx = bx;
-                if self.ds.r16(a(0x1F1C5)) == 0x59 {
-                    self.r.ax = 0;
-                    self.ds.w16(bx.wrapping_add(0x2607), 0);
-                    if self.ds.r16(a(0x1F471)) == 0x41 {
-                        let v = self.ds.r16(a(0x1F1A8)).wrapping_sub(1);
-                        self.ds.w16(a(0x1F1A8), v);
-                    }
-                }
+    /// 把樣板複製進第一個空槽，起點取 (`col`, `row`)，繪製位置跟著設，`owner` 取武器字母（原版 `sub_16578`）。
+    /// 回傳是否配到槽。
+    fn spawn_player_bullet(&mut self, shot: Shot, facing: Facing, letter: u16, col: u16, row: u16) -> bool {
+        let Some(slot) = self.pb.first_free() else { return false };
+        let mut bullet = self.player_bullet_template(shot, facing);
+        bullet.col = col;
+        bullet.blit_x = col;
+        bullet.row = row;
+        bullet.blit_y = row.wrapping_mul(10);
+        bullet.owner = letter;
+        self.pb.slots[slot] = Slot { link: pb_record_link(slot), bullet };
+        self.bump_gen(Pool::PlayerBullet, slot as u8);
+        true
+    }
+
+    /// 每幀更新 20 顆玩家子彈（原版 `sub_1673E`）：每個使用中的槽走一步，出界或命中就釋放，
+    /// 釋放追蹤彈時在飛計數減 1。
+    pub(crate) fn update_player_bullets(&mut self) {
+        for slot in 0..POOL_SIZE {
+            if !self.pb.slots[slot].is_active() {
+                continue;
             }
-            self.r.bx = self.r.bx.wrapping_add(2);
-            self.r.cx = cx.wrapping_sub(1);
-            if self.r.cx == 0 {
-                break;
+            self.set_obj(Pool::PlayerBullet, slot as u8);
+            let mut bullet = self.pb.slots[slot].bullet;
+            let release = self.step_player_bullet(&mut bullet);
+            self.pb.slots[slot].bullet = bullet;
+            if release {
+                self.pb.slots[slot].link = 0;
+                if bullet.behavior() == Behavior::Seeker {
+                    self.pb.seekers_in_flight = self.pb.seekers_in_flight.wrapping_sub(1);
+                }
             }
         }
         self.clear_obj();
     }
 
-    /// `sub_16779`：`ax` 指的記錄複製到工作區 `28B1h`，並把位址存進 `word_1F46F`。
-    pub(crate) fn s16779(&mut self) {
-        let ax = self.r.ax;
-        self.ds.w16(a(0x1F46F), ax);
-        self.ds.copy16(0x28B1, ax, 0x10);
-        self.r.si = ax.wrapping_add(0x20);
-        self.r.di = 0x28B1u16.wrapping_add(0x20);
-        self.r.cx = 0;
-    }
-
-    /// `sub_1678E`：工作區複製回 `word_1F46F` 指的記錄。
-    pub(crate) fn s1678e(&mut self) {
-        let ax = self.ds.r16(a(0x1F46F));
-        self.r.ax = ax;
-        self.ds.copy16(ax, 0x28B1, 0x10);
-        self.r.di = ax.wrapping_add(0x20);
-        self.r.si = 0x28B1u16.wrapping_add(0x20);
-        self.r.cx = 0;
-    }
-
-    /// `sub_167A3`：一顆子彈的一幀。雷射（`L`、`l`）走光束路徑，其餘取腳本位元組後
-    /// 追蹤、移動、繪製。腳本位元組低 4 位元放 `al`，高 4 位元放 `ah`。
-    pub(crate) fn s167a3(&mut self) {
-        let t = self.ds.r16(a(0x1F471));
-        if t == 0x4C {
-            self.s16a4e();
-            let al = self.ds.r8(a(0x1F1C0));
-            self.r.set_al(al);
-            if al != 0 {
-                self.s16946();
+    /// 一顆子彈的一幀（原版 `sub_167A3`）。回傳是否要釋放。雷射當幀畫完光束就釋放。
+    fn step_player_bullet(&mut self, bullet: &mut PlayerBullet) -> bool {
+        match bullet.behavior() {
+            Behavior::LaserRight => {
+                self.fire_laser(bullet, Facing::Right);
+                true
             }
-            return;
-        }
-        if t == 0x6C {
-            self.s16aca();
-            let al = self.ds.r8(a(0x1F1C0));
-            self.r.set_al(al);
-            if al != 0 {
-                self.s16946();
+            Behavior::LaserLeft => {
+                self.fire_laser(bullet, Facing::Left);
+                true
             }
-            return;
-        }
-        let ax = self.ds.r16(a(0x1F48B));
-        self.ds.w16(a(0x1F48B), ax.wrapping_add(1));
-        self.r.si = ax;
-        let b = self.ds.r8(ax);
-        self.r.ax = (b as u16) << 8 | (b & 0x0F) as u16;
-        self.r.set_ah(b & 0xF0);
-        self.s167e9();
-        self.s16817();
-        self.s1691a();
-    }
-
-    /// `sub_167E9`：腳本指令 `0Ah` 時播特效 `A`，用 `sub_16BA8` 找最近的格決定方向，
-    /// 找不到（`ax` = FFh）就沿用 `word_1F47D`。方向放進 `al`、存回 `word_1F47D`。
-    pub(crate) fn s167e9(&mut self) {
-        if self.r.al() != 0x0A {
-            return;
-        }
-        let (x, y) = (self.ds.r16(a(0x1F483)), self.ds.r16(a(0x1F485)));
-        let o = self.cur_obj;
-        self.spawn_effect(EffectKind::SeekerTrail, x, y);
-        self.cur_obj = o;
-        self.s16ba8();
-        if self.r.ax == 0xFF {
-            self.r.ax = self.ds.r16(a(0x1F47D));
-            return;
-        }
-        self.r.set_al(self.r.dl());
-        self.r.set_ah(0);
-        self.ds.w16(a(0x1F47D), self.r.ax);
-    }
-
-    /// `sub_16817`：處理往回跳後依方向碼移動。`word_1F1C5` 先設 `N`，出界時被移動函式設 `Y`。
-    /// 1、3、5、7 為上右下左，2、4、6、8 為上右、下右、下左、左上。
-    pub(crate) fn s16817(&mut self) {
-        self.s16873();
-        self.ds.w16(a(0x1F1C5), 0x4E);
-        match self.r.al() {
-            1 => self.s1688e(),
-            3 => self.s168f7(),
-            5 => self.s168b1(),
-            7 => self.s168d4(),
-            2 => {
-                self.s1688e();
-                self.s168f7();
+            _ => {
+                let code = self.next_code(bullet);
+                let out_of_field = bullet.advance(code);
+                let vanishes = self.draw_and_collide(bullet);
+                out_of_field | vanishes
             }
-            4 => {
-                self.s168b1();
-                self.s168f7();
+        }
+    }
+
+    /// 讀這一幀的移動碼（原版 `sub_167A3` 前半、`sub_167E9`、`sub_16873`）。
+    ///
+    /// 腳本位元組的低 4 位元是碼，指標前進一格。碼為 0Ah 時由追蹤彈選方向（[`Core::steer_seeker`]），
+    /// 結果取代整個字組，高位元組也跟著換。高 4 位元為 Fh 時，碼是往回跳的位元組數：指標（已前進）減去它，
+    /// 改以該處位元組的低 4 位元為碼，指標不再前進，所以被跳回的那個位元組在跳回幀與下一幀連續生效兩次。
+    /// 追蹤彈腳本最後的 `F5` 那一幀，追蹤判斷在跳回之前，所以跳回後的 0Ah 不會再選方向，該幀不移動。
+    fn next_code(&mut self, bullet: &mut PlayerBullet) -> u8 {
+        let byte = self.table_byte(bullet.script);
+        bullet.script = bullet.script.wrapping_add(1);
+        let (mut code, mut jump) = (byte & 0x0F, byte & 0xF0);
+        if code == SEEK_CODE {
+            let word = self.steer_seeker(bullet);
+            (code, jump) = (word as u8, (word >> 8) as u8);
+        }
+        if jump == JUMP_BACK {
+            bullet.script = bullet.script.wrapping_sub(u16::from(code));
+            code = self.table_byte(bullet.script) & 0x0F;
+        }
+        code
+    }
+
+    /// 追蹤指令（原版 `sub_167E9`）：在子彈位置播尾跡特效，找最近的實體選方向。
+    /// 回傳原版留在 `ax` 的字組：選出方向時是方向碼（高位元組 0），找不到時是記錄原本的朝向。
+    fn steer_seeker(&mut self, bullet: &mut PlayerBullet) -> u16 {
+        self.spawn_effect(EffectKind::SeekerTrail, bullet.col, bullet.row);
+        let (distance, code) = self.seek_direction(bullet);
+        if distance == NOT_FOUND {
+            return bullet.heading;
+        }
+        bullet.heading = code;
+        code
+    }
+
+    /// 沿 G1 的上、右、下、左四向，從子彈所在格起數到第一個非空格（0、FFh 視為空）的格距（原版 `sub_16BA8`）。
+    /// 回傳 (距離, 方向碼 1、3、5、7)。平手時後者優先：左 > 下 > 右 > 上。
+    ///
+    /// 原版比到左邊時只更新方向碼，不更新距離（`16BEBh` 之後直接 `retn`）。呼叫端只用距離是否為 FFh 判斷有沒有找到，
+    /// 所以只有左邊有東西、其餘三向都找不到時，回傳的距離仍是 FFh，視同沒找到。
+    fn seek_direction(&self, bullet: &PlayerBullet) -> (u16, u16) {
+        let start = self.grid1_row_start(bullet.row);
+        let end = grid1_row_end(start);
+        let cell = start.wrapping_add(bullet.col);
+        let up = self.distance_to_wall(cell, |at| at.wrapping_sub(GRID1_ROW_BYTES), |at| at > GRID1_START);
+        let right = self.distance_to_wall(cell, |at| at.wrapping_add(1), |at| at < end);
+        let down = self.distance_to_wall(cell, |at| at.wrapping_add(GRID1_ROW_BYTES), |at| at < GRID1_END);
+        let left = self.distance_to_wall(cell, |at| at.wrapping_sub(1), |at| at > start);
+        let (mut distance, mut code) = (up, 1);
+        if distance >= right {
+            (distance, code) = (right, 3);
+        }
+        if distance >= down {
+            (distance, code) = (down, 5);
+        }
+        if distance >= left {
+            code = 7;
+        }
+        (distance, code)
+    }
+
+    /// 從 `from` 起每次 `next` 一格，數到第一個非空格的格距（原版 `sub_16BF5`、`16C18`、`16C3B`、`16C5C`）。
+    /// 先看目前這格再前進，前進後 `within` 不成立就算找不到（FFh）。
+    fn distance_to_wall(&self, from: u16, next: impl Fn(u16) -> u16, within: impl Fn(u16) -> bool) -> u16 {
+        let (mut at, mut distance) = (from, 0u16);
+        loop {
+            let cell = self.grid1_byte(at);
+            if cell != 0 && cell != 0xFF {
+                return distance;
             }
-            6 => {
-                self.s168b1();
-                self.s168d4();
+            at = next(at);
+            distance = distance.wrapping_add(1);
+            if !within(at) {
+                return NOT_FOUND;
             }
-            8 => {
-                self.s168d4();
-                self.s1688e();
-            }
-            _ => {}
         }
     }
 
-    /// `sub_16873`：`ah` 為 `F0h` 時往回跳 `al` 個位元組，不遞增指標，以該處位元組當本幀指令。
-    pub(crate) fn s16873(&mut self) {
-        if self.r.ah() != 0xF0 {
-            return;
-        }
-        self.r.set_ah(0);
-        let p = self.ds.r16(a(0x1F48B)).wrapping_sub(self.r.ax);
-        self.ds.w16(a(0x1F48B), p);
-        self.r.ax = p;
-        self.r.si = p;
-        let b = self.ds.r8(p);
-        self.r.ax = (b as u16) << 8 | (b & 0x0F) as u16;
-        self.r.set_ah(b & 0xF0);
-    }
-
-    /// `sub_1688E`：往上。y_px 減 dy_px、列減 dy 步，列 >= 12h（無符號）設 `word_1F1C5` = `Y`。
-    pub(crate) fn s1688e(&mut self) {
-        let ax = self.ds.r16(a(0x1F477)).wrapping_sub(self.ds.r16(a(0x1F47B)));
-        self.ds.w16(a(0x1F477), ax);
-        let ax = self.ds.r16(a(0x1F485)).wrapping_sub(self.ds.r16(a(0x1F489)));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F485), ax);
-        if self.ds.r16(a(0x1F485)) >= 0x12 {
-            self.ds.w16(a(0x1F1C5), 0x59);
-        }
-    }
-
-    /// `sub_168B1`：往下。
-    pub(crate) fn s168b1(&mut self) {
-        let ax = self.ds.r16(a(0x1F477)).wrapping_add(self.ds.r16(a(0x1F47B)));
-        self.ds.w16(a(0x1F477), ax);
-        let ax = self.ds.r16(a(0x1F485)).wrapping_add(self.ds.r16(a(0x1F489)));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F485), ax);
-        if self.ds.r16(a(0x1F485)) >= 0x12 {
-            self.ds.w16(a(0x1F1C5), 0x59);
-        }
-    }
-
-    /// `sub_168D4`：往左。x_px 減 dx_px、欄減 dx 步，欄 >= 27h（無符號）設 `Y`。
-    pub(crate) fn s168d4(&mut self) {
-        let ax = self.ds.r16(a(0x1F475)).wrapping_sub(self.ds.r16(a(0x1F479)));
-        self.ds.w16(a(0x1F475), ax);
-        let ax = self.ds.r16(a(0x1F483)).wrapping_sub(self.ds.r16(a(0x1F487)));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F483), ax);
-        if self.ds.r16(a(0x1F483)) >= 0x27 {
-            self.ds.w16(a(0x1F1C5), 0x59);
-        }
-    }
-
-    /// `sub_168F7`：往右。
-    pub(crate) fn s168f7(&mut self) {
-        let ax = self.ds.r16(a(0x1F475)).wrapping_add(self.ds.r16(a(0x1F479)));
-        self.ds.w16(a(0x1F475), ax);
-        let ax = self.ds.r16(a(0x1F483)).wrapping_add(self.ds.r16(a(0x1F487)));
-        self.r.ax = ax;
-        self.ds.w16(a(0x1F483), ax);
-        if self.ds.r16(a(0x1F483)) >= 0x27 {
-            self.ds.w16(a(0x1F1C5), 0x59);
-        }
-    }
-
-    /// `sub_1691A`：畫子彈（遮罩加平面），標 G3 髒格，對 G1 做碰撞，第三關再對 G4 做碰撞，
-    /// 有命中時結算傷害。
-    pub(crate) fn s1691a(&mut self) {
-        let ax = self.ds.r16(a(0x1F475));
-        self.ds.w16(a(0x26880), ax);
-        let ax = self.ds.r16(a(0x1F477));
-        self.ds.w16(a(0x26882), ax);
-        let ax = self.ds.r16(a(0x1F473));
-        self.r.ax = ax;
-        self.ds.w16(a(0x26888), ax);
+    /// 畫子彈、寫 G3、對 G1 與 G4 做碰撞、結算命中（原版 `sub_1691A`）。回傳是否因碰撞消失。
+    fn draw_and_collide(&mut self, bullet: &PlayerBullet) -> bool {
+        self.set_blit_params(bullet.blit_x, bullet.blit_y, bullet.image);
         self.s18e73();
         self.s18eb6();
-        self.s1698c();
-        self.s16b49();
-        self.s169bf();
-        if self.ds.r8(a(0x1F1C0)) != 0 {
-            self.s16946();
+        // 形狀寬同時寫進繪製的每列位元組殘值，三段碰撞碼寫的是同一個值，只寫一次（見 `Core::stamp_shape`）。
+        self.stamp_shape(bullet.shape, bullet.col, bullet.row);
+        let mut impact = self.collide_entities(bullet);
+        if self.collides_with_terrain(bullet) {
+            impact = Impact { target: NO_ENTITY, vanishes: true };
         }
+        if impact.target != 0 {
+            self.strike(bullet, impact.target);
+        }
+        impact.vanishes
     }
 
-    /// `sub_16946`：命中結算。`byte_1F1C0` 是命中格值（FFh 為地形或無目標，不寫傷害），
-    /// 槽號 = 格值 - 1，實體記錄 `+20h` 的字組：高位元組設 1，低位元組加 1（型別 `S`、`A` 加 3）。
-    /// 裝甲格 FEh 取到槽 FDh，讀 `ds:248Eh`，寫到 `dseg:0020h`，這是原版行為。
-    /// 最後在子彈目前位置播命中特效。
-    pub(crate) fn s16946(&mut self) {
-        let mut al = self.ds.r8(a(0x1F1C0));
-        self.r.set_al(al);
-        if al != 0xFF {
-            al = al.wrapping_sub(1);
-            self.r.set_al(al);
-            self.r.set_ah(0);
-            self.r.bx = (al as u16) << 1;
-            let p = self.ds.r16(self.r.bx.wrapping_add(0x2294));
-            // armor_cell_index：裝甲格 FEh 與已釋放的槽（指標 0）不寫傷害，原版會寫到 dseg:0020h。
-            if !(self.fixes.armor_cell_index && (al == 0xFD || p == 0)) {
-                let ax = p.wrapping_add(0x20);
-                self.r.ax = ax;
-                self.r.si = ax;
-                self.r.ax = self.ds.r16(ax);
-                self.r.set_ah(1);
-                let t = self.ds.r16(a(0x1F471));
-                let mut al = self.r.al();
-                if t == 0x53 || t == 0x41 {
-                    al = al.wrapping_add(2);
-                }
-                al = al.wrapping_add(1);
-                self.r.set_al(al);
-                self.ds.w16(self.r.si, self.r.ax);
-            }
-        }
-        // 16976
-        let (x, y) = (self.ds.r16(a(0x1F483)), self.ds.r16(a(0x1F485)));
-        let letter = self.ds.r16(a(0x1F48F));
-        let o = self.cur_obj;
-        self.spawn_effect(EffectKind::from_letter(letter), x, y);
-        self.cur_obj = o;
-    }
-
-    /// `sub_1698C`：把子彈形狀（`word_1F48D` 指的寬、高、格值）用 OR 寫進 G3 髒格 `964Ch` 起，
-    /// 範圍 `964Ch` 至 `9C3Ch`。
-    pub(crate) fn s1698c(&mut self) {
-        let mut si = self.ds.r16(a(0x1F48D));
-        let w = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        self.ds.w16(a(0x2687E), w);
-        let mut cx = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        let mut bx = self.ds.r16(a(0x1F485));
-        let mut di;
-        loop {
-            let outer = cx;
-            self.r.bx = bx;
-            self.s16a0a();
-            di = self.r.di;
-            let mut icx = self.r.cx;
-            loop {
-                if di <= 0x9C3C && di >= 0x964C {
-                    let al = self.ds.r8(si);
-                    self.r.set_al(al);
-                    let v = self.ds.r8(di) | al;
-                    self.ds.w8(di, v);
-                }
-                di = di.wrapping_add(2);
-                si = si.wrapping_add(1);
-                icx = icx.wrapping_sub(1);
-                if icx == 0 {
-                    break;
-                }
-            }
-            bx = bx.wrapping_add(1);
-            cx = outer.wrapping_sub(1);
-            if cx == 0 {
-                break;
-            }
-        }
-        self.r.si = si;
-        self.r.di = di;
-        self.r.bx = bx;
-        self.r.cx = 0;
-    }
-
-    /// `sub_169BF`：第三關（`byte_1CFDB` = `C`）才有。子彈形狀掃 G4 地形格 `900Ch` 起，
-    /// 字組非 0 就設 `word_1F1C5` = `Y`、`byte_1F1C0` = FFh。列從子彈列減 1 起。
-    pub(crate) fn s169bf(&mut self) {
-        if self.ds.r8(a(0x1CFDB)) != 0x43 {
-            return;
-        }
-        let mut si = self.ds.r16(a(0x1F48D));
-        let w = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        self.ds.w16(a(0x2687E), w);
-        let mut cx = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        let mut bx = self.ds.r16(a(0x1F485)).wrapping_sub(1);
-        let mut di;
-        loop {
-            let outer = cx;
-            self.r.bx = bx;
-            self.s16a2c();
-            di = self.r.di;
-            let mut icx = self.r.cx;
-            loop {
-                if di <= 0x95FC && di >= 0x900C {
-                    let ax = self.ds.r16(di);
-                    self.r.ax = ax;
-                    if ax != 0 {
-                        self.ds.w16(a(0x1F1C5), 0x59);
-                        self.ds.w8(a(0x1F1C0), 0xFF);
+    /// 子彈形狀逐格對 G1 做碰撞（原版 `sub_16B49`）。
+    ///
+    /// 每格先過範圍檢查（[`Core::grid1_probe`]），格值 0、FFh 略過，FEh（裝甲）不記錄目標，
+    /// 其他記錄為目標（後掃到的覆蓋前面）。非 0、非 FFh 的格（含 FEh）都讓子彈消失，穿透彈除外。
+    /// 列起點每一列重算，列號超過 13h 的列落在 [`Core::grid1_row_start`] 的越界規則。
+    fn collide_entities(&self, bullet: &PlayerBullet) -> Impact {
+        let width = self.table_word(bullet.shape);
+        let height = self.table_word(bullet.shape.wrapping_add(2));
+        let mut impact = Impact::default();
+        for k in 0..loop_count(height) {
+            let start = self.grid1_row_start(bullet.row.wrapping_add(k as u16));
+            let mut at = start.wrapping_add(bullet.col);
+            for _ in 0..loop_count(width) {
+                if let Some(cell) = self.grid1_probe(start, at) {
+                    if cell != 0 && cell != 0xFF {
+                        if cell != ARMOR_CELL {
+                            impact.target = cell;
+                        }
+                        if !bullet.behavior().pierces() {
+                            impact.vanishes = true;
+                        }
                     }
                 }
-                di = di.wrapping_add(2);
-                si = si.wrapping_add(1);
-                icx = icx.wrapping_sub(1);
-                if icx == 0 {
-                    break;
+                at = at.wrapping_add(1);
+            }
+        }
+        impact
+    }
+
+    /// 第三關：子彈形狀逐格對 G4 地形碰撞（原版 `sub_169BF`）。列從子彈列減 1 起，字組非 0 就算撞到。
+    /// 讀的是奇數位址的字組，跨相鄰兩格。其他關不檢查。
+    fn collides_with_terrain(&self, bullet: &PlayerBullet) -> bool {
+        if !self.on_terrain_stage() {
+            return false;
+        }
+        let width = self.table_word(bullet.shape);
+        let height = self.table_word(bullet.shape.wrapping_add(2));
+        let mut hit = false;
+        for k in 0..loop_count(height) {
+            let mut at = self.grid4_cell_addr(bullet.row.wrapping_sub(1).wrapping_add(k as u16), bullet.col);
+            for _ in 0..loop_count(width) {
+                if self.grid4_contains(at) && self.grid4_word(at) != 0 {
+                    hit = true;
                 }
-            }
-            bx = bx.wrapping_add(1);
-            cx = outer.wrapping_sub(1);
-            if cx == 0 {
-                break;
+                at = at.wrapping_add(2);
             }
         }
-        self.r.si = si;
-        self.r.di = di;
-        self.r.bx = bx;
-        self.r.cx = 0;
+        hit
     }
 
-    /// `sub_16A0A`：G3 髒格的起點。`bx` = 列（>= 14h 改取 14h），`di` = `964Ch` + 列基底 + 欄 × 2 + 1，
-    /// `cx` = 形狀寬。`bx` 保留。
-    pub(crate) fn s16a0a(&mut self) {
-        let mut bx = self.r.bx;
-        if bx >= 0x14 {
-            bx = 0x14;
+    /// 命中結算（原版 `sub_16946`）：`target` 是格值，實體索引 = 格值 - 1。對那個實體累計傷害，
+    /// 然後在子彈目前位置播命中特效。[`NO_ENTITY`] 只播特效。
+    ///
+    /// 裝甲格 FEh 取到索引 FDh，讀實體指標表之後的 `dseg:248Eh`（實體槽 9 的 w21，實測全為 0），
+    /// 於是把傷害字組寫到 `dseg:0020h`（啟動時文字畫面的色彩屬性，關卡內不再讀取）。指向已釋放槽的格值也走同一路徑。
+    /// `Fixes::armor_cell_index` 開啟時這兩種都不寫。
+    pub(crate) fn strike(&mut self, bullet: &PlayerBullet, target: u8) {
+        if target != NO_ENTITY {
+            let index = target.wrapping_sub(1);
+            let link = self.entity_link(index);
+            if !(self.fixes.armor_cell_index && (index == ARMOR_INDEX || link == 0)) {
+                self.add_entity_damage(link, bullet.behavior().damage());
+            }
         }
-        let base = self.ds.r16((bx << 1).wrapping_add(0x21C2)).wrapping_add(0x964C);
-        let c = (self.ds.r16(a(0x1F483)) << 1).wrapping_add(1);
-        self.r.ax = c;
-        self.r.di = base.wrapping_add(c);
-        self.r.cx = self.ds.r16(a(0x2687E));
+        self.spawn_effect(EffectKind::from_letter(bullet.hit_effect), bullet.col, bullet.row);
     }
 
-    /// `sub_16A2C`：G4 地形格的起點，同 `sub_16A0A` 但基底是 `900Ch`。
-    pub(crate) fn s16a2c(&mut self) {
-        let mut bx = self.r.bx;
-        if bx >= 0x14 {
-            bx = 0x14;
-        }
-        let base = self.ds.r16((bx << 1).wrapping_add(0x21C2)).wrapping_add(0x900C);
-        let c = (self.ds.r16(a(0x1F483)) << 1).wrapping_add(1);
-        self.r.ax = c;
-        self.r.di = base.wrapping_add(c);
-        self.r.cx = self.ds.r16(a(0x2687E));
-    }
-
-    /// `sub_16A4E`：朝右的雷射。從子彈欄往右逐格掃，G4 同列上一列非 0 就停，G1 格值非 0、FFh 就記錄
-    /// 為命中並停，掃到欄 39 也停。`bx` 是光束格數，交給 `sub_16A99` 畫。子彈當幀移除。
-    pub(crate) fn s16a4e(&mut self) {
-        self.ds.w8(a(0x1F1C0), 0xFF);
-        self.r.bx = self.ds.r16(a(0x1F485));
-        self.s16cc6();
-        let mut di = self.r.di;
-        let dx = self.r.dx;
-        self.r.bx = self.r.bx.wrapping_sub(1);
-        self.s16a2c();
-        let mut si = self.r.di;
-        let mut bx = 1u16;
-        loop {
-            di = di.wrapping_add(1);
-            si = si.wrapping_add(2);
-            bx = bx.wrapping_add(1);
-            if di >= dx {
-                break;
-            }
-            let ax = self.ds.r16(si);
-            self.r.ax = ax;
-            if ax != 0 {
-                break;
-            }
-            let al = self.ds.r8(di);
-            self.r.set_al(al);
-            if al == 0 || al == 0xFF {
-                continue;
-            }
-            self.ds.w8(a(0x1F1C0), al);
-            self.r.bx = bx;
-            self.r.di = di;
-            self.r.si = si;
-            self.s16c7d();
-            break;
-        }
-        // 16A8F
-        self.ds.w16(a(0x1F1C5), 0x59);
-        self.r.bx = bx;
-        self.r.si = si;
-        self.r.di = di;
-        self.s16a99();
-    }
-
-    /// `sub_16A99`：往右畫 `bx` 格光束，圖 4（頁 0）或 19h（頁 8000h），每格欄加 1，
-    /// 同時推進 `word_1F483`（`sub_16946` 的特效位置在光束末端）。
-    pub(crate) fn s16a99(&mut self) {
-        let mut cx = self.r.bx;
-        self.r.cx = cx;
-        let ax = self.ds.r16(a(0x1F477));
-        self.ds.w16(a(0x26882), ax);
-        let ax = self.ds.r16(a(0x1F475));
-        self.ds.w16(a(0x26880), ax);
-        self.r.ax = 4;
-        self.ds.w16(a(0x26888), 4);
-        if self.ds.r16(a(0x26872)) != 0 {
-            self.r.ax = 0x19;
-            self.ds.w16(a(0x26888), 0x19);
-        }
-        loop {
-            self.r.cx = cx;
+    /// 雷射（原版 `sub_16A4E`、`16ACA`、`16A99`、`16B18`）：從子彈欄往行進方向逐格掃，畫光束，結算命中。
+    ///
+    /// 每走一格先看 G4 同列上一列的字組（非 0 就停，不限第三關），再看 G1：0、FFh 繼續，其他格記錄為命中並停；
+    /// 朝右掃到列尾（欄 39）、朝左掃到列首也停。沒有裝甲格檢查，FEh 會被記錄。
+    /// 光束長度是走過的格數加 1（停止的那格也算），圖 4 或 19h（繪製頁奇偶交替），欄跟著前進，
+    /// 所以命中特效在光束末端。沒有命中時目標是 [`NO_ENTITY`]，仍會播特效。
+    fn fire_laser(&mut self, bullet: &mut PlayerBullet, facing: Facing) {
+        let (length, target) = self.scan_beam(bullet, facing);
+        let image = if self.draw_page() != 0 { BEAM_IMAGE_ODD_PAGE } else { BEAM_IMAGE };
+        let mut x = bullet.blit_x;
+        for _ in 0..loop_count(length) {
+            self.set_blit_params(x, bullet.blit_y, image);
             self.s18c0a();
-            let v = self.ds.r16(a(0x26880)).wrapping_add(1);
-            self.ds.w16(a(0x26880), v);
-            let v = self.ds.r16(a(0x1F483)).wrapping_add(1);
-            self.ds.w16(a(0x1F483), v);
-            cx = cx.wrapping_sub(1);
-            if cx == 0 {
-                break;
-            }
+            (x, bullet.col) = match facing {
+                Facing::Right => (x.wrapping_add(1), bullet.col.wrapping_add(1)),
+                Facing::Left => (x.wrapping_sub(1), bullet.col.wrapping_sub(1)),
+            };
         }
-        self.r.cx = 0;
+        self.strike(bullet, target);
     }
 
-    /// `sub_16ACA`：朝左的雷射，掃描方向相反，掃到列基底（`dx` - 27h）也停。
-    pub(crate) fn s16aca(&mut self) {
-        self.ds.w8(a(0x1F1C0), 0xFF);
-        self.r.bx = self.ds.r16(a(0x1F485));
-        self.s16cc6();
-        let dx = self.r.dx.wrapping_sub(0x27);
-        self.r.dx = dx;
-        let mut di = self.r.di;
-        self.r.bx = self.r.bx.wrapping_sub(1);
-        self.s16a2c();
-        let mut si = self.r.di;
-        let mut bx = 1u16;
+    /// 雷射的掃描：回傳 (光束長度, 命中的格值或 [`NO_ENTITY`])。
+    fn scan_beam(&self, bullet: &PlayerBullet, facing: Facing) -> (u16, u8) {
+        let start = self.grid1_row_start(bullet.row);
+        let end = grid1_row_end(start);
+        let mut cell = start.wrapping_add(bullet.col);
+        let mut terrain = self.grid4_cell_addr(bullet.row.wrapping_sub(1), bullet.col);
+        let mut length = 1u16;
         loop {
-            di = di.wrapping_sub(1);
-            si = si.wrapping_sub(2);
-            bx = bx.wrapping_add(1);
-            if di <= dx {
-                break;
+            (cell, terrain) = match facing {
+                Facing::Right => (cell.wrapping_add(1), terrain.wrapping_add(2)),
+                Facing::Left => (cell.wrapping_sub(1), terrain.wrapping_sub(2)),
+            };
+            length = length.wrapping_add(1);
+            let at_edge = match facing {
+                Facing::Right => cell >= end,
+                Facing::Left => cell <= start,
+            };
+            if at_edge || self.grid4_word(terrain) != 0 {
+                return (length, NO_ENTITY);
             }
-            let ax = self.ds.r16(si);
-            self.r.ax = ax;
-            if ax != 0 {
-                break;
+            let value = self.grid1_byte(cell);
+            if value != 0 && value != 0xFF {
+                return (length, value);
             }
-            let al = self.ds.r8(di);
-            self.r.set_al(al);
-            if al == 0 || al == 0xFF {
-                continue;
-            }
-            self.ds.w8(a(0x1F1C0), al);
-            self.r.bx = bx;
-            self.r.di = di;
-            self.r.si = si;
-            self.s16c7d();
-            break;
         }
-        // 16B0E
-        self.ds.w16(a(0x1F1C5), 0x59);
-        self.r.bx = bx;
-        self.r.si = si;
-        self.r.di = di;
-        self.s16b18();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::{Fixes, Start};
+
+    fn core_with(fixes: Fixes) -> Core {
+        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let mut c = Core::new(&image, &[], Start::Demo, fixes);
+        c.fill_row_tables();
+        c
     }
 
-    /// `sub_16B18`：往左畫 `bx` 格光束，每格欄減 1。
-    pub(crate) fn s16b18(&mut self) {
-        let mut cx = self.r.bx;
-        self.r.cx = cx;
-        let ax = self.ds.r16(a(0x1F477));
-        self.ds.w16(a(0x26882), ax);
-        let ax = self.ds.r16(a(0x1F475));
-        self.ds.w16(a(0x26880), ax);
-        self.r.ax = 4;
-        self.ds.w16(a(0x26888), 4);
-        if self.ds.r16(a(0x26872)) != 0 {
-            self.r.ax = 0x19;
-            self.ds.w16(a(0x26888), 0x19);
-        }
-        loop {
-            self.r.cx = cx;
-            self.s18c0a();
-            let v = self.ds.r16(a(0x26880)).wrapping_sub(1);
-            self.ds.w16(a(0x26880), v);
-            let v = self.ds.r16(a(0x1F483)).wrapping_sub(1);
-            self.ds.w16(a(0x1F483), v);
-            cx = cx.wrapping_sub(1);
-            if cx == 0 {
-                break;
-            }
-        }
-        self.r.cx = 0;
+    fn core() -> Core {
+        core_with(Fixes::NONE)
     }
 
-    /// `sub_16B49`：子彈形狀逐格對 G1 做碰撞。可測範圍 `1B32h` < `di` < `1E2Ah` 且在列內，
-    /// 格值 0、FFh 略過，FEh（裝甲）不記錄目標，其他記錄到 `byte_1F1C0`（後掃到的覆蓋前面）。
-    /// 格值非 0、非 FFh 的格（含 FEh）都會讓子彈消失（`word_1F1C5` = `Y`），型別 `S` 除外，
-    /// 並呼叫 `sub_16C7D` 計數。
-    pub(crate) fn s16b49(&mut self) {
-        self.ds.w8(a(0x1F1C0), 0);
-        let mut si = self.ds.r16(a(0x1F48D));
-        let w = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        self.ds.w16(a(0x2687E), w);
-        let mut cx = self.ds.r16(si);
-        si = si.wrapping_add(2);
-        let mut bx = self.ds.r16(a(0x1F485));
-        let mut di;
-        let mut dx;
-        loop {
-            let outer = cx;
-            self.r.bx = bx;
-            self.s16cc6();
-            let ax = self.r.ax;
-            dx = self.r.dx;
-            di = self.r.di;
-            let mut icx = self.r.cx;
-            loop {
-                if !(di >= 0x1E2A || di <= 0x1B32 || di >= dx || di <= ax) {
-                    let al = self.ds.r8(di);
-                    self.r.set_al(al);
-                    if al != 0 && al != 0xFF {
-                        if al != 0xFE {
-                            self.ds.w8(a(0x1F1C0), al);
-                        }
-                        if self.ds.r16(a(0x1F471)) != 0x53 {
-                            self.ds.w16(a(0x1F1C5), 0x59);
-                        }
-                        self.r.bx = bx;
-                        self.r.cx = icx;
-                        self.r.di = di;
-                        self.s16c7d();
+    /// 測試擺實體記錄的位置（資料段內的空閒處）。
+    const ENTITY_AT: u16 = 0x7200;
+
+    /// 在 `at` 擺一個 `w` × `h` 的形狀，格值全為 `cell`。
+    fn put_shape(c: &mut Core, at: u16, w: u16, h: u16, cell: u8) {
+        c.ds.w16(at, w);
+        c.ds.w16(at + 2, h);
+        for i in 0..w * h {
+            c.ds.w8(at + 4 + i, cell);
+        }
+    }
+
+    /// 在 G1 的 (`col`, `row`) 擺一個格值。
+    fn put_g1(c: &mut Core, col: u16, row: u16, cell: u8) {
+        c.ds.w8(GRID1_START + row * GRID1_ROW_BYTES + col, cell);
+    }
+
+    /// 一顆在 (`col`, `row`) 的 1×1 子彈，形狀在 `0x7000`。
+    fn bullet_at(c: &mut Core, col: u16, row: u16) -> PlayerBullet {
+        put_shape(c, 0x7000, 1, 1, 1);
+        PlayerBullet { col, row, blit_x: col, blit_y: row.wrapping_mul(10), shape: 0x7000, ..PlayerBullet::default() }
+    }
+
+    fn active(c: &Core) -> Vec<(usize, PlayerBullet)> {
+        c.pb.slots.iter().enumerate().filter(|(_, s)| s.is_active()).map(|(i, s)| (i, s.bullet)).collect()
+    }
+
+    #[test]
+    fn letters_pick_the_documented_weapons() {
+        for (letter, want) in [
+            (0, Weapon::Plain),
+            (u16::from(b'N'), Weapon::Plain),
+            (u16::from(b'K'), Weapon::Big),
+            (u16::from(b'S'), Weapon::Spread),
+            (u16::from(b'B'), Weapon::Seeker),
+            (u16::from(b'L'), Weapon::Laser),
+            (u16::from(b'F'), Weapon::Sweep),
+        ] {
+            assert_eq!(Weapon::from_letter(letter), want, "字母 {letter:#x}");
+        }
+        assert_eq!(Facing::from_word(0x3E), Facing::Right);
+        assert_eq!(Facing::from_word(0x3C), Facing::Left);
+        assert_eq!(Facing::from_word(0), Facing::Left, "只有 3Eh 朝右");
+    }
+
+    #[test]
+    fn weapon_patterns_place_the_documented_starting_points() {
+        // (字母, 朝向) -> 依序生成的 (樣板, 欄, 列)，玩家在欄 10、列 5。
+        let cases: [(u8, Facing, Vec<(Shot, u16, u16)>); 11] = [
+            (0, Facing::Right, vec![(Shot::Plain, 10, 6)]),
+            (0, Facing::Left, vec![(Shot::Plain, 10, 6)]),
+            (b'K', Facing::Right, vec![(Shot::Big, 10, 5)]),
+            (b'S', Facing::Right, vec![(Shot::SpreadUp, 10, 6), (Shot::SpreadDown, 10, 6)]),
+            (b'S', Facing::Left, vec![(Shot::SpreadUp, 10, 5), (Shot::SpreadDown, 10, 5)]),
+            (b'B', Facing::Right, vec![(Shot::SeekerUp, 10, 6), (Shot::SeekerDown, 10, 6)]),
+            (b'L', Facing::Right, vec![(Shot::Laser, 13, 6)]),
+            (b'L', Facing::Left, vec![(Shot::Laser, 8, 6)]),
+            (b'K', Facing::Left, vec![(Shot::Big, 10, 5)]),
+            (b'B', Facing::Left, vec![(Shot::SeekerUp, 10, 6), (Shot::SeekerDown, 10, 6)]),
+            (b'F', Facing::Left, [1u16, 4, 7, 10, 13, 16].iter().map(|&r| (Shot::Sweep, 10, r)).collect()),
+        ];
+        for (letter, facing, want) in cases {
+            let mut got = Vec::new();
+            let mut col = 10u16;
+            let mut row = 5u16;
+            for step in Weapon::from_letter(u16::from(letter)).steps(facing) {
+                match *step {
+                    Step::Shift { cols, rows } => {
+                        col = col.wrapping_add(cols as u16);
+                        row = row.wrapping_add(rows as u16);
                     }
-                }
-                di = di.wrapping_add(1);
-                icx = icx.wrapping_sub(1);
-                if icx == 0 {
-                    break;
+                    Step::SetRow(r) => row = r,
+                    Step::Fire(shot) => got.push((shot, col, row)),
+                    Step::SeekerGate | Step::CountSeekers(_) => {}
                 }
             }
-            bx = bx.wrapping_add(1);
-            cx = outer.wrapping_sub(1);
-            if cx == 0 {
-                break;
-            }
+            assert_eq!(got, want, "字母 {} 朝 {facing:?}", letter as char);
         }
-        self.r.si = si;
-        self.r.di = di;
-        self.r.dx = dx;
-        self.r.bx = bx;
-        self.r.cx = 0;
     }
 
-    /// `sub_16BA8`：追蹤彈找方向。沿 G1 的上、右、下、左四向，從子彈所在格起數到第一個
-    /// 非 0 非 FFh 的格距（找不到為 FFh），結果在 `word_1F1AA`（上）、`1F1AE`（右）、`1F1AC`（下）、
-    /// `1F1B0`（左）。回傳 `ax` = 最小格距，`dx` = 方向 1、3、5、7。平手時後者優先：左 > 下 > 右 > 上。
-    pub(crate) fn s16ba8(&mut self) {
-        self.r.bx = self.ds.r16(a(0x1F485));
-        self.s16cc6();
-        self.ds.w16(a(0x1F1B2), self.r.di);
-        self.ds.w16(a(0x1F1B6), self.r.ax);
-        self.ds.w16(a(0x1F1B4), self.r.dx);
-        self.s16bf5();
-        self.s16c18();
-        self.s16c3b();
-        self.s16c5c();
-        self.r.dx = 1;
-        let mut ax = self.ds.r16(a(0x1F1AA));
-        if ax >= self.ds.r16(a(0x1F1AE)) {
-            ax = self.ds.r16(a(0x1F1AE));
-            self.r.dx = 3;
+    #[test]
+    fn spawn_copies_the_template_and_fills_the_five_words() {
+        let mut c = core();
+        let at = Shot::Big.table_offset(Facing::Right);
+        for k in 0..16u16 {
+            c.ds.w16(at + 2 * k, 0x900 + k);
         }
-        if ax >= self.ds.r16(a(0x1F1AC)) {
-            ax = self.ds.r16(a(0x1F1AC));
-            self.r.dx = 5;
-        }
-        if ax >= self.ds.r16(a(0x1F1B0)) {
-            self.r.dx = 7;
-        }
-        self.r.ax = ax;
+        c.fire_player_bullets(u16::from(b'K'), Facing::Right, 7, 3);
+        let slot = c.pb.slots[0];
+        assert_eq!(slot.link, pb_record_link(0));
+        let b = slot.bullet;
+        assert_eq!((b.col, b.blit_x, b.row, b.blit_y, b.owner), (7, 7, 3, 30, u16::from(b'K')), "欄、列、列 × 10、武器字母");
+        assert_eq!((b.kind, b.image, b.blit_dx, b.blit_dy, b.heading, b.spare), (0x900, 0x901, 0x904, 0x905, 0x906, 0x908), "其餘取自樣板");
+        assert_eq!((b.dcol, b.drow, b.script, b.shape, b.hit_effect), (0x90B, 0x90C, 0x90D, 0x90E, 0x90F));
+        assert!(!c.pb.slots[1].is_active());
     }
 
-    /// `sub_16BF5`：往上數格距，每格減 28h，到 `1B32h` 以下仍無則 FFh。結果存 `word_1F1AA`。
-    pub(crate) fn s16bf5(&mut self) {
-        let mut bx = 0u16;
-        let mut si = self.ds.r16(a(0x1F1B2));
-        loop {
-            let al = self.ds.r8(si);
-            self.r.set_al(al);
-            if al != 0xFF && al != 0 {
-                break;
-            }
-            si = si.wrapping_sub(0x28);
-            bx = bx.wrapping_add(1);
-            if si > 0x1B32 {
-                continue;
-            }
-            bx = 0xFF;
-            break;
+    #[test]
+    fn spawn_takes_the_first_free_slot_and_drops_when_full() {
+        let mut c = core();
+        c.pb.slots[0].link = 1;
+        c.pb.slots[2].link = 1;
+        c.fire_player_bullets(u16::from(b'S'), Facing::Right, 1, 1);
+        assert_eq!(active(&c).iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1, 2, 3], "兩顆依序填進空槽 1、3");
+        for s in c.pb.slots.iter_mut() {
+            s.link = 1;
         }
-        self.r.bx = bx;
-        self.r.si = si;
-        self.ds.w16(a(0x1F1AA), bx);
+        let before = c.pb.slots;
+        c.fire_player_bullets(u16::from(b'K'), Facing::Right, 5, 5);
+        assert_eq!(c.pb.slots, before, "池滿了放棄");
     }
 
-    /// `sub_16C18`：往下數格距，每格加 28h，到 `1E2Ah` 以上仍無則 FFh。結果存 `word_1F1AC`。
-    pub(crate) fn s16c18(&mut self) {
-        let mut bx = 0u16;
-        let mut si = self.ds.r16(a(0x1F1B2));
-        loop {
-            let al = self.ds.r8(si);
-            self.r.set_al(al);
-            if al != 0xFF && al != 0 {
-                break;
-            }
-            si = si.wrapping_add(0x28);
-            bx = bx.wrapping_add(1);
-            if si < 0x1E2A {
-                continue;
-            }
-            bx = 0xFF;
-            break;
-        }
-        self.r.bx = bx;
-        self.r.si = si;
-        self.ds.w16(a(0x1F1AC), bx);
+    #[test]
+    fn seeker_gate_stops_above_five() {
+        let mut c = core();
+        c.pb.seekers_in_flight = 5;
+        c.fire_player_bullets(u16::from(b'B'), Facing::Right, 1, 1);
+        assert_eq!(c.pb.seekers_in_flight, 7, "5 還可以射，射完加 2");
+        assert_eq!(active(&c).len(), 2);
+        c.fire_player_bullets(u16::from(b'B'), Facing::Left, 1, 1);
+        assert_eq!(c.pb.seekers_in_flight, 7, "超過 5 就不射");
+        assert_eq!(active(&c).len(), 2);
     }
 
-    /// `sub_16C3B`：往右數格距，到列尾（`word_1F1B4`）仍無則 FFh。結果存 `word_1F1AE`。
-    pub(crate) fn s16c3b(&mut self) {
-        let mut bx = 0u16;
-        let mut si = self.ds.r16(a(0x1F1B2));
-        loop {
-            let al = self.ds.r8(si);
-            self.r.set_al(al);
-            if al != 0xFF && al != 0 {
-                break;
-            }
-            si = si.wrapping_add(1);
-            bx = bx.wrapping_add(1);
-            if si < self.ds.r16(a(0x1F1B4)) {
-                continue;
-            }
-            bx = 0xFF;
-            break;
+    #[test]
+    fn release_decrements_the_seeker_count_only_for_seekers() {
+        let mut c = core();
+        put_shape(&mut c, 0x7000, 1, 1, 1);
+        c.pb.seekers_in_flight = 2;
+        for (i, kind) in [(0usize, 0x41u16), (1, 0)] {
+            c.pb.slots[i] = Slot {
+                link: pb_record_link(i),
+                bullet: PlayerBullet { kind, col: 0x30, row: 0, shape: 0x7000, script: 0x7100, ..PlayerBullet::default() },
+            };
         }
-        self.r.bx = bx;
-        self.r.si = si;
-        self.ds.w16(a(0x1F1AE), bx);
+        // 欄 0x30 >= 27h：這一幀出界。腳本碼 3（右）。
+        c.ds.w8(0x7100, 3);
+        c.update_player_bullets();
+        assert!(!c.pb.slots[0].is_active() && !c.pb.slots[1].is_active());
+        assert_eq!(c.pb.seekers_in_flight, 1, "只有型別 A 的釋放會減");
+        assert_eq!(c.pb.slots[0].bullet.col, 0x30, "釋放的槽保留記錄（col 加 dcol 0）");
     }
 
-    /// `sub_16C5C`：往左數格距，到列首（`word_1F1B6`）仍無則 FFh。結果存 `word_1F1B0`。
-    pub(crate) fn s16c5c(&mut self) {
-        let mut bx = 0u16;
-        let mut si = self.ds.r16(a(0x1F1B2));
-        loop {
-            let al = self.ds.r8(si);
-            self.r.set_al(al);
-            if al != 0xFF && al != 0 {
-                break;
-            }
-            si = si.wrapping_sub(1);
-            bx = bx.wrapping_add(1);
-            if si > self.ds.r16(a(0x1F1B6)) {
-                continue;
-            }
-            bx = 0xFF;
-            break;
-        }
-        self.r.bx = bx;
-        self.r.si = si;
-        self.ds.w16(a(0x1F1B0), bx);
+    #[test]
+    fn movement_limits_and_diagonals() {
+        let b = |col, row| PlayerBullet { col, row, dcol: 1, drow: 1, blit_dx: 1, blit_dy: 1, ..PlayerBullet::default() };
+        let mut x = b(0x25, 5);
+        assert!(!x.advance(3) && x.col == 0x26, "欄 26h 還在內");
+        assert!(x.advance(3) && x.col == 0x27, "欄 27h 出界");
+        let mut y = b(5, 0x10);
+        assert!(!y.advance(5) && y.row == 0x11);
+        assert!(y.advance(5), "列 12h 出界，往上往下同門檻");
+        let mut z = b(5, 0);
+        assert!(z.advance(1) && z.row == 0xFFFF, "負列（無號）出界");
+        // 斜向兩段都執行，旗標是聯集。
+        let mut d = b(0x26, 5);
+        assert!(d.advance(2));
+        assert_eq!((d.col, d.row), (0x27, 4));
+        let mut e = b(0, 0);
+        assert!(e.advance(8), "左上：欄 0 減 1 得 FFFFh，出界");
+        assert_eq!((e.col, e.row), (0xFFFF, 0xFFFF));
+        let mut f = b(5, 5);
+        assert!(!f.advance(0) && !f.advance(9) && !f.advance(0x13), "其他碼不動");
+        assert_eq!((f.col, f.row), (5, 5));
     }
 
-    /// `sub_16C7D`：擊中計數。子彈型別 `word_1F47F` 為 `1`（31h）時 `word_1F1B8` 加 1、`2`（32h）時
-    /// `word_1F1BA` 加 1，並在介面畫出數字。保留 `bx`、`cx`、`di`。數字屬於介面，不帶子彈的物件編號。
-    pub(crate) fn s16c7d(&mut self) {
-        let (bx, cx, di) = (self.r.bx, self.r.cx, self.r.di);
-        let owner = self.ds.r16(a(0x1F47F));
-        if owner == 0x31 {
-            let v = self.ds.r16(a(0x1F1B8)).wrapping_add(1);
-            self.ds.w16(a(0x1F1B8), v);
-            self.ds.w16(a(0x2688A), 0x23);
-            self.ds.w16(a(0x2688E), 0xBE);
-            self.r.cx = self.ds.r16(a(0x1F1B8));
-            let o = self.cur_obj;
-            self.clear_obj();
-            self.s1890d();
-            self.cur_obj = o;
-        } else if owner == 0x32 {
-            let v = self.ds.r16(a(0x1F1BA)).wrapping_add(1);
-            self.ds.w16(a(0x1F1BA), v);
-            self.ds.w16(a(0x2688A), 0);
-            self.ds.w16(a(0x2688E), 0xBE);
-            self.r.cx = self.ds.r16(a(0x1F1BA));
-            let o = self.cur_obj;
-            self.clear_obj();
-            self.s1890d();
-            self.cur_obj = o;
+    #[test]
+    fn script_jump_back_repeats_the_target_byte() {
+        let mut c = core();
+        // 腳本 03 04 F2：第三個位元組往回跳 2，指標 3 減 2 = 1，取位元組 04，指標不再前進。
+        for (i, b) in [0x03u8, 0x04, 0xF2].into_iter().enumerate() {
+            c.ds.w8(0x7100 + i as u16, b);
         }
-        self.r.bx = bx;
-        self.r.cx = cx;
-        self.r.di = di;
+        let mut bullet = PlayerBullet { script: 0x7100, ..PlayerBullet::default() };
+        assert_eq!(c.next_code(&mut bullet), 3);
+        assert_eq!(c.next_code(&mut bullet), 4);
+        assert_eq!((c.next_code(&mut bullet), bullet.script), (4, 0x7101), "跳回幀取 04，指標停在 04 那格");
+        assert_eq!((c.next_code(&mut bullet), bullet.script), (4, 0x7102), "下一幀 04 再生效一次");
+        assert_eq!((c.next_code(&mut bullet), bullet.script), (4, 0x7101), "再讀到 F2 又跳回，04 每輪生效兩次");
     }
 
-    /// `sub_16CC6`：G1 的起點。`bx` = 列（>= 17Ch 改取 1F4h，等於讀 `1EF2h` 的 0），
-    /// 回傳 `ax` = 列基底（`1B32h` + 列偏移），`di` = 基底 + 欄 `word_1F483`，`dx` = 基底 + 27h，
-    /// `cx` = 形狀寬 `word_2687E`。`bx` 保留。
-    pub(crate) fn s16cc6(&mut self) {
-        let mut bx = self.r.bx;
-        if bx >= 0x17C {
-            bx = 0x1F4;
+    #[test]
+    fn collide_entities_records_last_cell_and_armor_only_vanishes() {
+        let mut c = core();
+        let mut b = bullet_at(&mut c, 5, 4);
+        put_shape(&mut c, 0x7000, 3, 1, 1);
+        b.shape = 0x7000;
+        put_g1(&mut c, 5, 4, 2);
+        put_g1(&mut c, 6, 4, 0xFE);
+        put_g1(&mut c, 7, 4, 3);
+        assert_eq!(c.collide_entities(&b), Impact { target: 3, vanishes: true }, "後掃到的覆蓋前面");
+        put_g1(&mut c, 7, 4, 0xFF);
+        assert_eq!(c.collide_entities(&b), Impact { target: 2, vanishes: true }, "FFh 略過，裝甲 FEh 不覆蓋目標");
+        put_g1(&mut c, 5, 4, 0);
+        assert_eq!(c.collide_entities(&b), Impact { target: 0, vanishes: true }, "只有裝甲：不記錄目標，仍消失");
+        put_g1(&mut c, 6, 4, 0);
+        assert_eq!(c.collide_entities(&b), Impact::default());
+    }
+
+    #[test]
+    fn piercing_bullets_hit_without_vanishing() {
+        let mut c = core();
+        let mut b = bullet_at(&mut c, 5, 4);
+        b.kind = 0x53;
+        put_g1(&mut c, 5, 4, 7);
+        assert_eq!(c.collide_entities(&b), Impact { target: 7, vanishes: false });
+        assert_eq!((b.behavior().damage(), b.behavior().pierces()), (3, true));
+        for (kind, damage) in [(0u16, 1u8), (0x41, 3), (0x4C, 1), (0x6C, 1), (0x12, 1)] {
+            let behavior = PlayerBullet { kind, ..b }.behavior();
+            assert_eq!((behavior.damage(), behavior.pierces()), (damage, false), "型別 {kind:#x}");
         }
-        let ax = self.ds.r16((bx << 1).wrapping_add(0x1B0A)).wrapping_add(0x1B32);
-        self.r.ax = ax;
-        self.r.di = ax.wrapping_add(self.ds.r16(a(0x1F483)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = ax.wrapping_add(0x27);
+    }
+
+    #[test]
+    fn collide_entities_skips_column_0_and_39_of_each_row() {
+        let mut c = core();
+        let b = bullet_at(&mut c, 0, 4);
+        put_g1(&mut c, 0, 4, 9);
+        assert_eq!(c.collide_entities(&b), Impact::default(), "欄 0 不測（嚴格在列起點之後）");
+        let b = bullet_at(&mut c, 39, 4);
+        put_g1(&mut c, 39, 4, 9);
+        assert_eq!(c.collide_entities(&b), Impact::default(), "欄 39 不測（嚴格在列尾之前）");
+        let b = bullet_at(&mut c, 38, 4);
+        put_g1(&mut c, 38, 4, 9);
+        assert_eq!(c.collide_entities(&b).target, 9);
+        // 負列與列 19 之後：列起點取越界規則，不會碰到 G1 之內的格。
+        // 負列（無號）的列起點取越界規則，等於 G1 列 0 的起點，所以讀到的是列 0 的格。
+        put_g1(&mut c, 5, 0, 8);
+        let b = bullet_at(&mut c, 5, 0xFFFF);
+        assert_eq!(c.collide_entities(&b).target, 8);
+    }
+
+    #[test]
+    fn terrain_is_checked_only_on_the_third_stage_and_wins_over_entities() {
+        let mut c = core();
+        let b = bullet_at(&mut c, 5, 4);
+        // G4 同列上一列（列 3）的奇數位址字組。
+        let at = c.grid4_cell_addr(3, 5);
+        c.ds.w16(at, 0x0100);
+        assert!(!c.collides_with_terrain(&b), "不是第三關不檢查");
+        c.set_stage_letter(b'C');
+        assert!(c.collides_with_terrain(&b));
+        c.ds.w16(at, 0);
+        assert!(!c.collides_with_terrain(&b));
+        // 位址超出 95FCh 的格不測：列 19 的欄 30h 落在 G4 之後。
+        let far = bullet_at(&mut c, 0x30, 20);
+        let past = c.grid4_cell_addr(19, 0x30);
+        assert!(!c.grid4_contains(past));
+        c.ds.w16(past, 0xFFFF);
+        assert!(!c.collides_with_terrain(&far));
+    }
+
+    #[test]
+    fn strike_adds_damage_to_the_entity_and_spawns_the_effect() {
+        let mut c = core();
+        let ent = ENTITY_AT;
+        c.set_entity(1, ent, 0x0004);
+        let b = PlayerBullet { col: 7, row: 2, hit_effect: u16::from(b'B'), ..PlayerBullet::default() };
+        c.strike(&b, 2);
+        assert_eq!(c.entity_damage(ent), 0x0105, "高位元組設 1，低位元組加 1");
+        assert_eq!(c.fx.slots[0].script_pos, crate::fx::Script::BigExplosion.table_offset(), "特效字母 B");
+        assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (7, 2));
+        c.strike(&PlayerBullet { kind: 0x41, ..b }, 2);
+        assert_eq!(c.entity_damage(ent), 0x0108, "追蹤彈加 3");
+        c.strike(&PlayerBullet { kind: 0x53, ..b }, 2);
+        assert_eq!(c.entity_damage(ent), 0x010B, "穿透彈加 3");
+        let used = c.fx.slots.iter().filter(|s| s.is_active()).count();
+        c.strike(&b, NO_ENTITY);
+        assert_eq!(c.fx.slots.iter().filter(|s| s.is_active()).count(), used + 1, "NO_ENTITY 仍播特效");
+        assert_eq!(c.entity_damage(ent), 0x010B, "NO_ENTITY 不動實體");
+        assert_eq!(c.entity_damage(0), 0, "也不會落到 dseg:0020h");
+    }
+
+    #[test]
+    fn damage_byte_wraps_without_carrying_into_the_flag() {
+        let mut c = core();
+        c.set_entity(0, ENTITY_AT, 0x01FF);
+        c.strike(&PlayerBullet::default(), 1);
+        assert_eq!(c.entity_damage(ENTITY_AT), 0x0100, "低位元組 8 位元相加，高位元組固定 1");
+    }
+
+    #[test]
+    fn armor_cell_writes_to_dseg_0020_unless_fixed() {
+        for (fixes, want) in [(Fixes::NONE, 0x0166u16), (Fixes::ALL, 0x0165)] {
+            let mut c = core_with(fixes);
+            c.set_entity(0xFD, 0, 0x0165);
+            c.strike(&PlayerBullet::default(), ARMOR_CELL);
+            assert_eq!(c.entity_damage(0), want);
+        }
+    }
+
+    /// 在 G1 擺一列牆，讓追蹤彈找方向。
+    fn seeker_at(c: &mut Core, col: u16, row: u16) -> PlayerBullet {
+        bullet_at(c, col, row)
+    }
+
+    #[test]
+    fn seeker_picks_the_nearest_direction_with_later_ties_winning() {
+        let mut c = core();
+        let b = seeker_at(&mut c, 10, 8);
+        // 上 3 格、右 5 格、下 3 格、左 6 格：上與下平手，後者（下）優先。
+        put_g1(&mut c, 10, 5, 1);
+        put_g1(&mut c, 15, 8, 1);
+        put_g1(&mut c, 10, 11, 1);
+        put_g1(&mut c, 4, 8, 1);
+        assert_eq!(c.seek_direction(&b), (3, 5));
+        // 上 2、左 2 平手，左優先。
+        put_g1(&mut c, 10, 6, 1);
+        put_g1(&mut c, 8, 8, 1);
+        assert_eq!(c.seek_direction(&b), (2, 7));
+        // 自己所在的格就有東西：四向都是 0，左優先。
+        put_g1(&mut c, 10, 8, 1);
+        assert_eq!(c.seek_direction(&b), (0, 7));
+    }
+
+    #[test]
+    fn seeker_with_only_a_left_wall_reports_not_found() {
+        // 原版 16BEBh：比到左邊只改方向碼不改距離，其餘三向都是 FFh 時距離仍是 FFh。
+        let mut c = core();
+        let b = seeker_at(&mut c, 10, 8);
+        put_g1(&mut c, 7, 8, 1);
+        assert_eq!(c.seek_direction(&b), (NOT_FOUND, 7));
+        let mut bullet = PlayerBullet { heading: 2, ..b };
+        assert_eq!(c.steer_seeker(&mut bullet), 2, "找不到沿用原本的朝向");
+        assert_eq!(bullet.heading, 2);
+        // 右邊 2 格也有東西：右比左近，距離 2、方向 3。
+        put_g1(&mut c, 12, 8, 1);
+        assert_eq!(c.seek_direction(&b), (2, 3));
+        assert_eq!(c.steer_seeker(&mut bullet), 3);
+        assert_eq!(bullet.heading, 3, "選出方向後存回記錄");
+        // 右邊 4 格：左（3 格）比較近，方向 7，距離仍是右的 4。
+        put_g1(&mut c, 12, 8, 0);
+        put_g1(&mut c, 14, 8, 1);
+        assert_eq!(c.seek_direction(&b), (4, 7));
+    }
+
+    #[test]
+    fn seeker_treats_ff_as_empty() {
+        let mut c = core();
+        let b = seeker_at(&mut c, 10, 8);
+        put_g1(&mut c, 10, 6, 0xFF);
+        put_g1(&mut c, 10, 4, 5);
+        assert_eq!(c.seek_direction(&b), (4, 1));
+        // 全空：每向 FFh，平手取最後，方向碼 7。
+        let c2 = core();
+        assert_eq!(c2.seek_direction(&b), (NOT_FOUND, 7));
+    }
+
+    #[test]
+    fn seeker_script_steers_on_0a_and_leaves_a_trail() {
+        let mut c = core();
+        let mut b = seeker_at(&mut c, 10, 8);
+        b.heading = 4;
+        b.script = 0x7100;
+        c.ds.w8(0x7100, 0x0A);
+        put_g1(&mut c, 14, 8, 1);
+        assert_eq!(c.next_code(&mut b), 3, "右邊最近，方向 3");
+        assert_eq!(b.heading, 3);
+        assert_eq!(b.script, 0x7101);
+        assert_eq!(c.fx.slots[0].script_pos, crate::fx::Script::SeekerTrail.table_offset(), "先播尾跡");
+        assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (10, 8));
+    }
+
+    #[test]
+    fn seeker_last_script_frame_does_not_move() {
+        // 腳本尾端 F5：追蹤判斷在跳回之前，跳回後的 0Ah 不再選方向，該幀碼 0Ah 不移動。
+        let mut c = core();
+        let mut b = seeker_at(&mut c, 10, 8);
+        b.script = 0x7105;
+        for i in 0..5 {
+            c.ds.w8(0x7100 + i, 0x0A);
+        }
+        c.ds.w8(0x7105, 0xF5);
+        let code = c.next_code(&mut b);
+        assert_eq!(code, 0x0A);
+        assert_eq!(b.script, 0x7101, "指標 7106h 減 5");
+        let mut moving = PlayerBullet { dcol: 1, drow: 1, blit_dx: 1, blit_dy: 1, ..b };
+        assert!(!moving.advance(code));
+        assert_eq!((moving.col, moving.row), (10, 8), "碼 0Ah 不在移動表內，不動");
+        assert!(c.fx.slots.iter().all(|s| !s.is_active()), "沒有再選方向，所以沒有尾跡");
+    }
+
+    #[test]
+    fn laser_scans_to_the_first_cell_and_extends_the_column() {
+        let mut c = core();
+        let mut b = PlayerBullet { kind: 0x4C, col: 3, row: 6, blit_x: 3, blit_y: 60, hit_effect: u16::from(b'>'), ..PlayerBullet::default() };
+        c.set_entity(4, ENTITY_AT, 0);
+        put_g1(&mut c, 9, 6, 5);
+        c.draws.clear();
+        c.fire_laser(&mut b, Facing::Right);
+        // 欄 4、5、...、9：走 6 步，長度 = 1 + 6 = 7，欄前進 7。
+        assert_eq!(b.col, 10, "欄跟著光束前進");
+        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101, "格值 5 是實體索引 4，傷害 1");
+        let beams = c.draws.iter().filter(|d| matches!(d, crate::draw::DrawCmd::Blit(b) if b.op == crate::draw::Op::S18C0A)).count();
+        assert_eq!(beams, 7);
+        assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (10, 6), "命中特效在光束末端");
+    }
+
+    #[test]
+    fn laser_without_a_hit_still_plays_the_effect_at_the_edge() {
+        let mut c = core();
+        let mut b = PlayerBullet { kind: 0x4C, col: 30, row: 6, blit_x: 30, blit_y: 60, ..PlayerBullet::default() };
+        c.fire_laser(&mut b, Facing::Right);
+        // 欄 31 至 38 都空，走到 39 停（先加後比）：長度 = 1 + 9 = 10。
+        assert_eq!(b.col, 40);
+        assert!(c.fx.slots[0].is_active());
+        assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (40, 6));
+    }
+
+    #[test]
+    fn laser_left_stops_at_the_row_start_and_at_terrain() {
+        let mut c = core();
+        let mut b = PlayerBullet { kind: 0x6C, col: 4, row: 6, blit_x: 4, blit_y: 60, ..PlayerBullet::default() };
+        put_g1(&mut c, 1, 6, 3);
+        c.set_entity(2, ENTITY_AT, 0);
+        c.fire_laser(&mut b, Facing::Left);
+        assert_eq!(b.col, 4 - 4, "欄 3、2、1 走 3 步，長度 4");
+        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101);
+        // 地形：G4 同列上一列的字組非 0 就停，在命中判斷之前，不限第三關。
+        let mut c = core();
+        let mut b = PlayerBullet { kind: 0x6C, col: 10, row: 6, blit_x: 10, blit_y: 60, ..PlayerBullet::default() };
+        put_g1(&mut c, 6, 6, 3);
+        let wall = c.grid4_cell_addr(5, 10).wrapping_sub(2 * 2);
+        c.ds.w16(wall, 1);
+        c.fire_laser(&mut b, Facing::Left);
+        assert_eq!(b.col, 10 - 3, "走 2 步在第 3 步的位置看到地形停下，長度 3");
+        assert_eq!(c.entity_damage(0), 0, "地形不扣實體血");
+    }
+
+    #[test]
+    fn update_draws_mask_then_planes_and_stamps_g3() {
+        let mut c = core();
+        let mut b = bullet_at(&mut c, 5, 4);
+        b.image = 33;
+        b.script = 0x7100;
+        b.dcol = 1;
+        b.blit_dx = 1;
+        c.ds.w8(0x7100, 3);
+        c.pb.slots[0] = Slot { link: pb_record_link(0), bullet: b };
+        c.draws.clear();
+        c.update_player_bullets();
+        let blits: Vec<_> = c.draws.iter().filter_map(|d| if let crate::draw::DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
+        assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), vec![crate::draw::Op::S18E73, crate::draw::Op::S18EB6]);
+        assert!(blits.iter().all(|b| b.x == 6 && b.y == 40 && b.index == 33), "移動後再畫");
+        assert_eq!(c.ds.r8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
+        assert_eq!(c.pb.slots[0].bullet.col, 6);
+        assert!(c.pb.slots[0].is_active());
+    }
+
+    #[test]
+    fn a_bullet_that_hits_is_released_and_damages() {
+        let mut c = core();
+        let mut b = bullet_at(&mut c, 5, 4);
+        b.script = 0x7100;
+        b.dcol = 1;
+        b.blit_dx = 1;
+        c.ds.w8(0x7100, 3);
+        c.set_entity(0, ENTITY_AT, 0);
+        put_g1(&mut c, 6, 4, 1);
+        c.pb.slots[3] = Slot { link: pb_record_link(3), bullet: b };
+        c.update_player_bullets();
+        assert!(!c.pb.slots[3].is_active());
+        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101);
+    }
+
+    #[test]
+    fn release_all_clears_links_but_keeps_records() {
+        let mut p = PlayerBullets::default();
+        p.slots[4] = Slot { link: 0x1234, bullet: PlayerBullet { col: 9, ..PlayerBullet::default() } };
+        p.seekers_in_flight = 3;
+        p.release_all();
+        assert_eq!(p.slots[4], Slot { link: 0, bullet: PlayerBullet { col: 9, ..PlayerBullet::default() } });
+        assert_eq!(p.seekers_in_flight, 3, "追蹤彈計數另外歸零");
     }
 }

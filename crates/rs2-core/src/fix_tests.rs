@@ -4,6 +4,8 @@
 use crate::dseg::a;
 use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
+use crate::mirror::pb_record_link;
+use crate::pbullet::{Facing, PlayerBullet};
 
 fn game(fixes: Fixes) -> Core {
     let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
@@ -109,8 +111,7 @@ fn bullet_slot_carry_on_clears_with_g2() {
 fn armor_cell_off_writes_dseg_0020() {
     let mut g = game(Fixes::NONE);
     g.ds.w16(0x0020, 0x0165);
-    g.ds.w8(a(0x1F1C0), 0xFE);
-    g.s16946();
+    g.strike(&PlayerBullet::default(), 0xFE);
     assert_eq!(g.ds.r16(0x0020), 0x0166, "原版以指標 0 加 20h 寫到 dseg:0020h");
 }
 
@@ -118,19 +119,17 @@ fn armor_cell_off_writes_dseg_0020() {
 fn armor_cell_on_leaves_dseg_0020() {
     let mut g = game(Fixes::ALL);
     g.ds.w16(0x0020, 0x0165);
-    g.ds.w8(a(0x1F1C0), 0xFE);
-    g.s16946();
+    let bullet = PlayerBullet::default();
+    g.strike(&bullet, 0xFE);
     assert_eq!(g.ds.r16(0x0020), 0x0165);
     // 已釋放的槽（指標 0）也不寫。
-    g.ds.w8(a(0x1F1C0), 0x03);
-    g.s16946();
+    g.strike(&bullet, 0x03);
     assert_eq!(g.ds.r16(0x0020), 0x0165);
     // 活著的實體照常受傷。
     let ent = 0x22B4u16;
     g.ds.w16(0x2294 + 2, ent);
     g.ds.w16(ent + 0x20, 0);
-    g.ds.w8(a(0x1F1C0), 0x02);
-    g.s16946();
+    g.strike(&bullet, 0x02);
     assert_eq!(g.ds.r16(ent + 0x20), 0x0101);
 }
 
@@ -152,14 +151,12 @@ fn armor_cell_pod_contact_path() {
 /// 射一次 `B` 武器，池內先佔滿 `occupied` 個槽。回傳 `word_1F1A8` 增加量。
 fn fire_b(fixes: Fixes, occupied: u16, facing: u16) -> u16 {
     let mut g = game(fixes);
-    for i in 0..occupied {
-        g.ds.w16(0x2607 + i * 2, 0x262F + i * 0x20);
+    for i in 0..occupied as usize {
+        g.pb.slots[i].link = pb_record_link(i);
     }
-    g.ds.w16(a(0x1F1A8), 0);
-    g.ds.w16(a(0x1F1BC), b'B' as u16);
-    g.ds.w16(a(0x1F1BE), facing);
-    g.s165cf();
-    g.ds.r16(a(0x1F1A8))
+    g.pb.seekers_in_flight = 0;
+    g.fire_player_bullets(b'B' as u16, Facing::from_word(facing), 0, 0);
+    g.pb.seekers_in_flight
 }
 
 #[test]

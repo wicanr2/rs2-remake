@@ -4,6 +4,7 @@ use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
 use crate::fx::Effects;
+use crate::pbullet::PlayerBullets;
 use crate::regs::Regs;
 use std::cell::RefCell;
 use std::future::Future;
@@ -164,6 +165,19 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
     (0x3533, 0x3552, "word_200F3 與工作區 3535h 起 15 個字組（word_200F5 至 word_20111）。sub_1739B 寫滿 15 字組後才由 sub_173C5 一族讀（17631、176B5、\
                       176D0、176F6、1771C、17742、17768、1779B、177D2、17821、17855、17898、173E1、17955、1798E、179C7、17A00），sub_173B0 複製回記錄；\
                       word_200F3 另是 sub_16D3B 一族寫、sub_16CEA 讀的樣板位址。重製改成 step_bullet 的區域 Bullet 與 spawn_bullet 的 Template 參數"),
+    // ---- 玩家彈領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-pbullet.md）。
+    // 池指標表 2607h、記錄區 262Fh、追蹤彈計數 25E8h 是狀態，走 Mirror，不在這裡。
+    // 命中計數器 word_1F1B8、1F1BA（25F8h 至 25FBh）只在不可達的碼裡寫，內容不變，所以不豁免。
+    (0x25EA, 0x25F7, "word_1F1AA、1F1AC、1F1AE、1F1B0 四向格距與 word_1F1B2、1F1B4、1F1B6 掃描起點與範圍；sub_16BA8 先寫 1F1B2、1F1B4、1F1B6，\
+                      sub_16BF5、16C18、16C3B、16C5C 讀它們並各寫一個格距，格距只有 sub_16BA8 讀。重製改成 distance_to_wall 的參數與回傳值"),
+    (0x25FC, 0x2606, "word_1F1BC 武器字母、1F1BE 朝向、byte_1F1C0 命中格值、word_1F1C1 欄、1F1C3 列、1F1C5 釋放旗標。\
+                      1F1BC、1F1BE、1F1C1、1F1C3 由呼叫端（sub_14501、1480A、1502F、15338）寫，只有 sub_16578、165CF、1669F 讀，\
+                      165CF 一族就地改 1F1C1、1F1C3。1F1C0 由 sub_16B49 歸零、169BF 與雷射 16A4E、16ACA 設值，只有 sub_167A3、1691A、16946 讀。\
+                      1F1C5 由 sub_16817 歸 N、移動與碰撞設 Y，只有 sub_1673E 讀。重製改成 fire_player_bullets 的參數、Impact 與回傳值"),
+    (0x28AF, 0x28D0, "word_1F46F 記錄位址與 28B1h 起 16 個字組的工作區（word_1F471 至 word_1F48F）。sub_16779 把記錄複製進工作區並寫 1F46F，\
+                      之後才由 sub_167A3 一族讀寫，sub_1678E 複製回 1F46F 指的記錄；sub_165CF 一族寫樣板位址進 1F46F，只有 sub_16578 讀。\
+                      重製改成 update_player_bullets 的區域 PlayerBullet 與 spawn_player_bullet 的 Shot 參數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -262,6 +276,8 @@ pub struct Core {
     pub(crate) fx: Effects,
     /// 敵方子彈池。
     pub(crate) eb: EnemyBullets,
+    /// 玩家子彈池。
+    pub(crate) pb: PlayerBullets,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -280,8 +296,6 @@ pub struct Core {
     pub(crate) gens: [[u32; 40]; POOLS],
     /// `bullet_slot_carry` 開啟時，G2 每格真正的敵彈槽號加 1，0 表示沒有。不屬於原版狀態。
     pub(crate) g2_slots: Vec<u8>,
-    /// `sub_16578` 配到槽的次數，`seeker_spawn_leak` 用。不屬於原版狀態。
-    pub(crate) pb_spawned: u16,
     pub(crate) port: Rc<RefCell<Port>>,
 }
 
@@ -305,6 +319,7 @@ impl Core {
             fixes,
             fx: Effects::default(),
             eb: EnemyBullets::default(),
+            pb: PlayerBullets::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,
@@ -318,7 +333,6 @@ impl Core {
             cur_obj: None,
             gens: [[0; 40]; POOLS],
             g2_slots: vec![0; 0x321],
-            pb_spawned: 0,
             port: Rc::new(RefCell::new(port)),
         };
         g.load_mirrors();

@@ -13,6 +13,7 @@ use crate::draw::Pool;
 use crate::dseg::a;
 use crate::fx::EffectKind;
 use crate::game::Core;
+use crate::pbullet::Facing;
 
 impl Core {
     /// `loop`：`cx` 減 1，不為 0 則回傳 true（跳回）。
@@ -161,11 +162,7 @@ impl Core {
         // 145F8：右 Shift 不在按住（byte_274C1 != 1）：結算充能。
         if self.ds.r8(a(0x274C1)) != 1 {
             if self.ds.r16(a(0x1DA8B)) >= 0x0E {
-                self.r.ax = self.ds.r16(a(0x1DACB));
-                self.ds.w16(a(0x1F1C1), self.r.ax);
-                self.ds.w16(a(0x1F1BC), 0x46);
-                self.ds.w16(a(0x1F1BE), 0x3E);
-                self.s165cf();
+                self.fire_sweep(self.ds.r16(a(0x1DACB)));
             }
             self.ds.w16(a(0x1DA8B), 0);
         }
@@ -185,14 +182,7 @@ impl Core {
         // 14647：新按，主機射一發普通彈。
         self.ds.w16(a(0x1DA8B), 0);
         self.ds.w8(a(0x273A7), 0x4E);
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.ds.w16(a(0x1F1C1), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9));
-        self.ds.w16(a(0x1F1C3), self.r.ax);
-        self.r.ax = 0;
-        self.ds.w16(a(0x1F1BC), self.r.ax);
-        self.ds.w16(a(0x1F1BE), 0x3E);
-        self.s165cf();
+        self.fire_player_bullets(0, Facing::Right, self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
         self.pl_or8(0x1DAA4, 0x10);
         self.ds.w8(a(0x1DAA5), 0x59);
     }
@@ -390,23 +380,11 @@ impl Core {
             return;
         }
         // 14876：砲座開火。
-        self.r.ax = self.ds.r16(a(0x1DA8F));
-        self.ds.w16(a(0x1F1BE), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DA98));
-        self.ds.w16(a(0x1F1C1), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DA9A));
-        self.ds.w16(a(0x1F1C3), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAA9));
-        self.ds.w16(a(0x1F1BC), self.r.ax);
-        self.s165cf();
+        let facing = Facing::from_word(self.ds.r16(a(0x1DA8F)));
+        let (col, row, weapon) = (self.ds.r16(a(0x1DA98)), self.ds.r16(a(0x1DA9A)), self.ds.r16(a(0x1DAA9)));
+        self.fire_player_bullets(weapon, facing, col, row);
         if self.ds.r8(a(0x1DA8E)) != 0x4E {
-            self.r.ax = self.ds.r16(a(0x1DA98));
-            self.ds.w16(a(0x1F1C1), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DA9A)).wrapping_add(5);
-            self.ds.w16(a(0x1F1C3), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DAA9));
-            self.ds.w16(a(0x1F1BC), self.r.ax);
-            self.s165cf();
+            self.fire_player_bullets(weapon, facing, col, row.wrapping_add(5));
         }
         // 148B0：噴焰（圖 0Ah），朝左 148B5，朝右 148DF。
         if self.ds.r16(a(0x1DA8F)) != 0x3E {
@@ -1072,11 +1050,7 @@ impl Core {
         // 15126：左 Shift 不在按住（byte_274B5 != 1）：結算充能。
         if self.ds.r8(a(0x274B5)) != 1 {
             if self.ds.r16(a(0x1DAED)) >= 0x0E {
-                self.r.ax = self.ds.r16(a(0x1DB39));
-                self.ds.w16(a(0x1F1C1), self.r.ax);
-                self.ds.w16(a(0x1F1BC), 0x46);
-                self.ds.w16(a(0x1F1BE), 0x3E);
-                self.s165cf();
+                self.fire_sweep(self.ds.r16(a(0x1DB39)));
             }
             self.ds.w16(a(0x1DAED), 0);
         }
@@ -1095,14 +1069,7 @@ impl Core {
         // 15175：新按，主機射一發普通彈。
         self.ds.w16(a(0x1DAED), 0);
         self.ds.w8(a(0x273A8), 0x4E);
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.ds.w16(a(0x1F1C1), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37));
-        self.ds.w16(a(0x1F1C3), self.r.ax);
-        self.r.ax = 0;
-        self.ds.w16(a(0x1F1BC), self.r.ax);
-        self.ds.w16(a(0x1F1BE), 0x3E);
-        self.s165cf();
+        self.fire_player_bullets(0, Facing::Right, self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
         self.pl_or8(0x1DB06, 0x10);
         self.ds.w8(a(0x1DB07), 0x59);
     }
@@ -1299,24 +1266,12 @@ impl Core {
         if self.ds.r8(a(0x1DB07)) != 0x59 {
             return;
         }
-        // 153A4：砲座開火。
-        self.r.ax = self.ds.r16(a(0x1DAF1));
-        self.ds.w16(a(0x1F1BE), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAFA));
-        self.ds.w16(a(0x1F1C1), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAFC));
-        self.ds.w16(a(0x1F1C3), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB0B));
-        self.ds.w16(a(0x1F1BC), self.r.ax);
-        self.s165cf();
+        // 153A4：砲座開火。第二座砲座在第一座下方 2 列（玩家 1 是 5 列）。
+        let facing = Facing::from_word(self.ds.r16(a(0x1DAF1)));
+        let (col, row, weapon) = (self.ds.r16(a(0x1DAFA)), self.ds.r16(a(0x1DAFC)), self.ds.r16(a(0x1DB0B)));
+        self.fire_player_bullets(weapon, facing, col, row);
         if self.ds.r8(a(0x1DAF0)) != 0x4E {
-            self.r.ax = self.ds.r16(a(0x1DAFA));
-            self.ds.w16(a(0x1F1C1), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DAFC)).wrapping_add(2);
-            self.ds.w16(a(0x1F1C3), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DB0B));
-            self.ds.w16(a(0x1F1BC), self.r.ax);
-            self.s165cf();
+            self.fire_player_bullets(weapon, facing, col, row.wrapping_add(2));
         }
         // 153DE：噴焰（圖 0Ah）。
         if self.ds.r16(a(0x1DAF1)) != 0x3E {

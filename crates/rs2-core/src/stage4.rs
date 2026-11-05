@@ -106,7 +106,7 @@ impl Core {
         self.s13f7a();
         self.s164bb();
         self.update_enemy_bullets();
-        self.s1673e();
+        self.update_player_bullets();
         self.s14704();
         self.s15232();
         self.s164d7();
@@ -133,7 +133,7 @@ impl Core {
         self.s1403e();
         self.s164bb();
         self.update_enemy_bullets();
-        self.s1673e();
+        self.update_player_bullets();
         self.s14704();
         self.s15232();
         self.s164d7();
