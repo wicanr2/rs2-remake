@@ -1,5 +1,6 @@
 //! 本機設定：`settings.txt`，每行 `key=value`。讀不到用預設，壞掉的值略過並回報警告。
 
+use crate::resources::{Env, Os, non_empty};
 use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "settings.txt";
@@ -19,11 +20,13 @@ pub struct Settings {
     pub scale: u32,
     /// 工具列顯示（F10）。
     pub toolbar: bool,
+    /// 玩家機預測與短按保留（F5）。關掉就是原版時序，模擬不受影響。
+    pub feel: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { tween: true, counter: false, hd: true, scale: DEFAULT_SCALE, toolbar: true }
+        Settings { tween: true, counter: false, hd: true, scale: DEFAULT_SCALE, toolbar: true, feel: true }
     }
 }
 
@@ -47,12 +50,13 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         format!(
-            "# RS-2 remake 設定\ntween={}\ncounter={}\nhd={}\nscale={}\ntoolbar={}\n",
+            "# RS-2 remake 設定\ntween={}\ncounter={}\nhd={}\nscale={}\ntoolbar={}\nfeel={}\n",
             b(self.tween),
             b(self.counter),
             b(self.hd),
             self.scale,
-            b(self.toolbar)
+            b(self.toolbar),
+            b(self.feel)
         )
     }
 
@@ -79,6 +83,7 @@ impl Settings {
                 "counter" => flag(&mut s.counter),
                 "hd" => flag(&mut s.hd),
                 "toolbar" => flag(&mut s.toolbar),
+                "feel" => flag(&mut s.feel),
                 "scale" => match v.parse::<u32>() {
                     Ok(n) if (1..=8).contains(&n) => s.scale = n,
                     _ => warn.push(format!("第 {} 行 scale 的值 {v:?} 不在 1 到 8，略過", i + 1)),
@@ -108,12 +113,29 @@ impl Settings {
     }
 }
 
-/// 預設設定目錄：`$XDG_CONFIG_HOME/rs2-remake`，沒有就 `$HOME/.config/rs2-remake`。
+/// Linux 的預設設定目錄：`$XDG_CONFIG_HOME/rs2-remake`，沒有就 `$HOME/.config/rs2-remake`。
 pub fn default_dir(xdg: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
     match (xdg, home) {
         (Some(x), _) if !x.is_empty() => Some(Path::new(x).join("rs2-remake")),
         (_, Some(h)) if !h.is_empty() => Some(Path::new(h).join(".config").join("rs2-remake")),
         _ => None,
+    }
+}
+
+/// 各平台的預設設定目錄。發行包所在的位置（AppImage 掛載點、`.app`、解壓目錄）可能唯讀，設定不寫在那裡。
+///
+/// | 平台 | 目錄 |
+/// |---|---|
+/// | Linux | `$XDG_CONFIG_HOME/rs2-remake`，沒有就 `~/.config/rs2-remake` |
+/// | Windows | `%APPDATA%\rs2-remake`，沒有 `APPDATA` 就 `%USERPROFILE%\AppData\Roaming\rs2-remake` |
+/// | macOS | `~/Library/Application Support/rs2-remake` |
+pub fn config_dir(os: Os, env: &Env) -> Option<PathBuf> {
+    match os {
+        Os::Linux => default_dir(non_empty(&env.xdg_config_home), non_empty(&env.home)),
+        Os::Windows => non_empty(&env.appdata)
+            .map(|a| Path::new(a).join("rs2-remake"))
+            .or_else(|| non_empty(&env.userprofile).map(|u| Path::new(u).join("AppData").join("Roaming").join("rs2-remake"))),
+        Os::MacOs => non_empty(&env.home).map(|h| Path::new(h).join("Library").join("Application Support").join("rs2-remake")),
     }
 }
 
@@ -130,7 +152,7 @@ mod tests {
     #[test]
     fn defaults_match_the_spec() {
         let s = Settings::default();
-        assert!(s.tween && !s.counter && s.hd && s.toolbar);
+        assert!(s.tween && !s.counter && s.hd && s.toolbar && s.feel);
         assert_eq!(s.scale, 3);
     }
 
@@ -141,10 +163,12 @@ mod tests {
                 for hd in [false, true] {
                     for toolbar in [false, true] {
                         for scale in [1, 2, 3, 4, 5, 8] {
-                            let s = Settings { tween, counter, hd, scale, toolbar };
-                            let (back, warn) = Settings::parse(&s.to_text());
-                            assert_eq!(back, s);
-                            assert!(warn.is_empty(), "{warn:?}");
+                            for feel in [false, true] {
+                                let s = Settings { tween, counter, hd, scale, toolbar, feel };
+                                let (back, warn) = Settings::parse(&s.to_text());
+                                assert_eq!(back, s);
+                                assert!(warn.is_empty(), "{warn:?}");
+                            }
                         }
                     }
                 }
@@ -158,7 +182,7 @@ mod tests {
         let (s, w) = Settings::load(&d);
         assert_eq!(s, Settings::default());
         assert!(w.is_empty(), "檔案不存在不算警告：{w:?}");
-        let want = Settings { tween: false, counter: true, hd: false, scale: 5, toolbar: false };
+        let want = Settings { tween: false, counter: true, hd: false, scale: 5, toolbar: false, feel: false };
         want.save(&d).unwrap();
         let (got, w) = Settings::load(&d);
         assert_eq!(got, want);
@@ -211,5 +235,42 @@ mod tests {
         assert_eq!(default_dir(Some(""), Some("/h")), Some(PathBuf::from("/h/.config/rs2-remake")));
         assert_eq!(default_dir(None, Some("/h")), Some(PathBuf::from("/h/.config/rs2-remake")));
         assert_eq!(default_dir(None, None), None);
+    }
+
+    fn env(xdg: Option<&str>, home: Option<&str>, appdata: Option<&str>, profile: Option<&str>) -> Env {
+        let s = |v: Option<&str>| v.map(String::from);
+        Env { xdg_config_home: s(xdg), home: s(home), appdata: s(appdata), userprofile: s(profile), ..Env::default() }
+    }
+
+    #[test]
+    fn config_dir_per_platform() {
+        // Linux：XDG 優先，其次 ~/.config，空字串視同沒有。
+        let e = env(Some("/x"), Some("/h"), None, None);
+        assert_eq!(config_dir(Os::Linux, &e), Some(PathBuf::from("/x/rs2-remake")));
+        let e = env(Some(""), Some("/h"), None, None);
+        assert_eq!(config_dir(Os::Linux, &e), Some(PathBuf::from("/h/.config/rs2-remake")));
+        assert_eq!(config_dir(Os::Linux, &env(None, None, None, None)), None);
+        // Windows：%APPDATA%，沒有時退到 %USERPROFILE%\AppData\Roaming，不看 HOME 與 XDG。
+        let e = env(Some("/x"), Some("/h"), Some("C:/Users/u/AppData/Roaming"), Some("C:/Users/u"));
+        assert_eq!(config_dir(Os::Windows, &e), Some(PathBuf::from("C:/Users/u/AppData/Roaming/rs2-remake")));
+        let e = env(None, Some("/h"), None, Some("C:/Users/u"));
+        assert_eq!(config_dir(Os::Windows, &e), Some(PathBuf::from("C:/Users/u/AppData/Roaming/rs2-remake")));
+        let e = env(None, Some("/h"), Some(""), None);
+        assert_eq!(config_dir(Os::Windows, &e), None);
+        // macOS：~/Library/Application Support，不看 XDG。
+        let e = env(Some("/x"), Some("/Users/u"), None, None);
+        assert_eq!(config_dir(Os::MacOs, &e), Some(PathBuf::from("/Users/u/Library/Application Support/rs2-remake")));
+        assert_eq!(config_dir(Os::MacOs, &env(Some("/x"), None, None, None)), None);
+    }
+
+    #[test]
+    fn save_into_unwritable_place_is_an_error_not_a_panic() {
+        // 發行包在唯讀位置時，存設定要回傳錯誤讓上層印警告。這裡用「父層是檔案」模擬建不了目錄。
+        let d = tmpdir("ro");
+        std::fs::create_dir_all(&d).unwrap();
+        let blocker = d.join("file");
+        std::fs::write(&blocker, b"x").unwrap();
+        assert!(Settings::default().save(&blocker.join("cfg")).is_err());
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }

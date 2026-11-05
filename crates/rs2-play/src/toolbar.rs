@@ -9,6 +9,11 @@ pub enum Button {
     Counter,
     Gfx,
     Scale,
+    Feel,
+    /// 手機版：開授權頁面。
+    About,
+    /// 手機版：離開。
+    Quit,
     Hide,
 }
 
@@ -35,15 +40,31 @@ pub struct BarState {
     pub hd: bool,
     pub hd_available: bool,
     pub scale: u32,
+    /// 玩家機預測與短按保留。
+    pub feel: bool,
+    /// 手機版的字樣，不帶 F 鍵。
+    pub mobile: bool,
 }
 
 /// 各按鈕的字元數上限（含最長的狀態文字），按鈕寬度固定，切換狀態時版面不跳動。
-const BUTTONS: [(Button, usize); 5] = [
-    (Button::Tween, 12),  // "F1 TWEEN OFF"
+const BUTTONS: [(Button, usize); 6] = [
+    (Button::Tween, 12),   // "F1 TWEEN OFF"
     (Button::Counter, 12), // "F2 COUNT OFF"
     (Button::Gfx, 8),      // "F3 NO HD"
     (Button::Scale, 5),    // "F4 X3"
+    (Button::Feel, 12),    // "F5 FEEL ORIG"
     (Button::Hide, 8),     // "F10 HIDE"
+];
+
+/// 手機版的按鈕，字數同樣含最長的狀態文字。倍率在手機上沒有用途。
+const MOBILE_BUTTONS: [(Button, usize); 7] = [
+    (Button::Tween, 9),   // "TWEEN OFF"
+    (Button::Counter, 9), // "COUNT OFF"
+    (Button::Gfx, 5),     // "NO HD"
+    (Button::Feel, 9),    // "FEEL ORIG"
+    (Button::About, 5),
+    (Button::Quit, 4),
+    (Button::Hide, 4),
 ];
 
 const BG: [u8; 4] = [28, 30, 40, 255];
@@ -63,15 +84,35 @@ pub fn bar_height(width: u32) -> u32 {
     ((font::GLYPH_H + 6) * font_scale(width)) as u32
 }
 
-/// 各按鈕的矩形（視窗座標，原點在工具列左上角）。
+/// 手機版的字型倍率。按鈕要手指按得到，所以比桌面版大。
+pub fn mobile_font_scale(width: u32) -> usize {
+    ((width / 360) as usize).max(1)
+}
+
+/// 手機版的工具列高度：寬度的 1/16，2400 寬時 150 像素，400 dpi 的手機上是 60 dp。
+pub fn mobile_bar_height(width: u32) -> u32 {
+    (((font::GLYPH_H + 6) * mobile_font_scale(width)) as u32).max(width / 16)
+}
+
+/// 各按鈕的矩形（視窗座標，原點在工具列左上角）。放不下的按鈕不畫，它們的功能鍵仍然有效。
 pub fn layout(width: u32) -> Vec<(Button, Rect)> {
     let fs = font_scale(width) as i32;
+    layout_with(width, fs, bar_height(width) as i32, &BUTTONS)
+}
+
+pub fn mobile_layout(width: u32) -> Vec<(Button, Rect)> {
+    layout_with(width, mobile_font_scale(width) as i32, mobile_bar_height(width) as i32, &MOBILE_BUTTONS)
+}
+
+fn layout_with(width: u32, fs: i32, h: i32, buttons: &[(Button, usize)]) -> Vec<(Button, Rect)> {
     let pad = 3 * fs;
-    let h = bar_height(width) as i32;
     let mut x = pad;
-    let mut out = Vec::with_capacity(BUTTONS.len());
-    for (b, chars) in BUTTONS {
+    let mut out = Vec::with_capacity(buttons.len());
+    for &(b, chars) in buttons {
         let w = font::text_width(&"X".repeat(chars), fs as usize) as i32 + 2 * pad;
+        if x + w > width as i32 {
+            break;
+        }
         out.push((b, Rect { x, y: 0, w, h }));
         x += w + pad;
     }
@@ -80,6 +121,9 @@ pub fn layout(width: u32) -> Vec<(Button, Rect)> {
 
 /// 按鈕上的文字。
 pub fn label(b: Button, s: &BarState) -> String {
+    if s.mobile {
+        return mobile_label(b, s);
+    }
     match b {
         Button::Tween => format!("F1 TWEEN {}", if s.tween { "ON" } else { "OFF" }),
         Button::Counter => format!("F2 COUNT {}", if s.counter { "ON" } else { "OFF" }),
@@ -93,7 +137,32 @@ pub fn label(b: Button, s: &BarState) -> String {
             }
         }
         Button::Scale => format!("F4 X{}", s.scale),
+        Button::Feel => format!("F5 FEEL {}", if s.feel { "NEW" } else { "ORIG" }),
         Button::Hide => "F10 HIDE".to_string(),
+        Button::About => "ABOUT".to_string(),
+        Button::Quit => "QUIT".to_string(),
+    }
+}
+
+fn mobile_label(b: Button, s: &BarState) -> String {
+    let onoff = |v: bool| if v { "ON" } else { "OFF" };
+    match b {
+        Button::Tween => format!("TWEEN {}", onoff(s.tween)),
+        Button::Counter => format!("COUNT {}", onoff(s.counter)),
+        Button::Gfx => {
+            if !s.hd_available {
+                "NO HD".to_string()
+            } else if s.hd {
+                "HD".to_string()
+            } else {
+                "ORIG".to_string()
+            }
+        }
+        Button::Scale => format!("X{}", s.scale),
+        Button::Feel => format!("FEEL {}", if s.feel { "NEW" } else { "ORIG" }),
+        Button::About => "ABOUT".to_string(),
+        Button::Quit => "QUIT".to_string(),
+        Button::Hide => "HIDE".to_string(),
     }
 }
 
@@ -101,6 +170,7 @@ fn label_color(b: Button, s: &BarState) -> [u8; 4] {
     match b {
         Button::Tween => if s.tween { ON } else { OFF },
         Button::Counter => if s.counter { ON } else { OFF },
+        Button::Feel => if s.feel { ON } else { OFF },
         Button::Gfx => {
             if !s.hd_available {
                 NA
@@ -110,7 +180,7 @@ fn label_color(b: Button, s: &BarState) -> [u8; 4] {
                 OFF
             }
         }
-        Button::Scale | Button::Hide => PLAIN,
+        Button::Scale | Button::Hide | Button::About | Button::Quit => PLAIN,
     }
 }
 
@@ -118,16 +188,29 @@ fn label_color(b: Button, s: &BarState) -> [u8; 4] {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Toolbar {
     pub visible: bool,
+    pub mobile: bool,
 }
 
 impl Toolbar {
     pub fn new(visible: bool) -> Toolbar {
-        Toolbar { visible }
+        Toolbar { visible, mobile: false }
+    }
+
+    pub fn mobile(visible: bool) -> Toolbar {
+        Toolbar { visible, mobile: true }
     }
 
     /// 佔用的高度，隱藏時 0。
     pub fn height(&self, width: u32) -> u32 {
-        if self.visible { bar_height(width) } else { 0 }
+        match (self.visible, self.mobile) {
+            (false, _) => 0,
+            (true, false) => bar_height(width),
+            (true, true) => mobile_bar_height(width),
+        }
+    }
+
+    fn buttons(&self, width: u32) -> Vec<(Button, Rect)> {
+        if self.mobile { mobile_layout(width) } else { layout(width) }
     }
 
     /// 視窗座標 `(x, y)` 的點擊命中哪個按鈕。隱藏時沒有命中。
@@ -135,17 +218,17 @@ impl Toolbar {
         if !self.visible {
             return None;
         }
-        layout(width).into_iter().find(|(_, r)| r.contains(x, y)).map(|(b, _)| b)
+        self.buttons(width).into_iter().find(|(_, r)| r.contains(x, y)).map(|(b, _)| b)
     }
 
     /// 畫成 `width × bar_height(width)` 的 RGBA。
     pub fn render(&self, width: u32, s: &BarState) -> Vec<u8> {
-        let h = bar_height(width) as usize;
+        let h = if self.mobile { mobile_bar_height(width) } else { bar_height(width) } as usize;
         let w = width as usize;
-        let fs = font_scale(width);
+        let fs = if self.mobile { mobile_font_scale(width) } else { font_scale(width) };
         let mut buf = vec![0u8; w * h * 4];
         font::fill_rect(&mut buf, w, h, 0, 0, w as i32, h as i32, BG);
-        for (b, r) in layout(width) {
+        for (b, r) in self.buttons(width) {
             font::fill_rect(&mut buf, w, h, r.x, r.y + fs as i32, r.w, r.h - 2 * fs as i32, BTN_BG);
             let text = label(b, s);
             let ty = r.y + (r.h - font::text_height(fs) as i32) / 2;
@@ -160,7 +243,7 @@ mod tests {
     use super::*;
 
     fn st() -> BarState {
-        BarState { tween: true, counter: false, hd: true, hd_available: true, scale: 3 }
+        BarState { tween: true, counter: false, hd: true, hd_available: true, scale: 3, feel: true, mobile: false }
     }
 
     #[test]
@@ -168,7 +251,8 @@ mod tests {
         for scale in 1..=8u32 {
             let width = 320 * scale;
             let l = layout(width);
-            assert_eq!(l.len(), 5);
+            // 320 寬放不下全部，留前面幾個，其餘靠功能鍵。F4 循環的最小倍率是 2，全部放得下。
+            assert_eq!(l.len(), if scale == 1 { 4 } else { BUTTONS.len() }, "{width}");
             let mut right = 0;
             for (_, r) in &l {
                 assert!(r.x >= right, "按鈕重疊 {width}");
@@ -210,12 +294,13 @@ mod tests {
     #[test]
     fn buttons_map_to_the_function_keys_in_order() {
         let order: Vec<Button> = layout(960).into_iter().map(|(b, _)| b).collect();
-        assert_eq!(order, vec![Button::Tween, Button::Counter, Button::Gfx, Button::Scale, Button::Hide]);
+        assert_eq!(order, vec![Button::Tween, Button::Counter, Button::Gfx, Button::Scale, Button::Feel, Button::Hide]);
         let s = st();
         assert!(label(Button::Tween, &s).starts_with("F1 "));
         assert!(label(Button::Counter, &s).starts_with("F2 "));
         assert!(label(Button::Gfx, &s).starts_with("F3 "));
         assert!(label(Button::Scale, &s).starts_with("F4 "));
+        assert!(label(Button::Feel, &s).starts_with("F5 "));
         assert!(label(Button::Hide, &s).starts_with("F10 "));
     }
 
@@ -243,6 +328,9 @@ mod tests {
         s.hd_available = false;
         assert_eq!(label(Button::Gfx, &s), "F3 NO HD");
         assert_eq!(label(Button::Scale, &s), "F4 X3");
+        assert_eq!(label(Button::Feel, &s), "F5 FEEL NEW");
+        s.feel = false;
+        assert_eq!(label(Button::Feel, &s), "F5 FEEL ORIG");
         assert_eq!(label(Button::Hide, &s), "F10 HIDE");
     }
 
@@ -250,8 +338,16 @@ mod tests {
     fn every_label_fits_its_button_and_is_ascii() {
         for width in [640u32, 960, 1280, 1600] {
             let fs = font_scale(width);
-            for mask in 0..16u32 {
-                let s = BarState { tween: mask & 1 != 0, counter: mask & 2 != 0, hd: mask & 4 != 0, hd_available: mask & 8 != 0, scale: 5 };
+            for mask in 0..32u32 {
+                let s = BarState {
+                    tween: mask & 1 != 0,
+                    counter: mask & 2 != 0,
+                    hd: mask & 4 != 0,
+                    hd_available: mask & 8 != 0,
+                    scale: 5,
+                    feel: mask & 16 != 0,
+                    mobile: false,
+                };
                 for (b, r) in layout(width) {
                     let t = label(b, &s);
                     assert!(t.is_ascii());
@@ -259,6 +355,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mobile_bar_fits_and_is_big_enough_for_a_finger() {
+        for width in [1280u32, 1600, 1920, 2400, 3200] {
+            let fs = mobile_font_scale(width);
+            let tb = Toolbar::mobile(true);
+            let l = mobile_layout(width);
+            assert_eq!(l.len(), MOBILE_BUTTONS.len(), "{width}");
+            for mask in 0..32u32 {
+                let s = BarState {
+                    tween: mask & 1 != 0,
+                    counter: mask & 2 != 0,
+                    hd: mask & 4 != 0,
+                    hd_available: mask & 8 != 0,
+                    scale: 5,
+                    feel: mask & 16 != 0,
+                    mobile: true,
+                };
+                for (b, r) in &l {
+                    let t = label(*b, &s);
+                    assert!(!t.starts_with('F') || t.starts_with("FEEL"), "手機字樣不帶 F 鍵：{t}");
+                    assert!(font::text_width(&t, fs) as i32 + 2 * 3 * fs as i32 <= r.w, "{t} 超出按鈕 {width}");
+                }
+                assert_eq!(tb.render(width, &s).len(), width as usize * mobile_bar_height(width) as usize * 4);
+            }
+        }
+        // 2400 寬、400 dpi 的手機：高度換算 58 dp。
+        assert!(mobile_bar_height(2400) as f32 / 2.5 >= 48.0);
+        let tb = Toolbar::mobile(true);
+        let (_, r) = mobile_layout(2400).into_iter().find(|(b, _)| *b == Button::About).unwrap();
+        assert_eq!(tb.hit(2400, r.x + 1, r.y + 1), Some(Button::About));
+        assert_eq!(Toolbar::mobile(false).hit(2400, r.x + 1, r.y + 1), None);
+        assert_eq!(Toolbar::mobile(false).height(2400), 0);
     }
 
     #[test]

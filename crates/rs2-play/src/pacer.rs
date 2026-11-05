@@ -62,6 +62,11 @@ impl Pacer {
         (self.acc as f64 / self.cur as f64).clamp(0.0, 1.0) as f32
     }
 
+    /// 這一步到下一步的時間（秒），不用等的步是 0。
+    pub fn step_secs(&self) -> f32 {
+        (self.cur as f64 / self.tick * TICK_SECS) as f32
+    }
+
     /// 距離下一步還要多久（計數值），給主迴圈決定睡多久。
     pub fn until_next(&self) -> u64 {
         self.cur.saturating_sub(self.acc)

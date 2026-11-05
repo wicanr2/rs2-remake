@@ -2,10 +2,11 @@
 //! 版面計算（`window_size`、`fit_rect`）不碰 SDL，可單元測試；`Presenter` 才用 SDL。
 
 use crate::toolbar::{BarState, Rect as BarRect, Toolbar};
+use crate::touch::{self, Control};
 use rs2_gfx::png;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
-use sdl2::render::{ScaleMode, Texture, TextureCreator, WindowCanvas};
+use sdl2::render::{BlendMode, ScaleMode, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::WindowContext;
 use std::path::Path;
 
@@ -30,6 +31,23 @@ pub fn fit_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
     let w = ((GAME_W as f64 * k).round() as i32).max(1);
     let h = ((GAME_H as f64 * k).round() as i32).max(1);
     BarRect { x: (win_w as i32 - w) / 2, y: bar_h as i32 + (avail_h as i32 - h) / 2, w, h }
+}
+
+/// 手機版：填滿可用區域，不限整數倍。HD 是線性縮放，原版圖的像素不等寬也比留大黑邊好。
+pub fn fill_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
+    let avail_h = win_h.saturating_sub(bar_h);
+    let k = (win_w as f64 / GAME_W as f64).min(avail_h as f64 / GAME_H as f64);
+    let w = ((GAME_W as f64 * k).round() as i32).max(1);
+    let h = ((GAME_H as f64 * k).round() as i32).max(1);
+    BarRect { x: (win_w as i32 - w) / 2, y: bar_h as i32 + (avail_h as i32 - h) / 2, w, h }
+}
+
+/// 觸控控制鈕的疊加層。
+#[derive(Clone, Copy, Debug)]
+pub struct Overlay<'o> {
+    pub controls: &'o [Control],
+    /// 玩家機在畫面上，右手兩顆鈕是開火與轉向。
+    pub playable: bool,
 }
 
 /// 存圖的結果，給日誌用。
@@ -58,6 +76,8 @@ pub struct Presenter<'a> {
     big: Option<Texture<'a>>,
     bar: Option<(Texture<'a>, u32, u32)>,
     bar_key: Option<(BarState, u32)>,
+    overlay: Option<(Texture<'a>, u32, u32)>,
+    overlay_key: Option<(bool, u32, u32)>,
 }
 
 fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: ScaleMode) -> Result<Texture<'a>, String> {
@@ -68,7 +88,18 @@ fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: Scal
 
 impl<'a> Presenter<'a> {
     pub fn new(creator: &'a TextureCreator<WindowContext>) -> Result<Presenter<'a>, String> {
-        Ok(Presenter { creator, small: make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?, big: None, bar: None, bar_key: None })
+        Ok(Presenter { creator, small: make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?, big: None, bar: None, bar_key: None, overlay: None, overlay_key: None })
+    }
+
+    /// 繪圖裝置重置（Android 切回前景時 GL context 可能重建）：貼圖都要重建。內容每次繪製都會重新上傳。
+    pub fn invalidate(&mut self) -> Result<(), String> {
+        self.small = make_tex(self.creator, GAME_W, GAME_H, ScaleMode::Nearest)?;
+        self.big = None;
+        self.bar = None;
+        self.bar_key = None;
+        self.overlay = None;
+        self.overlay_key = None;
+        Ok(())
     }
 
     /// 畫一幀：工具列在上，遊戲畫面在下；`shot` 有值時在 `present` 之前擷取視窗內容存成 PNG。
@@ -81,6 +112,7 @@ impl<'a> Presenter<'a> {
         fh: usize,
         toolbar: &Toolbar,
         bar_state: &BarState,
+        overlay: Option<Overlay<'_>>,
         shot: Option<&Path>,
     ) -> Result<Option<ShotInfo>, String> {
         let (ww, wh) = canvas.output_size()?;
@@ -100,9 +132,6 @@ impl<'a> Presenter<'a> {
                 }
                 self.bar_key = Some((*bar_state, ww));
             }
-            if let Some((t, _, _)) = self.bar.as_ref() {
-                canvas.copy(t, None, Rect::new(0, 0, ww, bar_h))?;
-            }
         }
         if frame.len() != fw * fh * 4 {
             return Err(format!("畫面緩衝區長度 {} 與 {fw}x{fh} 不符", frame.len()));
@@ -117,8 +146,32 @@ impl<'a> Presenter<'a> {
             self.big.as_mut().ok_or("HD 貼圖不存在")?
         };
         tex.update(None, frame, fw * 4).map_err(|e| format!("更新畫面貼圖失敗：{e}"))?;
-        let r = fit_rect(ww, wh, bar_h);
+        let r = if toolbar.mobile { fill_rect(ww, wh, bar_h) } else { fit_rect(ww, wh, bar_h) };
         canvas.copy(tex, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
+        if let Some(o) = overlay {
+            let key = (o.playable, ww, wh);
+            if self.overlay_key != Some(key) {
+                if !matches!(&self.overlay, Some((_, w, h)) if *w == ww && *h == wh) {
+                    let mut t = make_tex(self.creator, ww, wh, ScaleMode::Nearest)?;
+                    t.set_blend_mode(BlendMode::Blend);
+                    self.overlay = Some((t, ww, wh));
+                }
+                let px = touch::render_overlay(o.controls, o.playable, ww as usize, wh as usize);
+                if let Some((t, _, _)) = self.overlay.as_mut() {
+                    t.update(None, &px, ww as usize * 4).map_err(|e| format!("更新觸控層貼圖失敗：{e}"))?;
+                }
+                self.overlay_key = Some(key);
+            }
+            if let Some((t, _, _)) = self.overlay.as_ref() {
+                canvas.copy(t, None, None)?;
+            }
+        }
+        // 工具列最後畫，蓋在觸控層上面。
+        if bar_h > 0 {
+            if let Some((t, _, _)) = self.bar.as_ref() {
+                canvas.copy(t, None, Rect::new(0, 0, ww, bar_h))?;
+            }
+        }
         let info = match shot {
             Some(path) => {
                 let px = canvas.read_pixels(None, PixelFormatEnum::ABGR8888)?;
@@ -179,6 +232,19 @@ mod tests {
         assert_eq!(r.w * 200, r.h * 320, "維持 8:5");
         let r = fit_rect(100, 10, 20);
         assert!(r.w >= 1 && r.h >= 1);
+    }
+
+    #[test]
+    fn phone_fill_uses_the_whole_height() {
+        let r = fill_rect(2400, 1080, 0);
+        assert_eq!((r.w, r.h, r.x, r.y), (1728, 1080, 336, 0));
+        // 工具列展開時往下縮。
+        let r = fill_rect(2400, 1080, 150);
+        assert_eq!(r.h, 930);
+        assert_eq!(r.y, 150);
+        // 16:10 平板填滿。
+        let r = fill_rect(1280, 800, 0);
+        assert_eq!((r.x, r.y, r.w, r.h), (0, 0, 1280, 800));
     }
 
     #[test]

@@ -119,6 +119,8 @@ pub enum Hotkey {
     Gfx,
     /// F4：倍率循環。
     Scale,
+    /// F5：玩家機預測與短按保留，關掉就是原版時序。
+    Feel,
     /// F10：工具列。
     Toolbar,
     /// F11：全螢幕。
@@ -131,6 +133,7 @@ pub fn hotkey_of(key: K) -> Option<Hotkey> {
         K::F2 => Hotkey::Counter,
         K::F3 => Hotkey::Gfx,
         K::F4 => Hotkey::Scale,
+        K::F5 => Hotkey::Feel,
         K::F10 => Hotkey::Toolbar,
         K::F11 => Hotkey::Fullscreen,
         _ => return None,
@@ -209,7 +212,10 @@ pub enum KeyResult {
 }
 
 /// SDL 鍵盤事件到 set 1 掃描碼佇列。
-#[derive(Debug, Default)]
+///
+/// 原版的鍵盤中斷隨時都會改按鍵狀態，遊戲一步才看一次，兩步之間按下又放開的鍵看不到。
+/// `hold_short` 開著時，這種鍵的放開碼留到下一步才送，所以至少生效一步。
+#[derive(Debug)]
 pub struct InputMapper {
     /// 實體鍵 -> 已送出的 make code。
     held: HashMap<K, u8>,
@@ -217,11 +223,73 @@ pub struct InputMapper {
     swallowed: HashSet<K>,
     queue: Vec<u8>,
     typematic: Typematic,
+    hold_short: bool,
+    /// 留到下一步才送的放開碼。
+    carry: Vec<u8>,
+    /// 遊戲目前看到的按鍵狀態，索引是 make code。
+    game_down: [bool; 128],
+}
+
+impl Default for InputMapper {
+    fn default() -> InputMapper {
+        InputMapper {
+            held: HashMap::new(),
+            swallowed: HashSet::new(),
+            queue: Vec::new(),
+            typematic: Typematic::default(),
+            hold_short: true,
+            carry: Vec::new(),
+            game_down: [false; 128],
+        }
+    }
+}
+
+/// 依序套用掃描碼，更新按鍵狀態。
+fn apply_codes(state: &mut [bool; 128], codes: &[u8]) {
+    for &c in codes {
+        state[(c & 0x7F) as usize] = c & 0x80 == 0;
+    }
 }
 
 impl InputMapper {
     pub fn new() -> InputMapper {
         InputMapper::default()
+    }
+
+    /// 開關短按保留。關掉時碼照到達順序送，等於原版時序。已經留著的放開碼仍然在下一步送出。
+    pub fn set_hold_short(&mut self, on: bool) {
+        self.hold_short = on;
+    }
+
+    /// 下一步要送的碼，和留到再下一步的放開碼。
+    fn split(&self) -> (Vec<u8>, Vec<u8>) {
+        let mut out = self.carry.clone();
+        if !self.hold_short {
+            out.extend_from_slice(&self.queue);
+            return (out, Vec::new());
+        }
+        let mut before = self.game_down;
+        apply_codes(&mut before, &self.carry);
+        let mut carry = Vec::new();
+        for (i, &c) in self.queue.iter().enumerate() {
+            let make = c & 0x7F;
+            let is_break = c & 0x80 != 0;
+            // 這個鍵在這段時間才按下，而且這是它最後一筆碼：放開碼留到下一步。
+            let short = is_break && !before[make as usize] && !self.queue[i + 1..].iter().any(|&d| d & 0x7F == make);
+            if short {
+                carry.push(c);
+            } else {
+                out.push(c);
+            }
+        }
+        (out, carry)
+    }
+
+    /// 下一步時每個 make code 是否按著，顯示層預測用。
+    pub fn next_state(&self) -> [bool; 128] {
+        let mut s = self.game_down;
+        apply_codes(&mut s, &self.split().0);
+        s
     }
 
     /// `os_repeat` 是 SDL 的 `repeat` 旗標。作業系統的重複一律忽略，重複碼由 `Typematic` 自己產生。
@@ -269,14 +337,19 @@ impl InputMapper {
         self.typematic.poll(now_us, &mut self.queue);
     }
 
-    /// 取出並清空兩步之間累積的掃描碼，順序就是送達順序。
+    /// 取出這一步要送的掃描碼，順序就是送達順序，留到下一步的放開碼排在下一次的最前面。
     pub fn take(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.queue)
+        let (out, carry) = self.split();
+        apply_codes(&mut self.game_down, &out);
+        self.queue.clear();
+        self.carry = carry;
+        out
     }
 
     /// 丟掉佇列裡的碼，不動按鍵狀態（回放或暫停時不讓鍵盤輸入累積）。
     pub fn discard_queue(&mut self) {
         self.queue.clear();
+        self.carry.clear();
     }
 }
 
@@ -391,9 +464,10 @@ mod tests {
         assert_eq!(hotkey_of(K::F2), Some(Hotkey::Counter));
         assert_eq!(hotkey_of(K::F3), Some(Hotkey::Gfx));
         assert_eq!(hotkey_of(K::F4), Some(Hotkey::Scale));
+        assert_eq!(hotkey_of(K::F5), Some(Hotkey::Feel));
         assert_eq!(hotkey_of(K::F10), Some(Hotkey::Toolbar));
         assert_eq!(hotkey_of(K::F11), Some(Hotkey::Fullscreen));
-        assert_eq!(hotkey_of(K::F5), None);
+        assert_eq!(hotkey_of(K::F6), None);
         assert_eq!(hotkey_of(K::Escape), None);
     }
 
@@ -469,7 +543,97 @@ mod tests {
         m.poll(REPEAT_DELAY_US);
         m.poll(REPEAT_DELAY_US + REPEAT_PERIOD_US);
         m.key_up(K::Right);
-        assert_eq!(m.take(), vec![0x4D, 0x4D, 0x4D, 0xCD]);
+        assert_eq!(m.take(), vec![0x4D, 0x4D, 0x4D]);
+        assert_eq!(m.take(), vec![0xCD], "這段時間才按下的鍵，放開碼留到下一步");
+        assert!(m.take().is_empty());
+    }
+
+    #[test]
+    fn short_press_lasts_until_the_next_step() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.key_up(K::Right);
+        assert_eq!(m.next_state()[0x4D], true, "下一步會看到按著");
+        assert_eq!(m.take(), vec![0x4D]);
+        assert_eq!(m.next_state()[0x4D], false, "再下一步會看到放開");
+        assert_eq!(m.take(), vec![0xCD]);
+        assert!(m.take().is_empty());
+    }
+
+    #[test]
+    fn key_held_over_a_step_releases_right_away() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        assert_eq!(m.take(), vec![0x4D]);
+        m.key_up(K::Right);
+        assert_eq!(m.next_state()[0x4D], false);
+        assert_eq!(m.take(), vec![0xCD], "已經生效過一步的鍵不延後");
+    }
+
+    #[test]
+    fn repeat_on_an_old_key_does_not_delay_the_release() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        assert_eq!(m.take(), vec![0x4D]);
+        m.poll(REPEAT_DELAY_US);
+        m.key_up(K::Right);
+        assert_eq!(m.take(), vec![0x4D, 0xCD], "自動重複不算新按下");
+    }
+
+    #[test]
+    fn double_tap_within_a_step_keeps_both_edges() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Slash, false, 0);
+        m.key_up(K::Slash);
+        m.key_down(K::Slash, false, 1);
+        m.key_up(K::Slash);
+        // 原版的 INT 9 看邊緣：`/` 的轉向要兩次都收到。只有最後的放開碼延後。
+        assert_eq!(m.take(), vec![0x35, 0xB5, 0x35]);
+        assert_eq!(m.take(), vec![0xB5]);
+    }
+
+    #[test]
+    fn press_again_right_after_a_carried_release() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.key_up(K::Right);
+        assert_eq!(m.take(), vec![0x4D]);
+        m.key_down(K::Right, false, 1);
+        m.key_up(K::Right);
+        // 留著的放開碼先送，新的短按再保留一步。
+        assert_eq!(m.next_state()[0x4D], true);
+        assert_eq!(m.take(), vec![0xCD, 0x4D]);
+        assert_eq!(m.take(), vec![0xCD]);
+    }
+
+    #[test]
+    fn original_timing_passes_codes_through() {
+        let mut m = InputMapper::new();
+        m.set_hold_short(false);
+        m.key_down(K::Right, false, 0);
+        m.key_up(K::Right);
+        assert_eq!(m.next_state()[0x4D], false);
+        assert_eq!(m.take(), vec![0x4D, 0xCD]);
+        assert!(m.take().is_empty());
+    }
+
+    #[test]
+    fn switching_to_original_timing_still_sends_the_carried_release() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.key_up(K::Right);
+        assert_eq!(m.take(), vec![0x4D]);
+        m.set_hold_short(false);
+        assert_eq!(m.take(), vec![0xCD], "不能卡鍵");
+    }
+
+    #[test]
+    fn discard_drops_the_carry_too() {
+        let mut m = InputMapper::new();
+        m.key_down(K::Right, false, 0);
+        m.key_up(K::Right);
+        m.take();
+        m.discard_queue();
         assert!(m.take().is_empty());
     }
 
@@ -515,7 +679,8 @@ mod tests {
         m.key_down(K::Left, false, 0);
         m.key_down(K::LCtrl, false, 1);
         m.release_all();
-        assert_eq!(m.take(), vec![0x4B, 0x1D, 0x9D, 0xCB]);
+        assert_eq!(m.take(), vec![0x4B, 0x1D]);
+        assert_eq!(m.take(), vec![0x9D, 0xCB]);
         m.poll(10_000_000);
         assert!(m.take().is_empty());
         m.key_up(K::Left); // 已經放開過
@@ -531,7 +696,8 @@ mod tests {
         m.poll(50_000 + REPEAT_DELAY_US);
         m.key_up(K::Up);
         m.poll(50_000 + REPEAT_DELAY_US + 10 * REPEAT_PERIOD_US);
-        // 放開 Up 之後不會回頭重複 Left（Left 已放開，也不在重複）。
-        assert_eq!(m.take(), vec![0x4B, 0x48, 0xCB, 0x48, 0xC8]);
+        // 放開 Up 之後不會回頭重複 Left（Left 已放開，也不在重複）。兩個鍵都是這段時間才按下，放開碼留到下一步。
+        assert_eq!(m.take(), vec![0x4B, 0x48, 0x48]);
+        assert_eq!(m.take(), vec![0xCB, 0xC8]);
     }
 }

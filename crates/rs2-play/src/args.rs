@@ -2,30 +2,46 @@
 
 use std::path::PathBuf;
 
-pub const USAGE: &str = "\
-用法：rs2-play --orig <原版目錄> [選項]
+/// 版本字串。發行包建置時由環境變數 `RS2_VERSION` 帶入（例如 `v.0.9.0-20261105`），沒有就用 crate 版本。
+pub const VERSION: &str = match option_env!("RS2_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
-  --orig DIR            原版目錄（必要），啟動時驗全部檔案的 SHA-256
-  --hd DIR              HD 素材資料夾（選用）；有給時預設用 HD 圖
-  --no-hd               忽略 --hd，只用原版圖
+pub const USAGE: &str = "\
+用法：rs2-play [選項]
+
+  --orig DIR            原版目錄，啟動時驗全部檔案的 SHA-256。
+                        不給時依序找：環境變數 RS2_DATA、發行包內建位置
+                        （AppImage 的 $APPDIR/usr/share/rs2/original、Windows 執行檔旁的 data/original、
+                        macOS 的 .app/Contents/Resources/original）
+  --hd DIR              HD 素材資料夾；有給時預設用 HD 圖。不給時依序找：
+                        RS2_DATA/hd、發行包內建位置的 hd，找到就預設用 HD 圖
+  --no-hd               忽略 --hd 與自動找到的 HD，只用原版圖
+  --version             印出版本後結束
+
+環境變數 RS2_DATA：資料根（底下有 original/ 與 hd/），或直接指向原版目錄。
   --start title|newgame|demo
                         起點，預設 title。newgame、demo 直接進第一關，第一關結束就離開（除錯與回歸用）
   --scale N             視窗倍率（1 至 8），預設讀設定檔，沒有就 3
   --original-bugs       不修正原版缺陷（Fixes::NONE）；預設全部修正
   --no-audio            不開音效裝置
   --wav-out FILE        --headless-steps 時把這段遊戲的音訊依遊戲時間寫成 WAV
-  --config DIR          設定目錄（settings.txt）；預設 $XDG_CONFIG_HOME/rs2-remake
+  --config DIR          設定目錄（settings.txt）；預設 Linux 為 $XDG_CONFIG_HOME/rs2-remake（沒有就 ~/.config/rs2-remake），
+                        Windows 為 %APPDATA%\\rs2-remake，macOS 為 ~/Library/Application Support/rs2-remake
   --replay FILE         用收據的 sc 欄餵輸入（收據用完後改回鍵盤）
   --headless-steps N    不進視窗迴圈，經同一段步進與繪製程式跑 N 步後結束
   --hash-out FILE       每步一行 Dseg 的 SHA-256
   --shot-at N:FILE      第 N 步之後把畫面（含工具列）存成 PNG，可重複
   --tween on|off        覆寫補間開關的初值
+  --feel on|off         覆寫玩家機預測與短按保留的初值（F5）
+  --touch               畫觸控控制鈕並用手機版工具列（Android 預設，桌面版驗證用）
   --counter on|off      覆寫幀計數開關的初值
-  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter 或 hd（測試用，可重複）
+  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd 或 feel（測試用，可重複）
   --max-secs S          視窗模式跑 S 秒後自行結束（驗證用）
   --record FILE         視窗模式結束時寫出每步實際送進遊戲的掃描碼（JSONL，每步一行，可再用 --replay 重播）
 
-視窗內：F1 補間、F2 幀計數、F3 原版圖與 HD、F4 倍率（2、3、4、5）、F10 工具列、F11 全螢幕。
+視窗內：F1 補間、F2 幀計數、F3 原版圖與 HD、F4 倍率（2、3、4、5）、F5 手感（NEW 或原版時序）、F10 工具列、F11 全螢幕。
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,13 +57,16 @@ pub enum ToggleName {
     Tween,
     Counter,
     Hd,
+    Feel,
 }
 
 #[derive(Clone, Debug)]
 pub struct Args {
-    pub orig: PathBuf,
+    /// 命令列指定的原版目錄；`None` 時由 `resources::resolve` 依序尋找。
+    pub orig: Option<PathBuf>,
     pub hd: Option<PathBuf>,
     pub no_hd: bool,
+    pub version: bool,
     pub start: StartArg,
     pub scale: Option<u32>,
     pub original_bugs: bool,
@@ -59,6 +78,9 @@ pub struct Args {
     pub hash_out: Option<PathBuf>,
     pub shots: Vec<(u64, PathBuf)>,
     pub tween: Option<bool>,
+    pub feel: Option<bool>,
+    /// 畫觸控控制鈕並用手機版工具列。Android 一律開著，桌面版給驗證用。
+    pub touch: bool,
     pub counter: Option<bool>,
     pub toggles: Vec<(u64, ToggleName)>,
     pub max_secs: Option<f64>,
@@ -85,9 +107,10 @@ fn step_and_rest<'a>(flag: &str, v: &'a str) -> Result<(u64, &'a str), String> {
 /// 解析 `args`（不含程式名稱）。`--help` 回傳 `Err(USAGE)`。
 pub fn parse(args: &[String]) -> Result<Args, String> {
     let mut a = Args {
-        orig: PathBuf::new(),
+        orig: None,
         hd: None,
         no_hd: false,
+        version: false,
         start: StartArg::Title,
         scale: None,
         original_bugs: false,
@@ -99,12 +122,13 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         hash_out: None,
         shots: Vec::new(),
         tween: None,
+        feel: None,
+        touch: cfg!(target_os = "android"),
         counter: None,
         toggles: Vec::new(),
         max_secs: None,
         record: None,
     };
-    let mut have_orig = false;
     let mut it = args.iter();
     macro_rules! val {
         ($name:expr) => {
@@ -114,12 +138,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
     while let Some(flag) = it.next() {
         match flag.as_str() {
             "-h" | "--help" => return Err(USAGE.to_string()),
-            "--orig" => {
-                a.orig = PathBuf::from(val!("--orig")?);
-                have_orig = true;
-            }
+            "--orig" => a.orig = Some(PathBuf::from(val!("--orig")?)),
             "--hd" => a.hd = Some(PathBuf::from(val!("--hd")?)),
             "--no-hd" => a.no_hd = true,
+            "--version" => a.version = true,
             "--start" => {
                 a.start = match val!("--start")?.as_str() {
                     "title" => StartArg::Title,
@@ -151,6 +173,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 a.shots.push((n, PathBuf::from(path)));
             }
             "--tween" => a.tween = Some(onoff("--tween", val!("--tween")?)?),
+            "--feel" => a.feel = Some(onoff("--feel", val!("--feel")?)?),
+            "--touch" => a.touch = true,
             "--counter" => a.counter = Some(onoff("--counter", val!("--counter")?)?),
             "--toggle-at" => {
                 let (n, name) = step_and_rest("--toggle-at", val!("--toggle-at")?)?;
@@ -158,7 +182,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                     "tween" => ToggleName::Tween,
                     "counter" => ToggleName::Counter,
                     "hd" => ToggleName::Hd,
-                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter 或 hd，收到 {v}")),
+                    "feel" => ToggleName::Feel,
+                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter、hd 或 feel，收到 {v}")),
                 };
                 a.toggles.push((n, t));
             }
@@ -173,9 +198,6 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "--record" => a.record = Some(PathBuf::from(val!("--record")?)),
             other => return Err(format!("不認得的參數 {other}\n\n{USAGE}")),
         }
-    }
-    if !have_orig {
-        return Err(format!("缺 --orig\n\n{USAGE}"));
     }
     Ok(a)
 }
@@ -192,10 +214,25 @@ mod tests {
     #[test]
     fn minimal_and_defaults() {
         let a = p("--orig /o").unwrap();
-        assert_eq!(a.orig, PathBuf::from("/o"));
+        assert_eq!(a.orig, Some(PathBuf::from("/o")));
         assert_eq!(a.start, StartArg::Title);
-        assert!(!a.original_bugs && !a.no_hd);
+        assert!(!a.original_bugs && !a.no_hd && !a.version);
         assert!(a.hd.is_none() && a.scale.is_none() && a.replay.is_none());
+    }
+
+    #[test]
+    fn orig_is_optional() {
+        // 發行包直接雙擊不帶參數；原版目錄由 resources::resolve 找。
+        let a = p("").unwrap();
+        assert!(a.orig.is_none() && a.hd.is_none());
+        let a = p("--start demo --no-hd").unwrap();
+        assert!(a.orig.is_none() && a.no_hd);
+        assert!(p("--version").unwrap().version);
+    }
+
+    #[test]
+    fn version_string_is_not_empty() {
+        assert!(!VERSION.is_empty());
     }
 
     #[test]
@@ -204,6 +241,7 @@ mod tests {
                    --headless-steps 640 --hash-out /x --shot-at 50:/a.png --shot-at 120:/b.png \
                    --tween off --counter on --toggle-at 7:hd --max-secs 15 --record /rec.jsonl")
             .unwrap();
+        assert_eq!(a.orig, Some(PathBuf::from("/o")));
         assert_eq!(a.record, Some(PathBuf::from("/rec.jsonl")));
         assert_eq!(a.hd, Some(PathBuf::from("/h")));
         assert_eq!(a.start, StartArg::Demo);
@@ -219,7 +257,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_input() {
-        assert!(p("--start demo").unwrap_err().contains("--orig"));
+        assert!(p("--start menu").is_err());
         assert!(p("--orig /o --scale 0").is_err());
         assert!(p("--orig /o --scale 9").is_err());
         assert!(p("--orig /o --scale x").is_err());

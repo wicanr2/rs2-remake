@@ -48,12 +48,35 @@ pub struct RenderOpts {
     pub hd: bool,
     /// 畫幀計數（座標 (12h, BFh) 的 `S1890D`）。
     pub show_counter: bool,
+    /// 玩家機預測：相對最新邏輯位置的偏移（HD 像素，邏輯像素的 1/4），索引是玩家編號。
+    /// `Some` 時這個玩家的本體、尾焰與砲座不走前後兩幀的補間，一律畫在最新位置加偏移。`None` 照一般補間。
+    pub player: [Option<(i32, i32)>; 2],
 }
 
 impl Default for RenderOpts {
     fn default() -> Self {
-        RenderOpts { interpolate: true, hd: false, show_counter: false }
+        RenderOpts { interpolate: true, hd: false, show_counter: false, player: [None, None] }
     }
+}
+
+/// 邏輯像素對 HD 像素的倍率，`RenderOpts::player` 的單位。
+const PLAYER_OFF_SCALE: i32 = 4;
+
+/// 玩家機預測對這個命令的偏移。`scale` 是引擎像素對邏輯像素的倍率。不是玩家機的命令回傳 `None`。
+fn player_off(player: &[Option<(i32, i32)>; 2], c: &BlitCmd, scale: i32) -> Option<Off> {
+    let o = c.obj?;
+    let p = match o.pool {
+        rs2_core::Pool::Player => o.slot as usize,
+        // 砲座的位置每幀由玩家機位置算出（`sub_14908` 等），槽 0、1 屬於玩家 1，槽 2、3 屬於玩家 2。
+        rs2_core::Pool::Pod => (o.slot / 2) as usize,
+        _ => return None,
+    };
+    if !interp::interpolable(c.op) {
+        return None;
+    }
+    let (x, y) = (*player.get(p)?)?;
+    let conv = |v: i32| (v * scale + PLAYER_OFF_SCALE / 2).div_euclid(PLAYER_OFF_SCALE);
+    Some(Off { ox: conv(x), oy: conv(y), sox: 0, ocx: 0 })
 }
 
 struct FrameData {
@@ -432,9 +455,11 @@ impl LayerSink {
     /// 原版圖 320×200，HD 1280×800。沒有載入 HD 資料夾時，`hd: true` 輸出原版圖的最近鄰 4 倍。
     pub fn render(&mut self, alpha: f32, opts: RenderOpts) -> (&[u8], usize, usize) {
         let t = if alpha.is_nan() { 1.0 } else { alpha.clamp(0.0, 1.0) };
-        let replay = opts.interpolate && self.cur.any_delta;
+        // 玩家機有預測偏移時，就算這一幀沒有別的東西動也要重放。
+        let predicted = opts.player.iter().flatten().any(|&o| o != (0, 0));
+        let replay = (opts.interpolate && self.cur.any_delta) || predicted;
         if opts.hd && self.hdm.is_some() {
-            self.render_hd(t, replay, opts.show_counter);
+            self.render_hd(t, replay, opts);
             self.hd_output_recolor();
             return (&self.out, hd::PW as usize, hd::PH as usize);
         }
@@ -451,7 +476,10 @@ impl LayerSink {
                             }
                             continue;
                         }
-                        let off = self.cur.deltas[i].map(|dl| interp::offsets(&dl, t, 1)).unwrap_or_default();
+                        let off = player_off(&opts.player, c, 1).unwrap_or_else(|| {
+                            let dl = self.cur.deltas[i].filter(|_| opts.interpolate);
+                            dl.map(|dl| interp::offsets(&dl, t, 1)).unwrap_or_default()
+                        });
                         idx::apply(&mut self.idx_tmp, &mut st, &self.assets, self.counter_font.as_deref(), c, off);
                     }
                     DrawCmd::VramFill { off, words, value } => idx::vram_fill(&mut self.idx_tmp, &st, *off, *words, *value),
@@ -504,7 +532,8 @@ impl LayerSink {
         }
     }
 
-    fn render_hd(&mut self, t: f32, replay: bool, show_counter: bool) {
+    fn render_hd(&mut self, t: f32, replay: bool, opts: RenderOpts) {
+        let show_counter = opts.show_counter;
         let Self { hd_space, hd_pal, hdm, hd: hd_assets, assets, pal, pal_before, hd_base_page, hd_scratch_before, hd_mask_before, hd_spare, cur, out, counter_font, .. } = self;
         let (Some(mem), Some(hda)) = (hdm.as_mut(), hd_assets.as_mut()) else { return };
         let pg = ((cur.page >> 15) & 1) as usize;
@@ -559,7 +588,10 @@ impl LayerSink {
                         if is_frame_counter(c) && counter_font.is_none() {
                             continue;
                         }
-                        let off = cur.deltas[i].map(|dl| interp::offsets(&dl, t, hd::S)).unwrap_or_default();
+                        let off = player_off(&opts.player, c, hd::S).unwrap_or_else(|| {
+                            let dl = cur.deltas[i].filter(|_| opts.interpolate);
+                            dl.map(|dl| interp::offsets(&dl, t, hd::S)).unwrap_or_default()
+                        });
                         hd::apply(&mut tmp, hda, assets, &p, c, off);
                     }
                 }

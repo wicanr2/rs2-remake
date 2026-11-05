@@ -205,8 +205,8 @@ fn diff_px(rgba: &[u8], rgb: &[u8]) -> usize {
     (0..rgb.len() / 3).filter(|&i| rgba[4 * i..4 * i + 3] != rgb[3 * i..3 * i + 3] || rgba[4 * i + 3] != 255).count()
 }
 
-const EXACT: RenderOpts = RenderOpts { interpolate: false, hd: false, show_counter: false };
-const INTERP: RenderOpts = RenderOpts { interpolate: true, hd: false, show_counter: false };
+const EXACT: RenderOpts = RenderOpts { interpolate: false, hd: false, show_counter: false, player: [None, None] };
+const INTERP: RenderOpts = RenderOpts { interpolate: true, hd: false, show_counter: false, player: [None, None] };
 
 // ---------------------------------------------------------------------------
 // 差分模糊測試

@@ -5,11 +5,13 @@
 //! 兩邊都隨時是最新的，所以 F1、F3 切換不需要重播。畫面顯示的選擇只影響 `render`，不碰 `Game`。
 
 use rs2_audio::SpkEv;
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, MixFile, Start, boot_ds_with_dm1};
+use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, MixFile, Pool, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink};
 use rs2_trace::Inputs;
+
+use crate::predict::{Dir, Predictor, Reach};
 
 /// 遊戲從哪裡開始。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +37,8 @@ pub struct ViewOpts {
     pub tween: bool,
     pub counter: bool,
     pub hd: bool,
+    /// 玩家機預測。只在補間開著時有作用，補間關著的畫面要逐像素等於原版。
+    pub feel: bool,
 }
 
 /// `Session::step` 之後主迴圈要做的事。
@@ -63,6 +67,11 @@ pub struct Session {
     rgb: Vec<u8>,
     frame: Vec<u8>,
     logged_missing: usize,
+    predictor: Predictor,
+    /// 目前有真人輸入（`predict` 呼叫過）。回放與 `--headless-steps` 沒有，照一般補間畫。
+    live_input: bool,
+    /// 最新一幀畫了玩家機。標題與過場沒有畫，那裡按鍵不會移動任何東西。
+    player_drawn: [bool; 2],
 }
 
 impl Session {
@@ -92,10 +101,66 @@ impl Session {
             rgb: vec![0; 320 * 200 * 3],
             frame: Vec::new(),
             logged_missing: 0,
+            predictor: Predictor::new(),
+            live_input: false,
+            player_drawn: [false; 2],
         };
         s.vga.show_counter = view.counter;
         s.feed(&init);
         s
+    }
+
+    /// 這一步玩家的按鍵會不會移動玩家機。
+    fn playable(&self, p: usize) -> bool {
+        self.player_drawn[p] && self.game.player_status(p).controllable
+    }
+
+    /// 把玩家機的邏輯位置交給預測器。空的命令串（暫停中）不改變 `player_drawn`。
+    fn sync_predictor(&mut self, draws: &[DrawCmd]) {
+        if !draws.is_empty() {
+            self.player_drawn = [false; 2];
+            for d in draws {
+                if let DrawCmd::Blit(b) = d {
+                    if let Some(o) = b.obj {
+                        if o.pool == Pool::Player {
+                            self.player_drawn[(o.slot as usize).min(1)] = true;
+                        }
+                    }
+                }
+            }
+        }
+        for p in 0..2 {
+            let st = self.game.player_status(p);
+            let pos = self.playable(p).then_some((st.x as i32 * 8, st.y as i32));
+            self.predictor.on_step(p, pos);
+        }
+    }
+
+    /// 過了 `dt` 秒，推進玩家機預測。`state` 是下一步時每個 set 1 碼是否按著，`step_secs` 是這一步到下一步的時間。
+    /// 只影響 `render`，不碰 `Game`。
+    pub fn predict(&mut self, state: &[bool; 128], dt: f32, step_secs: f32) {
+        self.live_input = true;
+        for p in 0..2 {
+            let st = self.game.player_status(p);
+            let reach = Reach { up: st.can_up, down: st.can_down, left: st.can_left, right: st.can_right };
+            // 暫停中邏輯不會動，不累積。
+            let dir = if self.hold { Dir::default() } else { crate::predict::dir_of(state, p) };
+            self.predictor.advance(p, dir, reach, dt, step_secs);
+        }
+    }
+
+    /// 有玩家機在畫面上而且可以控制，觸控層用它決定右手兩顆鈕的作用。
+    pub fn in_play(&self) -> bool {
+        self.playable(0) || self.playable(1)
+    }
+
+    /// 這一幀要給繪製層的玩家機偏移。
+    fn player_offsets(&self) -> [Option<(i32, i32)>; 2] {
+        if self.live_input && self.view.feel && self.view.tween {
+            [self.predictor.offset_hd(0), self.predictor.offset_hd(1)]
+        } else {
+            [None, None]
+        }
     }
 
     fn feed(&mut self, draws: &[DrawCmd]) {
@@ -129,6 +194,7 @@ impl Session {
             }
         }
         self.feed(&frame.draws);
+        self.sync_predictor(&frame.draws);
         match frame.exit {
             None => Outcome::Continue,
             Some(e) => Outcome::Ended(e),
@@ -199,12 +265,285 @@ impl Session {
             }
             (w, h) = (320, 200);
         } else {
-            let opts = RenderOpts { interpolate: self.view.tween, hd, show_counter: self.view.counter };
+            let player = self.player_offsets();
+            let opts = RenderOpts { interpolate: self.view.tween, hd, show_counter: self.view.counter, player };
             let (img, iw, ih) = self.layer.render(alpha, opts);
             self.frame.clear();
             self.frame.extend_from_slice(img);
             (w, h) = (iw, ih);
         }
         (&self.frame, w, h)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 需要原版檔，標 `#[ignore]`，由 `tools/rust.sh play-test` 帶 `--include-ignored` 跑。
+
+    use super::*;
+    use rs2_trace::load_inputs;
+    use std::path::PathBuf;
+
+    const VIEW: ViewOpts = ViewOpts { tween: true, counter: false, hd: false, feel: true };
+    const RIGHT: u8 = 0x4D;
+    const LEFT: u8 = 0x4B;
+
+    fn orig() -> PathBuf {
+        PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh play-test 跑"))
+    }
+
+    fn open(begin: Begin, view: ViewOpts) -> Session {
+        let dir = orig();
+        let inputs = load_inputs(&dir).unwrap();
+        let assets = Assets::load(&dir).unwrap();
+        Session::new(&inputs, assets, None, begin, Fixes::ALL, view)
+    }
+
+    fn new_game(view: ViewOpts) -> Session {
+        open(Begin::Stage1(Start::NewGame { difficulty: None }), view)
+    }
+
+    /// 跑到玩家機可以控制而且畫面有東西。
+    fn until_playable(s: &mut Session) {
+        for _ in 0..400 {
+            s.step(&[]);
+            if s.playable(0) && !s.hold {
+                // 再多幾步，讓開場的補間與進場結束。
+                for _ in 0..3 {
+                    s.step(&[]);
+                }
+                return;
+            }
+        }
+        panic!("400 步內玩家機沒有可以控制");
+    }
+
+    fn pressed(code: u8) -> [bool; 128] {
+        let mut k = [false; 128];
+        k[code as usize] = true;
+        k
+    }
+
+    /// 預測的前提：可以控制的每一步，玩家機照按鍵走滿一步。四關都要成立，否則 `lead` 會一直猜錯。
+    #[test]
+    #[ignore]
+    fn d1_every_stage_moves_one_step_per_logic_step() {
+        let mut s = open(Begin::Title, VIEW);
+        let mut stats: Vec<(u32, u32, u32, u64)> = Vec::new(); // 可控制步數、照按鍵走滿的步數、不符的步數、ticks 累計
+        let mut in_stage = 0u32;
+        let (mut dir, mut held) = (RIGHT, false);
+        let mut idle = 0u32;
+        let mut release: Vec<u8> = Vec::new();
+        for n in 0..60_000u32 {
+            // 不死（`word_273A5` 的作弊旗標），才量得到整關。
+            s.game.poke8(rs2_core::a(0x273A5), b'Y');
+            let before = s.game.player_status(0);
+            let was_playable = s.playable(0);
+            let mut sc: Vec<u8> = std::mem::take(&mut release);
+            if was_playable {
+                if stats.is_empty() || in_stage == 0 {
+                    stats.push((0, 0, 0, 0));
+                    in_stage = 1;
+                }
+                if !held {
+                    sc.push(dir);
+                    held = true;
+                }
+                // 走到牆邊就換方向，順便測到界限。
+                if (dir == RIGHT && !before.can_right) || (dir == LEFT && !before.can_left) {
+                    sc.push(dir | 0x80);
+                    dir = if dir == RIGHT { LEFT } else { RIGHT };
+                    sc.push(dir);
+                }
+                if stats.last().unwrap().0 >= 240 {
+                    // 這關量夠了，用 Ctrl+C 過關。
+                    sc.push(dir | 0x80);
+                    held = false;
+                    // 熱鍵看的是按鍵狀態，放開碼要留到下一步。
+                    sc.extend_from_slice(&[0x1D, 0x2E]);
+                    release.extend_from_slice(&[0xAE, 0x9D]);
+                    in_stage = 0;
+                }
+                idle = 0;
+            } else {
+                in_stage = 0;
+                // 換關時按鍵狀態表可能被清掉，進關後重按。
+                if held {
+                    sc.push(dir | 0x80);
+                    held = false;
+                }
+                idle += 1;
+                // 標題與過場等按鍵。
+                if idle % 40 == 0 {
+                    sc.push(0x39);
+                    release.push(0xB9);
+                }
+            }
+            let down = held;
+            let Outcome::Continue = s.step(&sc) else {
+                eprintln!("[d1] 第 {n} 步遊戲結束");
+                break;
+            };
+            if stats.len() >= 4 && stats[3].0 >= 240 {
+                break;
+            }
+            let after = s.game.player_status(0);
+            if was_playable && s.playable(0) && !s.hold && down {
+                let st = stats.last_mut().unwrap();
+                st.0 += 1;
+                st.3 += s.ticks() as u64;
+                let moved = (after.x as i32 - before.x as i32) * 8;
+                let can = if dir == RIGHT { before.can_right } else { before.can_left };
+                let want = match (dir == RIGHT, can) {
+                    (_, false) => 0,
+                    (true, true) => 16,
+                    (false, true) => -16,
+                };
+                if moved == want {
+                    st.1 += 1;
+                } else {
+                    st.2 += 1;
+                    if st.2 <= 5 {
+                        eprintln!(
+                            "[d1] 第 {n} 步不符：x {} -> {}，方向 {dir:#x}，預期 {want}，實際 {moved}，幀 {}",
+                            before.x,
+                            after.x,
+                            u16::from_le_bytes([s.game.state_hash_input()[0x422], s.game.state_hash_input()[0x423]])
+                        );
+                    }
+                }
+            }
+        }
+        for (i, st) in stats.iter().enumerate() {
+            eprintln!(
+                "[d1] 第 {} 段：可控制 {} 步，走滿 {}，不符 {}，平均 {:.2} tick",
+                i + 1,
+                st.0,
+                st.1,
+                st.2,
+                st.3 as f64 / st.0.max(1) as f64
+            );
+        }
+        assert!(stats.len() >= 4, "沒有走完四關：{stats:?}");
+        for st in &stats {
+            assert!(st.0 > 0);
+            assert!(st.2 * 50 <= st.0, "不符超過 2%：{stats:?}");
+        }
+    }
+
+    /// 按鍵之後下一次繪製玩家機就動，只有玩家機周圍的像素改變。
+    #[test]
+    #[ignore]
+    fn d2_key_press_shows_on_the_next_draw() {
+        let mut s = new_game(VIEW);
+        until_playable(&mut s);
+        let st = s.game.player_status(0);
+        assert!(st.can_right);
+        let base = s.render(1.0).0.to_vec();
+        let step_secs = s.ticks() as f32 * crate::pacer::TICK_SECS as f32;
+        assert!(step_secs > 0.0);
+
+        // 沒有按鍵：預測開著也和一般補間逐像素相同。
+        s.predict(&[false; 128], 0.0, step_secs);
+        assert_eq!(s.render(1.0).0, &base[..], "沒按鍵時不能改變畫面");
+
+        // 按右：過半步的時間，玩家機往右 8 像素。
+        s.predict(&pressed(RIGHT), step_secs / 2.0, step_secs);
+        assert_eq!(s.predictor.offset_hd(0), Some((32, 0)));
+        let (img, w, h) = s.render(1.0);
+        assert_eq!((w, h), (320, 200));
+        let px = st.x as i32 * 8;
+        let py = st.y as i32;
+        let (mut x0, mut x1, mut y0, mut y1, mut diff) = (i32::MAX, i32::MIN, i32::MAX, i32::MIN, 0u32);
+        for y in 0..200i32 {
+            for x in 0..320i32 {
+                let o = (y * 320 + x) as usize * 4;
+                if img[o..o + 4] != base[o..o + 4] {
+                    (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+                    diff += 1;
+                }
+            }
+        }
+        eprintln!("[d2] 玩家機 ({px},{py})，改變 {diff} 像素，範圍 x {x0}..{x1} y {y0}..{y1}");
+        assert!(diff > 0, "按鍵後畫面要變");
+        assert!(x0 >= px - 48 && x1 <= px + 112 && y0 >= py - 48 && y1 <= py + 64, "只有玩家機周圍會變");
+        // 畫面和不按鍵的基準只差這個偏移：關掉預測後回到基準。
+        s.set_view(ViewOpts { feel: false, ..VIEW });
+        assert_eq!(s.render(1.0).0, &base[..], "關掉預測要回到基準");
+    }
+
+    /// 預測、繪製、切換開關都不碰模擬。
+    #[test]
+    #[ignore]
+    fn d3_prediction_leaves_the_simulation_alone() {
+        let script = |n: usize| -> Vec<u8> {
+            match n % 40 {
+                5 => vec![RIGHT],
+                25 => vec![RIGHT | 0x80, LEFT],
+                35 => vec![LEFT | 0x80],
+                _ => Vec::new(),
+            }
+        };
+        let mut a = new_game(ViewOpts { feel: false, tween: false, ..VIEW });
+        let mut b = new_game(VIEW);
+        let mut moved = false;
+        for n in 0..600 {
+            let sc = script(n);
+            a.step(&sc);
+            b.step(&sc);
+            assert_eq!(a.dseg_hash(), b.dseg_hash(), "第 {n} 步");
+            for f in 0..3 {
+                b.predict(&pressed(RIGHT), 0.02, 0.055);
+                moved |= b.predictor.offset_hd(0).is_some_and(|o| o != (0, 0));
+                b.render(f as f32 / 3.0);
+            }
+            if n == 300 {
+                b.set_view(ViewOpts { feel: false, ..VIEW });
+            }
+            if n == 400 {
+                b.set_view(VIEW);
+            }
+        }
+        assert!(moved, "這段輸入要真的用到預測");
+    }
+
+    /// 真實的節奏下顯示位置連續：邏輯步到來時不跳，按住時領先不超過一步。
+    #[test]
+    #[ignore]
+    fn d4_shown_position_stays_continuous_while_held() {
+        let mut s = new_game(VIEW);
+        until_playable(&mut s);
+        let mut sc = vec![RIGHT];
+        let keys = pressed(RIGHT);
+        let mut last: Option<f32> = None;
+        let mut worst = 0f32;
+        let mut moved_steps = 0;
+        for _ in 0..12 {
+            let before = s.game.player_status(0);
+            let step_secs = s.ticks() as f32 * crate::pacer::TICK_SECS as f32;
+            // 一步畫三次。
+            for _ in 0..3 {
+                s.predict(&keys, step_secs / 3.0, step_secs);
+                let st = s.game.player_status(0);
+                let shown = st.x as f32 * 8.0 + s.predictor.offset_hd(0).unwrap().0 as f32 / 4.0;
+                if let Some(l) = last {
+                    worst = worst.max((shown - l).abs());
+                }
+                last = Some(shown);
+            }
+            s.step(&sc);
+            sc.clear();
+            let st = s.game.player_status(0);
+            let shown = st.x as f32 * 8.0 + s.predictor.offset_hd(0).unwrap().0 as f32 / 4.0;
+            let l = last.unwrap();
+            assert!((shown - l).abs() <= 0.25, "邏輯步到來時畫面跳了：{l} -> {shown}");
+            if st.x != before.x {
+                moved_steps += 1;
+            }
+        }
+        eprintln!("[d4] 走了 {moved_steps} 步，相鄰兩次繪製最大位移 {worst} 像素");
+        assert!(moved_steps >= 8);
+        // 一步 16 像素分三次畫，每次約 5.3 像素；第一步要追上一步的差距，上限放到一步以內。
+        assert!(worst <= 16.0, "{worst}");
     }
 }

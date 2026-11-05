@@ -5,10 +5,13 @@ use crate::audio::{Output, WavOut};
 use crate::controls::{Action, Controls};
 use crate::input::{InputMapper, KeyResult};
 use crate::pacer::Pacer;
+use crate::pad::{PadEvent, PadMapper};
+use crate::touch::TouchMapper;
+use crate::resources::{self, Env, Os};
 use crate::session::{Begin, Outcome, Session, ViewOpts};
 use crate::settings::{self, Settings};
 use crate::toolbar::bar_height;
-use crate::view::{Presenter, ShotInfo, window_size};
+use crate::view::{Overlay, Presenter, ShotInfo, window_size};
 use rs2_audio::Engine;
 use rs2_core::{Fixes, Start};
 use rs2_gfx::{Assets, HdAssets};
@@ -74,7 +77,14 @@ fn ticks_to_us(t: u64, freq: u64) -> u64 {
 }
 
 fn make_window(video: &sdl2::VideoSubsystem, w: u32, h: u32) -> Result<sdl2::video::Window, String> {
-    video.window("RS-2 remake", w, h).position_centered().resizable().build().map_err(|e| format!("建立視窗失敗：{e}"))
+    let mut b = video.window("RS-2 remake", w, h);
+    if cfg!(target_os = "android") {
+        // 全螢幕才會隱藏狀態列與導覽列，否則導覽列蓋住右側的控制鈕，SDL 回報的輸出大小也不扣除它。
+        b.fullscreen_desktop();
+    } else {
+        b.position_centered().resizable();
+    }
+    b.build().map_err(|e| format!("建立視窗失敗：{e}"))
 }
 
 /// 先試要求垂直同步的繪圖器；建不起來（`into_canvas` 會吃掉視窗）就重建視窗，用一般繪圖器。
@@ -109,9 +119,15 @@ fn make_engine(inputs: &Inputs) -> Result<Engine, String> {
 }
 
 fn prepare(args: Args) -> Result<Ctx, String> {
-    let inputs = load_inputs(&args.orig)?;
-    let assets = Assets::load(&args.orig)?;
-    eprintln!("[init] 原版檔雜湊驗證通過（{}）", args.orig.display());
+    let os = Os::current();
+    let env = Env::from_process();
+    let found = resources::resolve(args.orig.as_deref(), args.hd.as_deref(), args.no_hd, &env, os)?;
+    for n in &found.notes {
+        eprintln!("[資源] {n}");
+    }
+    let inputs = load_inputs(&found.orig)?;
+    let assets = Assets::load(&found.orig)?;
+    eprintln!("[init] 原版檔雜湊驗證通過（{}）", found.orig.display());
     let replay = match &args.replay {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| format!("讀不到收據 {}：{e}", p.display()))?;
@@ -124,11 +140,7 @@ fn prepare(args: Args) -> Result<Ctx, String> {
         }
         None => Vec::new(),
     };
-    let cfg_dir = args.config.clone().or_else(|| {
-        let xdg = std::env::var("XDG_CONFIG_HOME").ok();
-        let home = std::env::var("HOME").ok();
-        settings::default_dir(xdg.as_deref(), home.as_deref())
-    });
+    let cfg_dir = args.config.clone().or_else(|| settings::config_dir(os, &env));
     let (mut st, warns) = match &cfg_dir {
         Some(d) => Settings::load(d),
         None => (Settings::default(), Vec::new()),
@@ -145,7 +157,10 @@ fn prepare(args: Args) -> Result<Ctx, String> {
     if let Some(c) = args.counter {
         st.counter = c;
     }
-    let hd_dir = if args.no_hd { None } else { args.hd.clone() };
+    if let Some(f) = args.feel {
+        st.feel = f;
+    }
+    let hd_dir = found.hd;
     Ok(Ctx { args, inputs, assets, settings: st, cfg_dir, replay, hd_dir })
 }
 
@@ -255,6 +270,7 @@ fn toggle_action(t: ToggleName) -> Action {
         ToggleName::Tween => Action::Tween,
         ToggleName::Counter => Action::Counter,
         ToggleName::Hd => Action::Gfx,
+        ToggleName::Feel => Action::Feel,
     }
 }
 
@@ -338,7 +354,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
                 let shot_idx = if alpha == 1.0 { shots.iter().position(|(s, _)| *s == n) } else { None };
                 let shot_path = shot_idx.map(|i| shots[i].1.clone());
                 let t2 = Instant::now();
-                let info = p.draw(c, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), shot_path.as_deref())?;
+                let info = p.draw(c, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), None, shot_path.as_deref())?;
                 stats.present(t2.elapsed().as_micros() as u64);
                 if let (Some(i), Some(info)) = (shot_idx, info) {
                     let (s, path) = shots.remove(i);
@@ -386,10 +402,16 @@ fn save_settings(dir: &Option<PathBuf>, s: &Settings) {
     }
 }
 
-/// 執行一個前端動作，並處理視窗大小、全螢幕與存檔。
-fn do_action(a: Action, ctl: &mut Controls, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>) {
+/// 執行一個前端動作，並處理視窗大小、全螢幕與存檔。回傳要不要離開。
+fn do_action(a: Action, ctl: &mut Controls, session: &mut Session, canvas: &mut WindowCanvas, cfg: &Option<PathBuf>) -> bool {
     let eff = ctl.apply(a);
     session.set_view(ctl.view());
+    if eff.about {
+        // Android 的 AboutActivity 收這個網址（android/AndroidManifest.xml）。桌面版沒有對應程式，開不了就算了。
+        if let Err(e) = sdl2::url::open_url("rs2about://license") {
+            eprintln!("[關於] 開不了授權頁面：{e}");
+        }
+    }
     if eff.resize {
         let win = canvas.window_mut();
         let (cw, ch) = win.size();
@@ -415,6 +437,24 @@ fn do_action(a: Action, ctl: &mut Controls, session: &mut Session, canvas: &mut 
     if eff.save {
         save_settings(cfg, &ctl.settings);
     }
+    eff.quit
+}
+
+/// 每 dp 幾個像素。讀不到螢幕 DPI 時當 2。
+fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
+    video.display_dpi(0).map(|(d, _, _)| d / 160.0).ok().filter(|d| *d >= 0.5).unwrap_or(2.0)
+}
+
+/// 手把事件交給鍵盤對照。
+fn feed_pad(events: Vec<PadEvent>, mapper: &mut InputMapper, t_us: u64) {
+    for e in events {
+        match e {
+            PadEvent::Down(k) => {
+                mapper.key_down(k, false, t_us);
+            }
+            PadEvent::Up(k) => mapper.key_up(k),
+        }
+    }
 }
 
 fn loading_frame() -> Vec<u8> {
@@ -426,20 +466,79 @@ fn loading_frame() -> Vec<u8> {
     buf
 }
 
+/// 第一次啟動解資料時的畫面。
+fn install_frame(f: f32) -> Vec<u8> {
+    let (w, h) = (320usize, 200usize);
+    let mut buf = vec![0u8; w * h * 4];
+    crate::font::fill_rect(&mut buf, w, h, 0, 0, w as i32, h as i32, [10, 12, 24, 255]);
+    let t = "INSTALLING";
+    crate::font::draw_text(&mut buf, w, h, (w as i32 - crate::font::text_width(t, 2) as i32) / 2, 80, t, 2, [220, 220, 240, 255]);
+    crate::font::fill_rect(&mut buf, w, h, 60, 110, 200, 8, [52, 56, 76, 255]);
+    crate::font::fill_rect(&mut buf, w, h, 60, 110, (200.0 * f.clamp(0.0, 1.0)) as i32, 8, [255, 180, 84, 255]);
+    buf
+}
+
 fn run_window(cx: Ctx) -> Result<i32, String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
-    let timer = sdl.timer()?;
-    let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
-    let (w, h) = window_size(ctl.settings.scale, ctl.settings.toolbar);
+    let (w, h) = window_size(cx.settings.scale, cx.settings.toolbar);
+    let (canvas, vsync) = make_canvas(&video, w, h)?;
+    let tc = canvas.texture_creator();
+    let pres = Presenter::new(&tc)?;
+    window_loop(cx, &sdl, &video, canvas, vsync, pres)
+}
+
+/// 視窗建好之後才決定資料位置的進入點。Android 要先把資料解到內部儲存，過程要畫進度。
+/// `install` 收到回報進度（0 到 1）的函式，回傳命令列參數。
+pub fn run_installing(install: impl FnOnce(&mut dyn FnMut(f32)) -> Result<Args, String>) -> Result<i32, String> {
+    let sdl = sdl2::init()?;
+    let video = sdl.video()?;
+    let (w, h) = window_size(settings::DEFAULT_SCALE, false);
     let (mut canvas, vsync) = make_canvas(&video, w, h)?;
-    eprintln!("[window] 視訊驅動 {}，繪圖器 {}，垂直同步 {}", video.current_video_driver(), canvas.info().name, vsync);
     let tc = canvas.texture_creator();
     let mut pres = Presenter::new(&tc)?;
+    let args = {
+        let toolbar = crate::toolbar::Toolbar::mobile(false);
+        let state = Controls::new(Settings::default(), false).bar_state();
+        let mut pump = sdl.event_pump()?;
+        let mut shown = -1i32;
+        let mut draw = |f: f32| {
+            // 每 1% 畫一次，事件也要抽，否則系統會判定沒有回應。
+            let pct = (f * 100.0) as i32;
+            if pct != shown {
+                shown = pct;
+                pump.pump_events();
+                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, &toolbar, &state, None, None) {
+                    eprintln!("[install] 畫不了進度：{e}");
+                }
+            }
+        };
+        install(&mut draw)?
+    };
+    let cx = prepare(args)?;
+    window_loop(cx, &sdl, &video, canvas, vsync, pres)
+}
+
+fn window_loop<'a>(
+    cx: Ctx,
+    sdl: &sdl2::Sdl,
+    video: &sdl2::VideoSubsystem,
+    mut canvas: WindowCanvas,
+    vsync: bool,
+    mut pres: Presenter<'a>,
+) -> Result<i32, String> {
+    let timer = sdl.timer()?;
+    let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
+    ctl.mobile = cx.args.touch;
+    if ctl.mobile {
+        // 手機上工具列預設收起來，按 ☰ 才展開。
+        ctl.settings.toolbar = false;
+    }
+    eprintln!("[window] 視訊驅動 {}，繪圖器 {}，垂直同步 {}", video.current_video_driver(), canvas.info().name, vsync);
     // HD 預載在背景跑，視窗先顯示載入畫面。
     let hd_handle = cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone()));
     if hd_handle.is_some() {
-        pres.draw(&mut canvas, &loading_frame(), 320, 200, &ctl.toolbar(), &ctl.bar_state(), None)?;
+        pres.draw(&mut canvas, &loading_frame(), 320, 200, &ctl.toolbar(), &ctl.bar_state(), None, None)?;
     }
     let hd = finish_hd(hd_handle)?;
     let mut session = build_session(&cx, hd, ctl.view());
@@ -458,6 +557,22 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
 
     let mut pump = sdl.event_pump()?;
     let mut mapper = InputMapper::new();
+    // 手把。子系統開不起來（沒有裝置節點的環境）就只用鍵盤。
+    let pad_sys = match sdl.game_controller() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("[手把] 無法使用：{e}");
+            None
+        }
+    };
+    let mut pads = PadMapper::new();
+    let mut opened: Vec<sdl2::controller::GameController> = Vec::new();
+    let mut touch_map = if ctl.mobile {
+        let (ww, wh) = canvas.output_size()?;
+        Some(TouchMapper::new(ww, wh, dp_of(&video)))
+    } else {
+        None
+    };
     let freq = timer.performance_frequency();
     let mut pacer = Pacer::new(freq, timer.performance_counter());
     let t_start = timer.performance_counter();
@@ -471,6 +586,7 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
     let mut dirty = true;
     let frame_budget = Duration::from_micros(16_000);
     let mut replay_note = !cx.replay.is_empty();
+    let mut last_draw = timer.performance_counter();
 
     'main: loop {
         let iter_start = Instant::now();
@@ -487,22 +603,94 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
                 Event::Quit { .. } => break 'main,
                 Event::KeyDown { scancode: Some(sc), repeat, .. } => {
                     if let KeyResult::Hotkey(h) = mapper.key_down(sc, repeat, t_us) {
-                        do_action(h.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir);
+                        if do_action(h.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir) {
+                            break 'main;
+                        }
                         dirty = true;
                     }
                 }
                 Event::KeyUp { scancode: Some(sc), .. } => mapper.key_up(sc),
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Some(sys) = &pad_sys {
+                        match sys.open(which) {
+                            Ok(c) => match pads.attach(c.instance_id()) {
+                                Some(p) => {
+                                    eprintln!("[手把] 玩家 {} 用 {}", p + 1, c.name());
+                                    opened.push(c);
+                                }
+                                None => eprintln!("[手把] 已經有兩支了，不用 {}", c.name()),
+                            },
+                            Err(e) => eprintln!("[手把] 開不了第 {which} 支：{e}"),
+                        }
+                    }
+                }
+                Event::ControllerDeviceRemoved { which, .. } => {
+                    feed_pad(pads.detach(which), &mut mapper, t_us);
+                    opened.retain(|c| c.instance_id() != which);
+                }
+                Event::ControllerButtonDown { which, button, .. } => feed_pad(pads.button(which, button, true), &mut mapper, t_us),
+                Event::ControllerButtonUp { which, button, .. } => feed_pad(pads.button(which, button, false), &mut mapper, t_us),
+                Event::ControllerAxisMotion { which, axis, value, .. } => feed_pad(pads.axis(which, axis, value), &mut mapper, t_us),
                 Event::MouseButtonDown { mouse_btn: MouseButton::Left, x, y, .. } => {
                     let (ww, _) = canvas.output_size()?;
                     if let Some(b) = ctl.toolbar().hit(ww, x, y) {
-                        do_action(b.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir);
+                        if do_action(b.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir) {
+                            break 'main;
+                        }
                         dirty = true;
                     }
+                }
+                Event::FingerDown { finger_id, x, y, .. } => {
+                    if let Some(tm) = &mut touch_map {
+                        let (ww, wh) = canvas.output_size()?;
+                        let (px, py) = (x * ww as f32, y * wh as f32);
+                        let in_bar = ctl.toolbar().height(ww) as f32 > py;
+                        let t = tm.down(finger_id, px, py, session.in_play(), in_bar);
+                        feed_pad(t.keys, &mut mapper, t_us);
+                        if t.toggle_toolbar {
+                            do_action(Action::Toolbar, &mut ctl, &mut session, &mut canvas, &cx.cfg_dir);
+                            dirty = true;
+                        }
+                    }
+                }
+                Event::FingerMotion { finger_id, x, y, .. } => {
+                    if let Some(tm) = &mut touch_map {
+                        let (ww, wh) = canvas.output_size()?;
+                        feed_pad(tm.moved(finger_id, x * ww as f32, y * wh as f32), &mut mapper, t_us);
+                    }
+                }
+                Event::FingerUp { finger_id, .. } => {
+                    if let Some(tm) = &mut touch_map {
+                        feed_pad(tm.up(finger_id), &mut mapper, t_us);
+                    }
+                }
+                // Android 切到背景：放開全部的鍵。切回前景：不補步。繪圖裝置可能重建。
+                Event::AppWillEnterBackground { .. } | Event::AppDidEnterBackground { .. } => {
+                    if let Some(tm) = &mut touch_map {
+                        feed_pad(tm.release_all(), &mut mapper, t_us);
+                    }
+                    mapper.release_all();
+                }
+                Event::AppDidEnterForeground { .. } => {
+                    pacer.reset(timer.performance_counter());
+                    last_draw = timer.performance_counter();
+                    dirty = true;
+                }
+                Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => {
+                    pres.invalidate()?;
+                    dirty = true;
                 }
                 Event::Window { win_event, .. } => match win_event {
                     WindowEvent::FocusLost => mapper.release_all(),
                     WindowEvent::FocusGained => pacer.reset(timer.performance_counter()),
-                    WindowEvent::Exposed | WindowEvent::SizeChanged(..) | WindowEvent::Restored | WindowEvent::Shown => dirty = true,
+                    WindowEvent::SizeChanged(..) => {
+                        if let Some(tm) = &mut touch_map {
+                            let (ww, wh) = canvas.output_size()?;
+                            feed_pad(tm.resize(ww, wh, dp_of(&video)), &mut mapper, t_us);
+                        }
+                        dirty = true;
+                    }
+                    WindowEvent::Exposed | WindowEvent::Restored | WindowEvent::Shown => dirty = true,
                     _ => {}
                 },
                 _ => {}
@@ -510,6 +698,7 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
         }
 
         let now = timer.performance_counter();
+        mapper.set_hold_short(ctl.settings.feel);
         mapper.poll(ticks_to_us(now, freq));
         pacer.update(now);
         while pacer.take_step() {
@@ -560,12 +749,21 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
         if dirty || animating || pending_shot.is_some() {
             // 存圖固定用 alpha 1.0：畫出剛跑完的那一步。
             let alpha = if pending_shot.is_some() { 1.0 } else { pacer.alpha() };
+            // 玩家機預測看的是下一步會生效的按鍵。回放中的輸入不是鍵盤來的，不預測。
+            let draw_now = timer.performance_counter();
+            if cx.replay.get(session.steps() as usize).is_none() {
+                let dt = (draw_now - last_draw) as f64 / freq as f64;
+                session.predict(&mapper.next_state(), dt as f32, pacer.step_secs());
+            }
+            last_draw = draw_now;
+            let in_play = session.in_play();
             let t1 = Instant::now();
             let (frame, fw, fh) = session.render(alpha);
             stats.render(t1.elapsed().as_micros() as u64);
             let shot_path = pending_shot.as_ref().map(|(_, p)| p.clone());
             let t2 = Instant::now();
-            let info = pres.draw(&mut canvas, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), shot_path.as_deref())?;
+            let overlay = touch_map.as_ref().map(|t| Overlay { controls: t.controls(), playable: in_play });
+            let info = pres.draw(&mut canvas, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), overlay, shot_path.as_deref())?;
             stats.present(t2.elapsed().as_micros() as u64);
             if let (Some((s, path)), Some(info)) = (pending_shot.take(), info) {
                 shot_ok &= report_shot(&path, info, s);

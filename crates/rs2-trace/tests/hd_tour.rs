@@ -65,12 +65,12 @@ fn hd_tour() {
             if extra % 40 == 0 && !f.draws.is_empty() {
                 let name = |kind: &str| out.join(format!("s5_{extra:05}_{kind}.png"));
                 let (a, w, h) = {
-                    let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: false, show_counter: false });
+                    let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: false, show_counter: false, player: [None, None] });
                     (img.to_vec(), w, h)
                 };
                 std::fs::write(name("o"), png::encode_rgba(w, h, &a)).unwrap();
                 let (b, w, h) = {
-                    let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: true, show_counter: false });
+                    let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: true, show_counter: false, player: [None, None] });
                     (img.to_vec(), w, h)
                 };
                 std::fs::write(name("h"), png::encode_rgba(w, h, &b)).unwrap();
@@ -101,12 +101,12 @@ fn hd_tour() {
             last_shot = (stage, frame);
             let name = |kind: &str| out.join(format!("s{}_{frame:05}_{kind}.png", stage + 1));
             let (a, w, h) = {
-                let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: false, show_counter: false });
+                let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: false, show_counter: false, player: [None, None] });
                 (img.to_vec(), w, h)
             };
             std::fs::write(name("o"), png::encode_rgba(w, h, &a)).unwrap();
             let (b, w, h) = {
-                let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: true, show_counter: false });
+                let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: true, show_counter: false, player: [None, None] });
                 (img.to_vec(), w, h)
             };
             std::fs::write(name("h"), png::encode_rgba(w, h, &b)).unwrap();

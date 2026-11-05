@@ -1,20 +1,6 @@
-//! RS-2 重製的可玩前端：SDL2 視窗、鍵盤輸入、固定步長計時、工具列。規格見 `docs/spec/001-rust-first-stage.md`「前端」。
-//!
-//! 模擬與繪製命令在 `rs2-core`、`rs2-gfx`；這裡只做視窗與輸入。
-//! 可單元測試的部分（輸入對照、自動重複、設定、工具列、計時、版面）不依賴 SDL 視窗。
+//! 桌面版的程式入口。內容都在函式庫（`lib.rs`），Android 走 `rs2-android` crate。
 
-mod app;
-mod args;
-mod audio;
-mod controls;
-mod font;
-mod input;
-mod pacer;
-mod session;
-mod settings;
-mod toolbar;
-mod view;
-
+use rs2_play::{app, args};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -27,6 +13,10 @@ fn main() -> ExitCode {
             return if help { ExitCode::SUCCESS } else { ExitCode::from(2) };
         }
     };
+    if args.version {
+        println!("rs2-play {}", args::VERSION);
+        return ExitCode::SUCCESS;
+    }
     match app::run(args) {
         Ok(0) => ExitCode::SUCCESS,
         Ok(rc) => ExitCode::from(rc as u8),

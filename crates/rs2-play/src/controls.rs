@@ -11,8 +11,11 @@ pub enum Action {
     Counter,
     Gfx,
     Scale,
+    Feel,
     Toolbar,
     Fullscreen,
+    About,
+    Quit,
 }
 
 impl From<Hotkey> for Action {
@@ -22,6 +25,7 @@ impl From<Hotkey> for Action {
             Hotkey::Counter => Action::Counter,
             Hotkey::Gfx => Action::Gfx,
             Hotkey::Scale => Action::Scale,
+            Hotkey::Feel => Action::Feel,
             Hotkey::Toolbar => Action::Toolbar,
             Hotkey::Fullscreen => Action::Fullscreen,
         }
@@ -35,7 +39,10 @@ impl From<Button> for Action {
             Button::Counter => Action::Counter,
             Button::Gfx => Action::Gfx,
             Button::Scale => Action::Scale,
+            Button::Feel => Action::Feel,
             Button::Hide => Action::Toolbar,
+            Button::About => Action::About,
+            Button::Quit => Action::Quit,
         }
     }
 }
@@ -49,6 +56,10 @@ pub struct Effect {
     pub resize: bool,
     /// 全螢幕狀態有變。
     pub fullscreen: bool,
+    /// 要開授權頁面。
+    pub about: bool,
+    /// 要離開。
+    pub quit: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,11 +67,13 @@ pub struct Controls {
     pub settings: Settings,
     pub hd_available: bool,
     pub fullscreen: bool,
+    /// 手機版的工具列，視窗大小固定。
+    pub mobile: bool,
 }
 
 impl Controls {
     pub fn new(settings: Settings, hd_available: bool) -> Controls {
-        Controls { settings, hd_available, fullscreen: false }
+        Controls { settings, hd_available, fullscreen: false, mobile: false }
     }
 
     pub fn apply(&mut self, a: Action) -> Effect {
@@ -85,10 +98,16 @@ impl Controls {
                 s.scale = Settings::next_scale(s.scale);
                 Effect { save: true, resize: !self.fullscreen, ..Effect::default() }
             }
+            Action::Feel => {
+                s.feel = !s.feel;
+                Effect { save: true, ..Effect::default() }
+            }
             Action::Toolbar => {
                 s.toolbar = !s.toolbar;
-                Effect { save: true, resize: !self.fullscreen, ..Effect::default() }
+                Effect { save: true, resize: !self.fullscreen && !self.mobile, ..Effect::default() }
             }
+            Action::About => Effect { about: true, ..Effect::default() },
+            Action::Quit => Effect { quit: true, ..Effect::default() },
             Action::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 Effect { fullscreen: true, ..Effect::default() }
@@ -97,7 +116,7 @@ impl Controls {
     }
 
     pub fn view(&self) -> ViewOpts {
-        ViewOpts { tween: self.settings.tween, counter: self.settings.counter, hd: self.settings.hd }
+        ViewOpts { tween: self.settings.tween, counter: self.settings.counter, hd: self.settings.hd, feel: self.settings.feel }
     }
 
     pub fn bar_state(&self) -> BarState {
@@ -107,11 +126,13 @@ impl Controls {
             hd: self.settings.hd,
             hd_available: self.hd_available,
             scale: self.settings.scale,
+            feel: self.settings.feel,
+            mobile: self.mobile,
         }
     }
 
     pub fn toolbar(&self) -> Toolbar {
-        Toolbar::new(self.settings.toolbar)
+        if self.mobile { Toolbar::mobile(self.settings.toolbar) } else { Toolbar::new(self.settings.toolbar) }
     }
 }
 
@@ -188,6 +209,7 @@ mod tests {
             (H::Counter, Button::Counter),
             (H::Gfx, Button::Gfx),
             (H::Scale, Button::Scale),
+            (H::Feel, Button::Feel),
             (H::Toolbar, Button::Hide),
         ];
         for (h, b) in pairs {
@@ -197,10 +219,27 @@ mod tests {
     }
 
     #[test]
+    fn mobile_toolbar_never_resizes_the_window() {
+        let mut k = c(true);
+        k.mobile = true;
+        let e = k.apply(Action::Toolbar);
+        assert!(e.save && !e.resize);
+        assert!(k.toolbar().mobile);
+        assert!(k.bar_state().mobile);
+        assert!(k.apply(Action::About).about);
+        assert!(k.apply(Action::Quit).quit);
+        assert_eq!(Action::from(Button::About), Action::About);
+        assert_eq!(Action::from(Button::Quit), Action::Quit);
+    }
+
+    #[test]
     fn view_follows_settings() {
         let mut k = c(true);
         k.apply(Action::Counter);
         k.apply(Action::Tween);
-        assert_eq!(k.view(), ViewOpts { tween: false, counter: true, hd: true });
+        assert_eq!(k.view(), ViewOpts { tween: false, counter: true, hd: true, feel: true });
+        let e = k.apply(Action::Feel);
+        assert!(e.save && !e.resize);
+        assert!(!k.view().feel && !k.bar_state().feel);
     }
 }
