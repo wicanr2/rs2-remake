@@ -7,7 +7,7 @@
 //!
 //! - 狀態在 [`EnhancedPlayer`]，住在 `Core::enh`，不進 `Mirror`、不寫資料段，也不動 `DS_EXEMPT`。
 //!   結構裡對應原版變數的欄位（位置、血量、砲座）沿用原版的欄位，只是換了算法。
-//! - 每個入口都先看 [`Core::player_rules`]。選項全關（[`Rules::ORIGINAL`]）時這個檔案不寫任何東西，
+//! - 每個入口都先看 [`Core::rules`]。選項全關（[`Rules::ORIGINAL`]）時這個檔案不寫任何東西，
 //!   原版路徑的資料段寫入與繪製命令和沒有這個檔案時逐位元組相同。
 //! - 展示錄影（標題的示範輪播）一律當作選項全關：錄影是照原版時序錄的，換了規則就不是同一場戰鬥。
 //! - 不用時間、不用亂數，所以同樣的輸入與選項得到同樣的結果。
@@ -201,11 +201,6 @@ impl Player {
 }
 
 impl Core {
-    /// 玩家領域看的強化選項。展示錄影一律當作全關。
-    pub(crate) fn player_rules(&self) -> Rules {
-        if self.demo_playing() { Rules::ORIGINAL } else { self.port.borrow().rules }
-    }
-
     /// 選項被關掉時收尾：細步位置對齊整格、砲座接回、充能清掉。選項沒開過就什麼都不做。
     pub(super) fn settle_options(&mut self, who: usize, rules: Rules) {
         let e = self.enh.ship[who];

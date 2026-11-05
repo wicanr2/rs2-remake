@@ -549,7 +549,7 @@ impl Core {
         p.dying = DYING_FRAMES;
         p.hit = NO;
         // 強化選項（規格 005）。全關時以下三個呼叫都不做事，原版路徑沒有任何資料段寫入。
-        let rules = self.player_rules();
+        let rules = self.rules();
         self.settle_options(who, rules);
         self.steer(who, rules.fine_step);
         self.turn_pods(who);

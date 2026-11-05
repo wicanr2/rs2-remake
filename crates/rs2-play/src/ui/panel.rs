@@ -2060,6 +2060,7 @@ mod tests {
         }
         let tags = cells.iter().filter(|i| i.text == "開發中").count();
         assert_eq!(tags, OPTIONS.iter().filter(|o| !o.implemented).count());
+        assert!(tags < OPTIONS.len(), "已實作的選項不標開發中（打擊回饋、無敵、手感、AI 四項）");
         // 沒實作的欄位是灰的、不能聚焦。
         for (i, o) in OPTIONS.iter().enumerate() {
             let cell = cells.iter().find(|x| x.id == Some(Id::Opt(i))).unwrap();

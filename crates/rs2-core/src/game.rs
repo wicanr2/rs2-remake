@@ -1,5 +1,6 @@
 //! 核心狀態與入口。規格見 `docs/spec/001-rust-first-stage.md`。
 
+use crate::ai::AiState;
 use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
@@ -419,10 +420,18 @@ pub struct Core {
     pub(crate) gens: [[u32; 40]; POOLS],
     /// `bullet_slot_carry` 開啟時，G2 每格真正的敵彈槽號加 1，0 表示沒有。不屬於原版狀態。
     pub(crate) g2_slots: Vec<u8>,
+    /// 敵人 AI 強化的狀態（規格 005）。不屬於原版狀態，不進資料段，全關時不影響模擬。
+    pub(crate) ai: AiState,
     pub(crate) port: Rc<RefCell<Port>>,
 }
 
 impl Core {
+    /// 目前的強化選項（規格 005）。每次讀 `Port`，所以 [`Game::set_rules`] 立刻生效。
+    /// 標題輪播的展示錄影（`byte_1CFDC` 是 `Y`）播的是原版錄下的輸入，強化規則會讓它對不上，所以展示一律是原版規則。
+    pub(crate) fn rules(&self) -> Rules {
+        if self.demo_playing() { Rules::ORIGINAL } else { self.port.borrow().rules }
+    }
+
     pub(crate) fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Core {
         let ds = Dseg::from_image(image);
         let port = Port {
@@ -467,6 +476,7 @@ impl Core {
             cur_obj: None,
             gens: [[0; 40]; POOLS],
             g2_slots: vec![0; 0x321],
+            ai: AiState::default(),
             port: Rc::new(RefCell::new(port)),
         };
         g.load_mirrors();
@@ -796,7 +806,7 @@ impl Game {
             let port = self.port.borrow();
             (port.rules, port.shoot[player.min(1)])
         };
-        // 展示錄影不套用強化規則（`Core::player_rules`）。
+        // 展示錄影不套用強化規則（`Core::rules`）。
         let fine = rules.fine_step && !demo_playing(&self.ds);
         let reach = if fine {
             // 細步移動：同樣的邊界，垂直用繪製位置 y（原版的列界限 0 至 16 換成 0 至 160 像素）。
@@ -855,5 +865,21 @@ impl Game {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restart_keeps_the_enhanced_rules() {
+        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let mut g = Game::new(&image, &[], Start::Demo, Fixes::NONE);
+        assert_eq!(g.port.borrow().rules, Rules::ORIGINAL);
+        let rules = Rules { ai_aim: true, ai_boss: true, ..Rules::ORIGINAL };
+        g.set_rules(rules);
+        g.restart(Start::NewGame { difficulty: Some(1) });
+        assert_eq!(g.port.borrow().rules, rules, "重新開始沿用強化選項，不洗回全關");
     }
 }

@@ -19,7 +19,10 @@
 //! | [`EnemyBullets::release_all`] | `sub_10E33` 內清池指標表的那一段 |
 //!
 //! 瞄準（[`Core::aim_heading`]、[`Core::aim_target`]）與派發表（[`FirePattern`]、[`Step`]、[`Template`]）
-//! 各自獨立，之後的強化模式只換這兩處。
+//! 各自獨立，強化模式（規格 005，`ai.rs`）只換這兩處：`ai_aim` 在瞄準彈生成後把八向腳本換成逐幀的移動碼
+//! （[`Core::refine_aim`]，`step_bullet` 讀 [`Core::ai_path_code`]），`ai_fire` 與 `ai_boss` 會多放子彈，
+//! 沒有修正 `bullet_slot_carry` 時 [`Core::spawn_bullet`] 只用槽 0 至 14（[`Core::enemy_bullet_slot_limit`]）。
+//! 選項全關時這些分支都不執行。
 
 use crate::draw::Pool;
 use crate::fx::{EffectKind, loop_count};
@@ -312,6 +315,11 @@ impl FirePattern {
         }
     }
 
+    /// 這個圖案一次最多生成幾顆子彈。
+    pub(crate) fn bullet_count(self) -> usize {
+        self.steps().iter().filter(|s| matches!(s, Step::Fire(_) | Step::Aim(_))).count()
+    }
+
     /// 這個圖案依序要做的事。
     pub(crate) fn steps(self) -> &'static [Step] {
         match self {
@@ -473,8 +481,39 @@ pub(crate) struct EnemyBullets {
 }
 
 impl EnemyBullets {
-    fn first_free(&self) -> Option<usize> {
-        self.slots.iter().position(|s| !s.is_active())
+    /// 第一個空槽，只找槽號小於 `limit` 的。原版 `limit` 是 [`POOL_SIZE`]；強化規則（`ai.rs`）為了
+    /// 不讓格值低四位進位（槽號 15 起，見 [`Core::stamp_grid2`]），在沒有修正時把它壓到 15。
+    fn first_free_below(&self, limit: usize) -> Option<usize> {
+        self.slots.iter().take(limit).position(|s| !s.is_active())
+    }
+
+    /// 使用中的槽數。
+    pub(crate) fn active_count(&self) -> usize {
+        self.slots.iter().filter(|s| s.is_active()).count()
+    }
+
+    /// 槽號小於 `limit` 的空槽數。
+    pub(crate) fn free_below(&self, limit: usize) -> usize {
+        self.slots.iter().take(limit).filter(|s| !s.is_active()).count()
+    }
+
+    /// 為新的一批子彈騰出空間（頭目新招式用）：槽號小於 `limit` 的空槽不足 `needed` 時，釋放使用中的子彈補足。
+    /// 先放反彈球（第四關頭目的反彈球永不消失，會把池塞滿），再依槽號由小到大放（槽號小的通常飛得比較久）。
+    /// 回傳是否騰出足夠空間。
+    pub(crate) fn make_room(&mut self, limit: usize, needed: usize) -> bool {
+        let mut free = self.free_below(limit);
+        for bouncers_first in [true, false] {
+            for slot in self.slots.iter_mut().take(limit) {
+                if free >= needed {
+                    return true;
+                }
+                if slot.is_active() && (slot.bullet.heading != 0) == bouncers_first {
+                    slot.link = 0;
+                    free += 1;
+                }
+            }
+        }
+        free >= needed
     }
 
     /// 關卡初始化：全部槽釋放（只清指標，記錄不動）。
@@ -528,18 +567,24 @@ impl Core {
                     col = col.wrapping_add(cols as u16);
                     row = row.wrapping_add(rows as u16);
                 }
-                Step::Fire(template) => self.spawn_bullet(template, col, row),
+                Step::Fire(template) => {
+                    self.spawn_bullet(template, col, row);
+                }
                 Step::Aim(aiming) => {
                     let heading = self.aim_heading(col, row);
-                    self.spawn_bullet(aiming.template(heading), col, row);
+                    if let Some(slot) = self.spawn_bullet(aiming.template(heading), col, row) {
+                        // 瞄準更準（`ai_aim`）：已選好最接近的既有彈道，這裡再依實際向量換成逐幀的移動碼。
+                        self.refine_aim(slot, aiming, col, row);
+                    }
                 }
             }
         }
     }
 
     /// 把樣板複製進第一個空槽，起點取 (`col`, `row`)，繪製位置跟著設（原版 `sub_16CEA`）。池滿了就放棄。
-    fn spawn_bullet(&mut self, template: Template, col: u16, row: u16) {
-        let Some(slot) = self.eb.first_free() else { return };
+    /// 回傳配到的槽號。
+    fn spawn_bullet(&mut self, template: Template, col: u16, row: u16) -> Option<usize> {
+        let slot = self.eb.first_free_below(self.enemy_bullet_slot_limit())?;
         let mut bullet = self.bullet_template(template);
         bullet.col = col;
         bullet.blit_x = col;
@@ -547,6 +592,7 @@ impl Core {
         bullet.blit_y = row.wrapping_mul(10);
         self.eb.slots[slot] = Slot { link: crate::mirror::record_link(slot), bullet };
         self.bump_gen(Pool::EnemyBullet, slot as u8);
+        Some(slot)
     }
 
     /// 瞄準：從 (`col`, `row`) 看最近玩家的方向（原版 `sub_16F9F`，所有比較為無符號）。
@@ -588,6 +634,11 @@ impl Core {
     /// （`docs/re/11-entities-combat.md` 第 7.3 節）：發射點在兩位之間且等距取左邊那位，
     /// 兩位同欄時發射點在其右取玩家 2、在其左取玩家 1。
     pub(crate) fn aim_target(&self, col: u16) -> (u16, u16) {
+        self.player_cell(self.aim_target_player(col))
+    }
+
+    /// [`Core::aim_target`] 選中的玩家編號（0 或 1）。
+    pub(crate) fn aim_target_player(&self, col: u16) -> usize {
         let (first, second) = (self.player_cell(0), self.player_cell(1));
         let (c1, c2) = (first.0, second.0);
         let pick_first = if !self.player_alive(0) {
@@ -609,7 +660,7 @@ impl Core {
             // 兩位都在右邊：取欄較小者；相等取玩家 1。
             c1 <= c2
         };
-        if pick_first { first } else { second }
+        if pick_first { 0 } else { 1 }
     }
 
     /// 每幀更新 20 顆敵彈（原版 `sub_17361`）：每個使用中的槽走一步，出界或腳本結束就釋放。
@@ -631,7 +682,11 @@ impl Core {
 
     /// 一顆敵彈的一幀（原版 `sub_173C5`）。回傳是否要釋放。出界的那一幀仍會畫、寫格網、播尾跡，釋放在最後。
     fn step_bullet(&mut self, bullet: &mut Bullet, slot: u8) -> bool {
-        let code = self.read_script_code(bullet);
+        // `ai_aim` 配過逐幀路徑的敵彈不讀腳本；其他敵彈（含選項全關）照原版。
+        let code = match self.ai_path_code(slot) {
+            Some(code) => code,
+            None => self.read_script_code(bullet),
+        };
         let release = self.move_bullet(bullet, code);
         self.draw_bullet(bullet, code);
         self.stamp_grids(bullet, slot);

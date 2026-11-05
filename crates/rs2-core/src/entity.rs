@@ -19,9 +19,13 @@
 //! | [`Enemies::release_all`] | `sub_10E33` 內清池指標表的那一段 |
 //! | [`Core::clear_grid1`]（`mirror.rs`） | `sub_162B1`（各關每幀末） |
 //!
-//! 之後的強化模式（規格 005）要加的東西各有獨立的位置：移動腳本的直譯器是 [`Core::read_command`]、
+//! 強化模式（規格 005）的位置：移動腳本的直譯器是 [`Core::read_command`]、
 //! [`Motion`] 與 [`Core::apply_motion`]；開火判斷是 [`Core::rolls_to_fire`]；生成表是 [`Timetable`] 與 [`Core::spawn_enemy`]；
 //! 追蹤與反應走 [`Core::seek_row`]、[`Core::chase_row`]。戰場的欄數是 `mirror.rs` 的 `GRID_COLS`。
+//!
+//! 敵人 AI 強化（`ai.rs`）在 [`Core::step_enemy`] 有三個決策點，選項全關時一個都不執行：腳本讀出移動碼之後
+//! （`ai_react` 換這一幀的碼）、原版的開火擲骰之後（`ai_fire` 加一次機會）、一幀的最後（`ai_boss` 頭目核心的新招式）。
+//! `spawn_enemy` 另外記下敵人的角色，`update_enemies` 開頭記下玩家的位置，這兩步不碰資料段，也不碰原版的亂數表索引。
 //!
 //! 原版有幾處靠暫存器殘值或表外讀寫成立的行為，逐項寫在對應的函式文件裡：
 //! 被打死的敵人沒有產生繪製值（[`Enemies::last_sprite`]）、裝甲格索引讀到池之後的記錄區
@@ -52,9 +56,9 @@ const NO: u16 = b'N' as u16;
 const HIT_PENDING: u8 = 1;
 
 /// 開火門檻：這個值永遠不開火（載體、碰撞體、損壞貼片、核心）。
-const NEVER_FIRES: u16 = 0x63;
+pub(crate) const NEVER_FIRES: u16 = 0x63;
 /// 固定亂數表的項數（值域 0 至 15）。
-const FIRE_ROLLS: u16 = 75;
+pub(crate) const FIRE_ROLLS: u16 = 75;
 
 // ---- 腳本 ----
 
@@ -473,6 +477,8 @@ impl Core {
         s.link = enemy_record_link(slot);
         s.enemy = enemy;
         self.bump_gen(Pool::Entity, slot as u8);
+        // AI 強化只認得生成表生成的敵人（`ai.rs`）；這一步不碰資料段。
+        self.ai.on_spawn(slot, template);
     }
 
     // ---- 每幀更新 ----
@@ -482,6 +488,7 @@ impl Core {
     /// 原版先把記錄複製進工作區、更新、複製回去；這裡複製成區域變數，結果相同。
     /// 池指標指向的就是這一槽自己的記錄（生成時寫的），不會指到別處。
     pub(crate) fn update_enemies(&mut self) {
+        self.ai_begin_frame();
         for slot in 0..POOL_SIZE {
             if !self.en.slots[slot].is_active() {
                 continue;
@@ -510,13 +517,19 @@ impl Core {
             Damage::Flash => true,
             Damage::None => false,
         };
+        let rules = self.rules();
+        self.ai.tick_enemy(slot);
         let code = match enemy.mode() {
             Mode::Chase => {
                 let target = self.aim_heading(enemy.col, enemy.row);
                 enemy.script = turn_toward(target, enemy.script);
                 enemy.script as u8
             }
-            Mode::Script | Mode::Scroll => self.read_command(enemy),
+            Mode::Script | Mode::Scroll => {
+                let code = self.read_command(enemy);
+                // 敵人會反應（`ai_react`）：只換這一幀要執行的移動碼，腳本照常前進。
+                if rules.ai_react { self.ai_react(enemy, slot, code) } else { code }
+            }
         };
         let dying = self.apply_motion(enemy, code);
         if enemy.mode() == Mode::Scroll {
@@ -528,6 +541,12 @@ impl Core {
         self.stamp_footprint_g1(enemy, slot);
         if self.rolls_to_fire(enemy) {
             self.fire_enemy_bullets(enemy.bullet, enemy.col, enemy.row);
+        } else if rules.ai_fire {
+            // 火力加強（`ai_fire`）：原版這一幀沒開火的敵人另有一次機會，用 AI 自己的亂數，不碰原版的亂數表索引。
+            self.ai_extra_fire(enemy, slot);
+        }
+        if rules.ai_boss {
+            self.ai_boss_step(enemy, slot);
         }
         Step { flashing, dying }
     }

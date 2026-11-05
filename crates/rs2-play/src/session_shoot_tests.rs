@@ -246,6 +246,17 @@ fn shoot_combo_all_four_options_with_two_players_run_the_first_stage() {
     assert_eq!(r.hashes, run(ALL, 600, true).hashes);
 }
 
+/// 射擊、操控與 AI 八個選項全開：第一關 600 步不當掉，同樣的輸入雜湊相同。
+#[test]
+#[ignore]
+fn shoot_combo_every_rule_on_runs_the_first_stage_deterministically() {
+    let every = Rules { ai_aim: true, ai_fire: true, ai_react: true, ai_boss: true, ..ALL };
+    let r = run(every, 600, true);
+    assert_eq!(r.hashes.len(), 600);
+    assert_eq!(r.hashes, run(every, 600, true).hashes);
+    assert_ne!(r.hashes, run(ALL, 600, true).hashes, "AI 選項有作用");
+}
+
 /// 四種顯示模式（VGA、EGA、CGA、MGA）都能玩四個選項，而且顯示模式不影響模擬：同一份輸入，每步雜湊相同；
 /// 每步都畫（單色的 `MonoSink` 與 `LayerSink` 都走過）不當掉。第一關不讀地形，所以模式不同也不會分歧。
 #[test]

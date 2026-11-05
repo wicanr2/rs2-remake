@@ -18,6 +18,7 @@
 //! 本檔後半是「尚未搬走的共用資料段」：搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、格網），
 //! 一律經這裡的具名存取函式。那個領域搬完時，把存取函式換成真正的結構。
 
+use crate::ai::{Boss, Role};
 use crate::boss_scroll::{BossLayer, BossLayers};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::{Bullet, Capsule, EnemyBullets, POOL_SIZE as EB_POOL_SIZE, Slot, Template};
@@ -1750,6 +1751,57 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn scratch_select(&self) -> u16 {
         self.ds.r16(SCRATCH_SELECT)
+    }
+}
+
+// ---- AI 強化的敵人分類（規格 005） ----
+//
+// AI 強化要分得出頭目分件、頭目核心與普通敵人。敵人記錄不帶樣板位址，所以生成時依樣板位址分類一次，
+// 結果存在 `ai.rs` 的 `AiState`，不進資料段。位址取自 `workspace/extracted/entities.json` 的 `timelines`
+// 與文件 12 第 6 節的頭目表（靜態已證實）。
+
+/// 第一關頭目：控制器（N）與六個損壞貼片（K）。
+const STAGE1_BOSS_PARTS: [u16; 7] = [0x43E4, 0x45DE, 0x460C, 0x463A, 0x4668, 0x4696, 0x46C4];
+/// 第一關頭目核心（`bullet` = `E`，死亡即過關）。
+const STAGE1_BOSS_CORE: u16 = 0x47AA;
+/// 第二關中頭目的控制器、損壞貼片與砲口（兩段各一份）。
+const STAGE2_MID_PARTS: [u16; 10] = [0x59D4, 0x5A02, 0x5A5E, 0x5A8C, 0x5B16, 0x5ABA, 0x5AE8, 0x5B44, 0x5BA0, 0x5BCE];
+/// 第二關頭目的控制器與損壞貼片。
+const STAGE2_BOSS_PARTS: [u16; 2] = [0x5A30, 0x5B72];
+/// 第二關頭目核心（K 型，`bullet` = `E`）。
+const STAGE2_BOSS_CORE: u16 = 0x5BFC;
+/// 第三關頭目的五個分件。
+const STAGE3_BOSS_PARTS: [u16; 5] = [0x7168, 0x7196, 0x71C4, 0x71F2, 0x7220];
+/// 第三關頭目核心（噴嘴，`bullet` = `E`）。
+const STAGE3_BOSS_CORE: u16 = 0x724E;
+/// 第四關中頭目（大魚）。
+const STAGE4_MID_BOSS: u16 = 0x83E5;
+/// 第四關頭目（圓盤，腳本 96 步後變身成自己）。
+const STAGE4_BOSS_CORE: u16 = 0x8441;
+/// 第四關附表（片尾的 END 字樣，`8D1Ch` 起）之後的樣板：不是戰鬥敵人。
+const ENDING_TEMPLATES_FROM: u16 = 0x8D1C;
+
+/// 生成敵人時依樣板位址分類。
+pub(crate) fn enemy_role(template: u16) -> Role {
+    if template == STAGE1_BOSS_CORE {
+        Role::BossCore(Boss::Stage1)
+    } else if template == STAGE2_BOSS_CORE {
+        Role::BossCore(Boss::Stage2)
+    } else if template == STAGE3_BOSS_CORE {
+        Role::BossCore(Boss::Stage3)
+    } else if template == STAGE4_BOSS_CORE {
+        Role::BossCore(Boss::Stage4)
+    } else if STAGE1_BOSS_PARTS.contains(&template)
+        || STAGE2_MID_PARTS.contains(&template)
+        || STAGE2_BOSS_PARTS.contains(&template)
+        || STAGE3_BOSS_PARTS.contains(&template)
+        || template == STAGE4_MID_BOSS
+    {
+        Role::BossPart
+    } else if template >= ENDING_TEMPLATES_FROM {
+        Role::Inert
+    } else {
+        Role::Grunt
     }
 }
 
