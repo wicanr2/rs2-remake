@@ -89,7 +89,9 @@ const SEEK_ROW_TOP: i16 = 0x14;
 /// 足跡只寫到列 12h（有號比較，列 13h 起不寫）。G1 的列 13h 因此沒有敵人。
 const FOOTPRINT_ROW_LIMIT: i16 = 0x13;
 /// G1 格值：裝甲，不加槽號。玩家彈碰到不記錄為傷害目標，但子彈仍會消失。
-const ARMOR_CELL: u8 = 0xFE;
+pub(crate) const ARMOR_CELL: u8 = 0xFE;
+/// 裝甲格的實體索引（格值減 1）。雷射與砲座沒有裝甲檢查，會以這個索引讀實體指標表（文件第 5.3 節）。
+const ARMOR_INDEX: u8 = ARMOR_CELL - 1;
 /// G1 格值：存在但不造成接觸，不加槽號。所有樣板的形狀都沒有用到，照原版保留。
 const INERT_CELL: u8 = 0xFF;
 
@@ -807,6 +809,21 @@ impl Core {
     /// 池指標表第 `index` 項（槽號，G1 格值減 1）。0 表示該槽已釋放。見 [`Enemies::word_at`]。
     pub(crate) fn entity_link(&self, index: u8) -> u16 {
         self.en.word_at(index)
+    }
+
+    /// 玩家的攻擊打到 G1 格值為 `cell` 的格：對那個敵人累計 `damage` 點傷害（玩家彈命中 `16946h`，砲座接觸 `14C18h`、`15746h`）。
+    /// 格值減 1 是槽號。
+    ///
+    /// 裝甲格 FEh 取到索引 FDh，讀實體指標表之後的 `dseg:248Eh`（實體槽 9 的 w21，實測全為 0），
+    /// 於是把傷害字組寫到 `dseg:0020h`（啟動時文字畫面的色彩屬性，關卡內不再讀取）。指向已釋放槽的格值走同一路徑。
+    /// `Fixes::armor_cell_index` 開啟時這兩種都不寫。玩家彈與砲座共用這一份判斷。
+    pub(crate) fn damage_entity_at_cell(&mut self, cell: u8, damage: u8) {
+        let index = cell.wrapping_sub(1);
+        let link = self.entity_link(index);
+        if self.fixes.armor_cell_index && (index == ARMOR_INDEX || link == 0) {
+            return;
+        }
+        self.add_entity_damage(link, damage);
     }
 
     /// 對指標為 `link` 的敵人累計 `damage` 點傷害（玩家彈命中，原版 `16946h`；砲座接觸，`14C18h`、`15746h`）：

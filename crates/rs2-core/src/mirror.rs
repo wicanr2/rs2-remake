@@ -24,6 +24,7 @@ use crate::entity::{Enemies, Enemy, POOL_SIZE as EN_POOL_SIZE, Slot as EnSlot, S
 use crate::fx::{Effect, Effects, POOL_SIZE, Script};
 use crate::game::Core;
 use crate::pbullet::{Facing, POOL_SIZE as PB_POOL_SIZE, PlayerBullet, PlayerBullets, Shot, Slot as PbSlot};
+use crate::player::{PLAYER_COUNT, Player, Players, Pods};
 use crate::scenery::{POOL_SIZE as SC_POOL_SIZE, Prop, Scenery};
 
 /// 一個領域的狀態與資料段之間的對應。
@@ -42,6 +43,7 @@ impl Core {
         self.pb.load(&self.ds);
         self.en.load(&self.ds);
         self.sc.load(&self.ds);
+        self.pl.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
@@ -51,6 +53,7 @@ impl Core {
         self.pb.store(&mut self.ds);
         self.en.store(&mut self.ds);
         self.sc.store(&mut self.ds);
+        self.pl.store(&mut self.ds);
     }
 }
 
@@ -505,9 +508,232 @@ impl Mirror for Scenery {
     }
 }
 
+// ---- 玩家 ----
+
+/// 存活位元組，`byte_1CFDD`：位元 0 是玩家 1，位元 4 是玩家 2。
+const PLAYERS_ALIVE: u16 = a(0x1CFDD);
+
+/// 一位玩家的變數在資料段的位移。兩位玩家的變數分在三段（血量在 `1CFDEh` 附近，砲座與狀態在 `1DA8Ah` 一帶，
+/// 位置在 `1DAC5h` 與 `1DB37h`），段內的間距也不同，所以逐項列，不用固定的位移差。
+///
+/// 玩家 1 的欄位與位移（玩家 2 的在 [`PLAYER_OFFSETS`]，兩邊逐項對應）：
+///
+/// | 欄位 | 位移 | 寬 | 欄位 | 位移 | 寬 |
+/// |---|---|---|---|---|---|
+/// | `hp` | `041Eh` | 2 | `pods.facing` | `0ECFh` | 2 |
+/// | `charge` | `0ECBh` | 2 | `pods.image` | `0ED4h` | 2 |
+/// | `pods.first` | `0ECDh` | 1 | `pods.anim` | `0ED6h` | 2 |
+/// | `pods.second` | `0ECEh` | 1 | `pods.col` | `0ED8h` | 2 |
+/// | `pods.row` | `0EDAh` | 2 | `pods.blit_x` | `0EE0h` | 2 |
+/// | `pods.blit_y` | `0EE2h` | 2 | `input_bits` | `0EE4h` | 1 |
+/// | `fired` | `0EE5h` | 1 | `beam_y` | `0EE6h` | 2 |
+/// | `weapon` | `0EE9h` | 2 | `flame` | `0EEBh` | 1 |
+/// | `image` | `0EFDh` | 2 | `hit` | `0F00h` | 1 |
+/// | `invincible` | `0F01h` | 1 | `dying` | `0F03h` | 1 |
+/// | `blit_y` | `0F05h` | 2 | `blit_x` | `0F07h` | 2 |
+/// | `row` | `0F09h` | 2 | `col` | `0F0Bh` | 2 |
+struct PlayerOffsets {
+    hp: u16,
+    charge: u16,
+    pod_first: u16,
+    pod_second: u16,
+    pod_facing: u16,
+    pod_image: u16,
+    pod_anim: u16,
+    pod_col: u16,
+    pod_row: u16,
+    pod_blit_x: u16,
+    pod_blit_y: u16,
+    input_bits: u16,
+    fired: u16,
+    beam_y: u16,
+    weapon: u16,
+    flame: u16,
+    image: u16,
+    hit: u16,
+    invincible: u16,
+    dying: u16,
+    blit_y: u16,
+    blit_x: u16,
+    row: u16,
+    col: u16,
+}
+
+const PLAYER_OFFSETS: [PlayerOffsets; PLAYER_COUNT] = [
+    PlayerOffsets {
+        hp: a(0x1CFDE),
+        charge: a(0x1DA8B),
+        pod_first: a(0x1DA8D),
+        pod_second: a(0x1DA8E),
+        pod_facing: a(0x1DA8F),
+        pod_image: a(0x1DA94),
+        pod_anim: a(0x1DA96),
+        pod_col: a(0x1DA98),
+        pod_row: a(0x1DA9A),
+        pod_blit_x: a(0x1DAA0),
+        pod_blit_y: a(0x1DAA2),
+        input_bits: a(0x1DAA4),
+        fired: a(0x1DAA5),
+        beam_y: a(0x1DAA6),
+        weapon: a(0x1DAA9),
+        flame: a(0x1DAAB),
+        image: a(0x1DABD),
+        hit: a(0x1DAC0),
+        invincible: a(0x1DAC1),
+        dying: a(0x1DAC3),
+        blit_y: a(0x1DAC5),
+        blit_x: a(0x1DAC7),
+        row: a(0x1DAC9),
+        col: a(0x1DACB),
+    },
+    PlayerOffsets {
+        hp: a(0x1CFE0),
+        charge: a(0x1DAED),
+        pod_first: a(0x1DAEF),
+        pod_second: a(0x1DAF0),
+        pod_facing: a(0x1DAF1),
+        pod_image: a(0x1DAF6),
+        pod_anim: a(0x1DAF8),
+        pod_col: a(0x1DAFA),
+        pod_row: a(0x1DAFC),
+        pod_blit_x: a(0x1DB02),
+        pod_blit_y: a(0x1DB04),
+        input_bits: a(0x1DB06),
+        fired: a(0x1DB07),
+        beam_y: a(0x1DB08),
+        weapon: a(0x1DB0B),
+        flame: a(0x1DB0D),
+        image: a(0x1DB17),
+        hit: a(0x1DB1A),
+        invincible: a(0x1DB1B),
+        dying: a(0x1DB1D),
+        blit_y: a(0x1DB1F),
+        blit_x: a(0x1DB21),
+        row: a(0x1DB37),
+        col: a(0x1DB39),
+    },
+];
+
+impl PlayerOffsets {
+    fn read(&self, ds: &Dseg) -> Player {
+        Player {
+            hp: ds.r16(self.hp),
+            charge: ds.r16(self.charge),
+            pods: Pods {
+                first: ds.r8(self.pod_first),
+                second: ds.r8(self.pod_second),
+                facing: ds.r16(self.pod_facing),
+                image: ds.r16(self.pod_image),
+                anim: ds.r16(self.pod_anim),
+                col: ds.r16(self.pod_col),
+                row: ds.r16(self.pod_row),
+                blit_x: ds.r16(self.pod_blit_x),
+                blit_y: ds.r16(self.pod_blit_y),
+            },
+            input_bits: ds.r8(self.input_bits),
+            fired: ds.r8(self.fired),
+            beam_y: ds.r16(self.beam_y),
+            weapon: ds.r16(self.weapon),
+            flame: ds.r8(self.flame),
+            image: ds.r16(self.image),
+            hit: ds.r8(self.hit),
+            invincible: ds.r8(self.invincible),
+            dying: ds.r8(self.dying),
+            blit_y: ds.r16(self.blit_y),
+            blit_x: ds.r16(self.blit_x),
+            row: ds.r16(self.row),
+            col: ds.r16(self.col),
+        }
+    }
+
+    fn write(&self, ds: &mut Dseg, p: &Player) {
+        ds.w16(self.hp, p.hp);
+        ds.w16(self.charge, p.charge);
+        ds.w8(self.pod_first, p.pods.first);
+        ds.w8(self.pod_second, p.pods.second);
+        ds.w16(self.pod_facing, p.pods.facing);
+        ds.w16(self.pod_image, p.pods.image);
+        ds.w16(self.pod_anim, p.pods.anim);
+        ds.w16(self.pod_col, p.pods.col);
+        ds.w16(self.pod_row, p.pods.row);
+        ds.w16(self.pod_blit_x, p.pods.blit_x);
+        ds.w16(self.pod_blit_y, p.pods.blit_y);
+        ds.w8(self.input_bits, p.input_bits);
+        ds.w8(self.fired, p.fired);
+        ds.w16(self.beam_y, p.beam_y);
+        ds.w16(self.weapon, p.weapon);
+        ds.w8(self.flame, p.flame);
+        ds.w16(self.image, p.image);
+        ds.w8(self.hit, p.hit);
+        ds.w8(self.invincible, p.invincible);
+        ds.w8(self.dying, p.dying);
+        ds.w16(self.blit_y, p.blit_y);
+        ds.w16(self.blit_x, p.blit_x);
+        ds.w16(self.row, p.row);
+        ds.w16(self.col, p.col);
+    }
+}
+
+impl Mirror for Players {
+    fn load(&mut self, ds: &Dseg) {
+        self.alive = ds.r8(PLAYERS_ALIVE);
+        for (ship, offsets) in self.ship.iter_mut().zip(&PLAYER_OFFSETS) {
+            *ship = offsets.read(ds);
+        }
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        ds.w8(PLAYERS_ALIVE, self.alive);
+        for (ship, offsets) in self.ship.iter().zip(&PLAYER_OFFSETS) {
+            offsets.write(ds, ship);
+        }
+    }
+}
+
+impl Players {
+    /// 從一份資料段讀出玩家狀態，給只有資料段複本的呼叫端用（`Game::player_status`、`Game::hud_status`）。
+    pub(crate) fn from_dseg(ds: &Dseg) -> Players {
+        let mut players = Players::default();
+        players.load(ds);
+        players
+    }
+}
+
+/// 玩家的三張形狀表（唯讀表格）。每張是 `寬, 高, 寬 × 高 位元組`，表格階段改成解析 `S.EXE` 得到的結構。
+/// 兩位玩家各有一份，內容相同，位址不同。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlayerShape {
+    /// 本體，5 × 1（玩家 1 在 `0F0Dh`，玩家 2 在 `0F7Bh`）。
+    Body,
+    /// 砲座，2 × 2（`0F16h`、`0F85h`）。
+    Pod,
+    /// 尾焰的髒格，3 × 3（`0F1Eh`、`0F8Dh`）。
+    Flame,
+}
+
+impl PlayerShape {
+    pub(crate) const fn table_offset(self, player: usize) -> u16 {
+        match (self, player) {
+            (PlayerShape::Body, 0) => 0x0F0D,
+            (PlayerShape::Pod, 0) => 0x0F16,
+            (PlayerShape::Flame, 0) => 0x0F1E,
+            (PlayerShape::Body, _) => 0x0F7B,
+            (PlayerShape::Pod, _) => 0x0F85,
+            (PlayerShape::Flame, _) => 0x0F8D,
+        }
+    }
+}
+
+/// 形狀表的寬與高。格值接在後面，要逐格讀時用 [`Core::stamp_shape`]。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Footprint {
+    pub width: u16,
+    pub height: u16,
+}
+
 // ---- 尚未搬走的共用資料段 ----
 //
-// 搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、玩家狀態、格網），一律經下面的具名存取函式。
+// 搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、輸入、格網），一律經下面的具名存取函式。
 
 impl Script {
     /// 動畫表在資料段的位移。唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。
@@ -646,49 +872,13 @@ impl Core {
 
 // ---- 別的領域擁有的共用變數 ----
 
-/// `byte_1CFDD`：存活的玩家，位元 0 是玩家 1，位元 4 是玩家 2。
-const PLAYERS_ALIVE: u16 = a(0x1CFDD);
-/// 玩家在格網上的位置：玩家 1 欄 `word_1DACB`、列 `word_1DAC9`；玩家 2 欄 `word_1DB39`、列 `word_1DB37`。
-const PLAYER_CELLS: [(u16, u16); 2] = [(a(0x1DACB), a(0x1DAC9)), (a(0x1DB39), a(0x1DB37))];
 /// `word_26872`：目前繪製頁的偏移，0 或 8000h。
 const DRAW_PAGE: u16 = a(0x26872);
 
 impl Core {
-    /// 玩家（0 是玩家 1，1 是玩家 2）是否存活。
-    pub(crate) fn player_alive(&self, player: usize) -> bool {
-        let bit = if player == 0 { 0x01 } else { 0x10 };
-        self.ds.r8(PLAYERS_ALIVE) & bit != 0
-    }
-
-    /// 玩家在格網上的位置：(欄, 列)。
-    pub(crate) fn player_cell(&self, player: usize) -> (u16, u16) {
-        let (col, row) = PLAYER_CELLS[player];
-        (self.ds.r16(col), self.ds.r16(row))
-    }
-
     /// 目前繪製頁的偏移：奇偶幀交替，0 或 8000h。
     pub(crate) fn draw_page(&self) -> u16 {
         self.ds.r16(DRAW_PAGE)
-    }
-
-    /// 測試用：設玩家的存活與位置。`None` 表示不存活，位置不動。
-    #[cfg(test)]
-    pub(crate) fn set_players(&mut self, players: [Option<(u16, u16)>; 2]) {
-        let mut alive = 0u8;
-        for (i, p) in players.into_iter().enumerate() {
-            if let Some((col, row)) = p {
-                alive |= if i == 0 { 0x01 } else { 0x10 };
-                self.set_player_cell(i, col, row);
-            }
-        }
-        self.ds.w8(PLAYERS_ALIVE, alive);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_player_cell(&mut self, player: usize, col: u16, row: u16) {
-        let (c, r) = PLAYER_CELLS[player];
-        self.ds.w16(c, col);
-        self.ds.w16(r, row);
     }
 
     #[cfg(test)]
@@ -707,14 +897,64 @@ impl Core {
     }
 }
 
-/// `byte_1CFDB`：目前的關卡字母，`C` 是第三關。
+/// `byte_1CFDB`：目前的關卡字母，`A` 是第一關，`C` 是第三關。
 const STAGE_LETTER: u16 = a(0x1CFDB);
+const STAGE_ONE: u8 = b'A';
 const STAGE_THREE: u8 = b'C';
 /// `word_1CFE2`：關卡的幀計數。
 const STAGE_FRAME: u16 = a(0x1CFE2);
 /// `byte_1CFAD`：過關旗標，`N` 進行中，`F` 已過關（主迴圈改播連爆）。
 const STAGE_CLEAR_FLAG: u16 = a(0x1CFAD);
 const STAGE_CLEARED: u8 = b'F';
+/// `byte_1CFDC`：展示旗標，`Y` 是正在播放展示錄影（標題流程設，`N` 是正式遊戲）。
+const DEMO_FLAG: u16 = a(0x1CFDC);
+/// 展示錄影在資料段的起點，`DM1.LCK` 的 3000 位元組。
+const DEMO_RECORD: u16 = 0xAAE2;
+/// `word_273A5`：無敵秘技旗標（低位元組 `Y` 是開）。
+const CHEAT_FLAG: u16 = a(0x273A5);
+const CHEAT_ON: u8 = b'Y';
+
+/// 按鍵狀態表，`2748Bh + 掃描碼`，每鍵一個位元組：1 按住，2 剛放開。INT 9（`flow.rs`）維護。
+const KEY_TABLE: u16 = a(0x2748B);
+const KEY_HELD: u8 = 1;
+
+/// 開火旗標的值：`Y` 成立，`N` 不成立。
+const FLAG_ON: u8 = b'Y';
+const FLAG_OFF: u8 = b'N';
+
+/// 玩家的開火旗標，INT 9 的 `sub_1A9B5` 依按鍵事件設成 `Y`，玩家邏輯處理後清成 `N`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FireFlag {
+    /// 開火鍵放開過，下一次按下算新按（玩家 1 `273A7h`，玩家 2 `273A8h`）。
+    NewPress,
+    /// 本幀有開火鍵事件，含按住時的自動重複（`273A9h`、`273ABh`）。
+    Event,
+    /// 轉向鍵被按下（`273AAh`、`273ACh`）。
+    Turn,
+}
+
+impl FireFlag {
+    fn offset(self, player: usize) -> u16 {
+        match (self, player) {
+            (FireFlag::NewPress, 0) => a(0x273A7),
+            (FireFlag::Event, 0) => a(0x273A9),
+            (FireFlag::Turn, 0) => a(0x273AA),
+            (FireFlag::NewPress, _) => a(0x273A8),
+            (FireFlag::Event, _) => a(0x273AB),
+            (FireFlag::Turn, _) => a(0x273AC),
+        }
+    }
+}
+
+/// 過關旗標是不是已設。`Game::player_status` 只有資料段複本，所以是自由函式。
+pub(crate) fn stage_cleared(ds: &Dseg) -> bool {
+    ds.r8(STAGE_CLEAR_FLAG) == STAGE_CLEARED
+}
+
+/// 是不是在播放展示錄影。
+pub(crate) fn demo_playing(ds: &Dseg) -> bool {
+    ds.r8(DEMO_FLAG) == b'Y'
+}
 /// 難度加成：`word_1E6B2` 加在敵人的耐久上，`word_1E6B4` 加在開火亂數上（文件第 9.1 節）。
 const DIFFICULTY_HP: u16 = a(0x1E6B2);
 const DIFFICULTY_FIRE: u16 = a(0x1E6B4);
@@ -737,6 +977,56 @@ impl Core {
     /// 設過關旗標（原版 `byte_1CFAD` = `F`）。
     pub(crate) fn mark_stage_cleared(&mut self) {
         self.ds.w8(STAGE_CLEAR_FLAG, STAGE_CLEARED);
+    }
+
+    /// 過關旗標是不是已設（原版 `byte_1CFAD` = `F`）：主迴圈改播連爆，玩家邏輯停止。
+    pub(crate) fn stage_cleared(&self) -> bool {
+        stage_cleared(&self.ds)
+    }
+
+    /// 是不是第一關（原版 `byte_1CFDB` = `A`）。
+    pub(crate) fn on_first_stage(&self) -> bool {
+        self.ds.r8(STAGE_LETTER) == STAGE_ONE
+    }
+
+    /// 是不是在播放展示錄影（原版 `byte_1CFDC` = `Y`）。
+    pub(crate) fn demo_playing(&self) -> bool {
+        demo_playing(&self.ds)
+    }
+
+    /// 無敵秘技（原版 `word_273A5` 的低位元組是 `Y`）：玩家受傷不減血。INT 9 的秘技序列與 `Game::set_invincible` 寫。
+    pub(crate) fn invincible_cheat(&self) -> bool {
+        self.ds.r8(CHEAT_FLAG) == CHEAT_ON
+    }
+
+    /// 展示錄影（`DM1.LCK`，`AAE2h` 起 3000 位元組）第 `index` 個位元組，位址 16 位元環繞。
+    /// 每幀一個位元組，記錄玩家 1 的輸入位元（[`crate::player::InputBit`]）。
+    pub(crate) fn demo_byte(&self, index: u16) -> u8 {
+        self.ds.r8(DEMO_RECORD.wrapping_add(index))
+    }
+
+    /// 非展示時，玩家 1 把本幀的輸入位元錄在展示錄影的第 `index` 個位元組。
+    pub(crate) fn record_demo_byte(&mut self, index: u16, v: u8) {
+        self.ds.w8(DEMO_RECORD.wrapping_add(index), v);
+    }
+
+    /// 按鍵是不是按住（按鍵狀態表 `2748Bh + 掃描碼` 的值是 1；2 是剛放開）。表由 INT 9 維護。
+    pub(crate) fn key_held(&self, scan: u8) -> bool {
+        self.ds.r8(KEY_TABLE.wrapping_add(u16::from(scan))) == KEY_HELD
+    }
+
+    /// 展示模式還原輸入時直接寫按鍵狀態表。
+    pub(crate) fn set_key(&mut self, scan: u8, held: bool) {
+        self.ds.w8(KEY_TABLE.wrapping_add(u16::from(scan)), u8::from(held));
+    }
+
+    /// 玩家的開火旗標（`273A7h` 一族，INT 9 的 `sub_1A9B5` 設，玩家邏輯清）。
+    pub(crate) fn fire_flag(&self, player: usize, flag: FireFlag) -> bool {
+        self.ds.r8(flag.offset(player)) == FLAG_ON
+    }
+
+    pub(crate) fn set_fire_flag(&mut self, player: usize, flag: FireFlag, on: bool) {
+        self.ds.w8(flag.offset(player), if on { FLAG_ON } else { FLAG_OFF });
     }
 
     /// 難度對敵人耐久的加成（原版 `word_1E6B2`，0 或 1）。
@@ -770,6 +1060,18 @@ impl Core {
         self.ds.w8(STAGE_LETTER, letter);
     }
 
+    /// 測試用：設展示旗標。
+    #[cfg(test)]
+    pub(crate) fn set_demo_playing(&mut self, on: bool) {
+        self.ds.w8(DEMO_FLAG, if on { b'Y' } else { b'N' });
+    }
+
+    /// 測試用：設無敵秘技旗標。
+    #[cfg(test)]
+    pub(crate) fn set_invincible_cheat(&mut self, on: bool) {
+        self.ds.w16(CHEAT_FLAG, u16::from(if on { CHEAT_ON } else { b'N' }));
+    }
+
     /// 測試用：設關卡幀計數。
     #[cfg(test)]
     pub(crate) fn set_stage_frame(&mut self, frame: u16) {
@@ -781,12 +1083,6 @@ impl Core {
     pub(crate) fn set_difficulty(&mut self, hp: u16, fire: u16) {
         self.ds.w16(DIFFICULTY_HP, hp);
         self.ds.w16(DIFFICULTY_FIRE, fire);
-    }
-
-    /// 測試用：過關旗標是不是已設。
-    #[cfg(test)]
-    pub(crate) fn stage_cleared(&self) -> bool {
-        self.ds.r8(STAGE_CLEAR_FLAG) == STAGE_CLEARED
     }
 
     /// 測試用：目前的暫存區選擇。
@@ -810,6 +1106,34 @@ pub(crate) const GRID_COLS: u16 = 0x28;
 const GRID1_BYTES: u16 = 0x320;
 /// 一列最後可測的格相對列起點的位移加 1：列尾（欄 39）嚴格在它之前。
 const GRID1_ROW_SPAN: u16 = 0x27;
+/// 玩家掃描用的格網窗與列寬：玩家掃 G1、G2 時，位址要嚴格在窗的起點與上限之間，也嚴格在列起點加 45h 之前
+/// （比玩家彈的 27h 寬）。
+const SCAN_ROW_SPAN: u16 = 0x45;
+
+/// 玩家掃描的格網。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScanGrid {
+    /// G1 實體格：窗的上限 `217Ch`，比 G1 的終點 `1E2Ah` 多出去的部分是 G1 之後的資料。
+    Entities,
+    /// G2 敵彈格：窗的上限 `3266h`，G2 之後直到敵彈池指標表之前的資料。
+    Bullets,
+}
+
+impl ScanGrid {
+    const fn start(self) -> u16 {
+        match self {
+            ScanGrid::Entities => GRID1_START,
+            ScanGrid::Bullets => GRID2_START,
+        }
+    }
+
+    const fn limit(self) -> u16 {
+        match self {
+            ScanGrid::Entities => 0x217C,
+            ScanGrid::Bullets => 0x3266,
+        }
+    }
+}
 /// 玩家彈取 G1 列起點時，列（無號）大於等於這個值一律改取 [`GRID1_FAR_ROW`]。
 const GRID1_NEAR_ROWS: u16 = 0x17C;
 /// 越界列的索引：列基底表之後第 1F4h 項，位址 `1EF2h`，G1 之後的資料，實測為 0。
@@ -828,8 +1152,40 @@ impl Core {
     /// 小於的列直接以列號索引列基底表，所以列 14h 至 17Bh 讀到的是 G1 自己的內容，原版行為。
     /// 列基底表第 14h 項就是 G1 的前兩個位元組，列 0 之前的負列落在越界列。
     pub(crate) fn grid1_row_start(&self, row: u16) -> u16 {
+        self.row_base_offset(row).wrapping_add(GRID1_START)
+    }
+
+    /// 列基底表（`1B0Ah`）的第 `row` 項：列（無號）大於等於 17Ch，包含負列，一律取索引 1F4h。
+    /// G1、G2 的玩家掃描與玩家彈共用。
+    fn row_base_offset(&self, row: u16) -> u16 {
         let row = if row >= GRID1_NEAR_ROWS { GRID1_FAR_ROW } else { row };
-        self.ds.r16(row.wrapping_shl(1).wrapping_add(GRID_ROW_BASE_TABLE)).wrapping_add(GRID1_START)
+        self.ds.r16(row.wrapping_shl(1).wrapping_add(GRID_ROW_BASE_TABLE))
+    }
+
+    /// 玩家掃描的一格（原版 `sub_14C61`、`sub_14C3D`、`sub_14D68`、`sub_14BF4` 一族算位址，加上迴圈裡的範圍檢查）：
+    /// 位址須嚴格在格網窗之內，也嚴格在該列起點之後、列起點加 45h 之前。窗比格網大，列加 45h 比一列的 28h 寬，
+    /// 所以位置正常時範圍檢查都成立；列號落在表外時掃到的是格網之外的資料，照原版。不合格回傳 `None`。
+    pub(crate) fn scan_cell(&self, grid: ScanGrid, row_start: u16, addr: u16) -> Option<u8> {
+        let inside = addr < grid.limit() && addr > grid.start() && addr < row_start.wrapping_add(SCAN_ROW_SPAN) && addr > row_start;
+        inside.then(|| self.ds.r8(addr))
+    }
+
+    /// 玩家掃描時第 `row` 列的起點：列基底表加格網起點。
+    pub(crate) fn scan_row_start(&self, grid: ScanGrid, row: u16) -> u16 {
+        self.row_base_offset(row).wrapping_add(grid.start())
+    }
+
+    /// 玩家本體佔的 G3 髒格（原版 `sub_14A2C`、`sub_1555A`）：從 (`row`, `col`) 起 `rows` 列 × `cols` 欄，
+    /// 每格寫一個字組 `value`，連奇數位元組一起覆寫。位址是 G3 起點加 `2 × (低位元組(row) × 28h + col + 1)`，
+    /// 不經列起點表也不檢查範圍。
+    pub(crate) fn grid3_mark_block(&mut self, row: u16, col: u16, rows: u16, cols: u16, value: u16) {
+        let first = (u16::from(row as u8) * GRID_COLS).wrapping_add(col).wrapping_add(1).wrapping_shl(1);
+        for r in 0..rows {
+            for c in 0..cols {
+                let at = first.wrapping_add(r * GRID3_ROW_BYTES).wrapping_add(c * 2);
+                self.ds.w16(GRID3_START.wrapping_add(at), value);
+            }
+        }
     }
 
     /// `addr` 的 G1 格值，沒有範圍檢查（追蹤彈掃描與雷射掃描直接讀）。
@@ -922,7 +1278,7 @@ impl Core {
 }
 
 /// G3 格網（碰撞用的髒格，每列 50h 位元組，奇數位元組）的範圍。
-const GRID3_START: u16 = 0x964C;
+pub(crate) const GRID3_START: u16 = 0x964C;
 const GRID3_END: u16 = 0x9C3C;
 /// 一列 40 格，每格 2 位元組，所以列距 50h，列內可寫的範圍是 `[第一格, 第一格 + 4Eh]`。
 pub(crate) const GRID3_ROW_BYTES: u16 = 0x50;
@@ -1233,6 +1589,209 @@ mod tests {
     }
 
     #[test]
+    fn players_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut pl = Players::default();
+        pl.load(&ds);
+        let mut same = ds.clone();
+        pl.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        pl.store(&mut blank);
+        let mut back = Players::default();
+        back.load(&blank);
+        assert_eq!((back.alive, back.ship), (pl.alive, pl.ship));
+        assert_ne!(pl.ship, Players::default().ship, "測試資料不該全 0");
+        assert_ne!(pl.ship[0], pl.ship[1]);
+    }
+
+    #[test]
+    fn player_fields_land_at_the_documented_offsets() {
+        // 每個欄位一個獨一無二的值，位移是機器碼的線性位址減 1CBC0h，獨立列在這裡，不引用上面的常數。
+        // (欄位, 玩家 1 的位移, 玩家 2 的位移, 寬)
+        let layout: [(&str, [u16; 2], u8); 24] = [
+            ("hp", [0x041E, 0x0420], 2),
+            ("charge", [0x0ECB, 0x0F2D], 2),
+            ("pods.first", [0x0ECD, 0x0F2F], 1),
+            ("pods.second", [0x0ECE, 0x0F30], 1),
+            ("pods.facing", [0x0ECF, 0x0F31], 2),
+            ("pods.image", [0x0ED4, 0x0F36], 2),
+            ("pods.anim", [0x0ED6, 0x0F38], 2),
+            ("pods.col", [0x0ED8, 0x0F3A], 2),
+            ("pods.row", [0x0EDA, 0x0F3C], 2),
+            ("pods.blit_x", [0x0EE0, 0x0F42], 2),
+            ("pods.blit_y", [0x0EE2, 0x0F44], 2),
+            ("input_bits", [0x0EE4, 0x0F46], 1),
+            ("fired", [0x0EE5, 0x0F47], 1),
+            ("beam_y", [0x0EE6, 0x0F48], 2),
+            ("weapon", [0x0EE9, 0x0F4B], 2),
+            ("flame", [0x0EEB, 0x0F4D], 1),
+            ("image", [0x0EFD, 0x0F57], 2),
+            ("hit", [0x0F00, 0x0F5A], 1),
+            ("invincible", [0x0F01, 0x0F5B], 1),
+            ("dying", [0x0F03, 0x0F5D], 1),
+            ("blit_y", [0x0F05, 0x0F5F], 2),
+            ("blit_x", [0x0F07, 0x0F61], 2),
+            ("row", [0x0F09, 0x0F77], 2),
+            ("col", [0x0F0B, 0x0F79], 2),
+        ];
+        let value = |who: usize, k: usize| -> u16 { 0x0101 * (who as u16 * 0x30 + k as u16 + 1) };
+        let mut pl = Players { alive: 0x5A, ..Players::default() };
+        for who in 0..PLAYER_COUNT {
+            let get = |k: usize| value(who, k);
+            let p = &mut pl.ship[who];
+            p.hp = get(0);
+            p.charge = get(1);
+            p.pods.first = get(2) as u8;
+            p.pods.second = get(3) as u8;
+            p.pods.facing = get(4);
+            p.pods.image = get(5);
+            p.pods.anim = get(6);
+            p.pods.col = get(7);
+            p.pods.row = get(8);
+            p.pods.blit_x = get(9);
+            p.pods.blit_y = get(10);
+            p.input_bits = get(11) as u8;
+            p.fired = get(12) as u8;
+            p.beam_y = get(13);
+            p.weapon = get(14);
+            p.flame = get(15) as u8;
+            p.image = get(16);
+            p.hit = get(17) as u8;
+            p.invincible = get(18) as u8;
+            p.dying = get(19) as u8;
+            p.blit_y = get(20);
+            p.blit_x = get(21);
+            p.row = get(22);
+            p.col = get(23);
+        }
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        pl.store(&mut ds);
+        assert_eq!(ds.r8(0x041D), 0x5A, "存活位元組在 041Dh（byte_1CFDD）");
+        for (k, (name, offsets, width)) in layout.iter().enumerate() {
+            for who in 0..PLAYER_COUNT {
+                let want = value(who, k);
+                let got = if *width == 2 { ds.r16(offsets[who]) } else { u16::from(ds.r8(offsets[who])) };
+                let want = if *width == 2 { want } else { want & 0xFF };
+                assert_eq!(got, want, "玩家 {} 的 {name} 在 {:04X}h", who + 1, offsets[who]);
+            }
+        }
+        // 寫了的位元組數剛好等於各欄位寬度的總和（值都不是 0）：沒有欄位重疊，也沒有碰其他位元組。
+        let touched = ds.bytes().iter().filter(|&&b| b != 0).count();
+        let expected: usize = layout.iter().map(|(_, _, w)| usize::from(*w)).sum::<usize>() * PLAYER_COUNT + 1;
+        assert_eq!(touched, expected, "非零位元組數等於欄位總寬");
+        let mut back = Players::default();
+        back.load(&ds);
+        assert_eq!((back.alive, back.ship), (pl.alive, pl.ship));
+    }
+
+    #[test]
+    fn the_player_work_variables_that_left_the_struct_are_not_written_by_store() {
+        // 這些位移在原版是函式內先寫後讀的工作變數（DS_EXEMPT），Mirror 不碰。
+        let mut pl = Players::default();
+        for p in &mut pl.ship {
+            *p = Player { hp: 0xFFFF, col: 0xFFFF, row: 0xFFFF, ..Player::default() };
+        }
+        let mut ds = Dseg::from_image(&vec![0xAAu8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000]);
+        pl.store(&mut ds);
+        for off in [0x0ECA, 0x0EDC, 0x0EDD, 0x0EDE, 0x0EDF, 0x0EE8, 0x0F2C, 0x0F3E, 0x0F3F, 0x0F40, 0x0F41, 0x0F4A] {
+            assert_eq!(ds.r8(off), 0xAA, "{off:04X}h 不屬於結構");
+        }
+    }
+
+    #[test]
+    fn player_shapes_and_flags_are_read_from_the_documented_places() {
+        let mut c = core();
+        // 形狀表：玩家 1 本體 0F0Dh、砲座 0F16h、尾焰 0F1Eh；玩家 2 的 0F7Bh、0F85h、0F8Dh。
+        let table = [(PlayerShape::Body, 0x0F0D, 0x0F7B), (PlayerShape::Pod, 0x0F16, 0x0F85), (PlayerShape::Flame, 0x0F1E, 0x0F8D)];
+        for (shape, one, two) in table {
+            assert_eq!((shape.table_offset(0), shape.table_offset(1)), (one, two));
+        }
+        // 開火旗標：玩家 1 在 273A7h、273A9h、273AAh，玩家 2 在 273A8h、273ABh、273ACh（dseg 位移 A7E7h 起）。
+        for (player, flag, off) in [
+            (0, FireFlag::NewPress, 0xA7E7u16),
+            (0, FireFlag::Event, 0xA7E9),
+            (0, FireFlag::Turn, 0xA7EA),
+            (1, FireFlag::NewPress, 0xA7E8),
+            (1, FireFlag::Event, 0xA7EB),
+            (1, FireFlag::Turn, 0xA7EC),
+        ] {
+            c.set_fire_flag(player, flag, true);
+            assert_eq!(c.ds.r8(off), b'Y');
+            c.set_fire_flag(player, flag, false);
+            assert_eq!(c.ds.r8(off), b'N');
+        }
+        // 按鍵狀態表在 A8CBh + 掃描碼，值 1 才算按住（2 是剛放開）。
+        c.ds.w8(0xA8CB + 0x48, 1);
+        c.ds.w8(0xA8CB + 0x50, 2);
+        assert!(c.key_held(0x48) && !c.key_held(0x50) && !c.key_held(0x4B));
+        c.set_key(0x4B, true);
+        assert_eq!(c.ds.r8(0xA8CB + 0x4B), 1);
+        c.set_key(0x4B, false);
+        assert_eq!(c.ds.r8(0xA8CB + 0x4B), 0);
+        // 展示錄影在 AAE2h 起，位址 16 位元環繞。
+        c.record_demo_byte(5, 0x7E);
+        assert_eq!(c.ds.r8(0xAAE2 + 5), 0x7E);
+        assert_eq!(c.demo_byte(0xFFFF), c.ds.r8(0xAAE2u16.wrapping_add(0xFFFF)));
+    }
+
+    #[test]
+    fn player_scan_window_has_its_own_limits() {
+        let mut c = core();
+        c.fill_row_tables();
+        // G1：嚴格大於 1B32h、嚴格小於 217Ch；每列嚴格在列起點之後、列起點加 45h 之前（玩家彈是 27h）。
+        let row3 = c.scan_row_start(ScanGrid::Entities, 3);
+        assert_eq!(row3, GRID1_START + 3 * 0x28);
+        assert_eq!(c.scan_cell(ScanGrid::Entities, row3, row3), None, "列起點本身不掃");
+        assert!(c.scan_cell(ScanGrid::Entities, row3, row3 + 1).is_some());
+        assert!(c.scan_cell(ScanGrid::Entities, row3, row3 + 0x44).is_some(), "欄 44h 還在窗內，比玩家彈寬");
+        assert_eq!(c.scan_cell(ScanGrid::Entities, row3, row3 + 0x45), None);
+        assert_eq!(c.scan_cell(ScanGrid::Entities, GRID1_START - 8, GRID1_START), None, "G1 起點本身不掃");
+        assert!(c.scan_cell(ScanGrid::Entities, GRID1_START - 8, GRID1_START + 1).is_some());
+        assert!(c.scan_cell(ScanGrid::Entities, 0x2150, 0x217B).is_some());
+        assert_eq!(c.scan_cell(ScanGrid::Entities, 0x2150, 0x217C), None, "上限 217Ch 不掃");
+        // G2：2C1Ch 與 3266h。
+        let row5 = c.scan_row_start(ScanGrid::Bullets, 5);
+        assert_eq!(row5, GRID2_START + 5 * 0x28);
+        assert!(c.scan_cell(ScanGrid::Bullets, row5, row5 + 1).is_some());
+        assert_eq!(c.scan_cell(ScanGrid::Bullets, GRID2_START - 8, GRID2_START), None);
+        assert!(c.scan_cell(ScanGrid::Bullets, 0x3240, 0x3265).is_some());
+        assert_eq!(c.scan_cell(ScanGrid::Bullets, 0x3240, 0x3266), None);
+        // 負列與 17Ch 以上的列取列基底表索引 1F4h（1EF2h），不像敵彈的 G2 寫入取索引 14h。
+        c.ds.w16(0x1EF2, 0x0040);
+        for row in [0x17Cu16, 0xFFFD] {
+            assert_eq!(c.scan_row_start(ScanGrid::Entities, row), GRID1_START + 0x40);
+            assert_eq!(c.scan_row_start(ScanGrid::Bullets, row), GRID2_START + 0x40);
+        }
+        assert_ne!(c.scan_row_start(ScanGrid::Bullets, 0xFFFD), c.grid2_row_base(0xFFFD), "玩家掃描與敵彈寫入的越界列規則不同");
+    }
+
+    #[test]
+    fn grid3_mark_block_writes_words_without_a_range_check_and_uses_the_low_byte_of_the_row() {
+        let mut c = core();
+        c.ds.w8(GRID3_START + 1, 0x77);
+        c.grid3_mark_block(0, 0, 2, 4, 1);
+        // 第 0 列第 0 欄在 G3 起點加 2；每格一個字組 0001h，奇數位元組被蓋成 0，相鄰格之間隔 2 位元組，列距 50h。
+        for (row, col) in [(0u16, 0u16), (0, 3), (1, 0), (1, 3)] {
+            let at = GRID3_START + 2 + row * GRID3_ROW_BYTES + 2 * col;
+            assert_eq!((c.ds.r8(at), c.ds.r8(at + 1)), (1, 0), "列 {row} 欄 {col}");
+        }
+        assert_eq!(c.ds.r8(GRID3_START + 1), 0x77, "起點前一個位元組不動");
+        assert_eq!(c.ds.r8(GRID3_START + 2 + 8), 0, "第 5 欄不標");
+        // 列只取低位元組：列 101h 與列 1 同位址。
+        let mut a = core();
+        let mut b = core();
+        a.grid3_mark_block(0x101, 7, 1, 1, 0xBEEF);
+        b.grid3_mark_block(1, 7, 1, 1, 0xBEEF);
+        assert_eq!(a.ds.bytes(), b.ds.bytes());
+        // 不經範圍檢查：列 20（G3 之外）照寫。
+        let mut c = core();
+        c.grid3_mark_block(20, 0, 1, 1, 0x0001);
+        assert_eq!(c.ds.r16(GRID3_START + 2 + 20 * GRID3_ROW_BYTES), 1);
+    }
+
+    #[test]
     fn grid4_cell_addr_is_start_plus_row_table_plus_two_cols_plus_one() {
         let mut c = core();
         c.fill_row_tables();
@@ -1470,17 +2029,6 @@ mod tests {
         let b = c.bullet_template(Template::Flash);
         assert_eq!(b.to_words(), std::array::from_fn(|k| 0x500 + k as u16));
         assert_eq!(c.bullet_template(Template::WideFlash), Bullet::default());
-    }
-
-    #[test]
-    fn player_accessors_read_the_player_variables() {
-        let mut c = core();
-        c.set_players([Some((3, 4)), Some((5, 6))]);
-        assert_eq!((c.player_alive(0), c.player_alive(1)), (true, true));
-        assert_eq!((c.player_cell(0), c.player_cell(1)), ((3, 4), (5, 6)));
-        c.set_players([None, Some((9, 8))]);
-        assert_eq!((c.player_alive(0), c.player_alive(1)), (false, true));
-        assert_eq!(c.player_cell(1), (9, 8));
     }
 
     #[test]

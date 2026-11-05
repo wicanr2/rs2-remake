@@ -6,6 +6,7 @@ use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
 use crate::mirror::{enemy_record_link, pb_record_link};
 use crate::pbullet::{Facing, PlayerBullet};
+use crate::player::Pickup;
 
 fn game(fixes: Fixes) -> Core {
     let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
@@ -87,15 +88,15 @@ fn bullet_slot_carry_on_keeps_item_classification() {
     // 道具形狀 81h 配上槽號 15 以上，原版進位成 90h，判定落空變成傷害。
     let mut off = game(Fixes::NONE);
     let di = write_bullet_cell(&mut off, 16, 0x81);
-    off.r.set_al(off.ds.r8(di));
-    off.s14cd4();
-    assert_eq!(off.ds.r8(a(0x1DAC0)), b'Y', "原版當成傷害");
+    let cell = off.ds.r8(di);
+    assert_eq!(off.touch_bullet_cell(0, cell), None, "原版進位後判定落空");
+    assert_eq!(off.pl.ship[0].hit, b'Y', "原版當成傷害");
 
     let mut on = game(Fixes::ALL);
     let di = write_bullet_cell(&mut on, 16, 0x81);
-    on.r.set_al(on.ds.r8(di));
-    on.s14cd4();
-    assert_eq!(on.ds.r8(a(0x1DAA8)), 0x80, "修正後判定成道具");
+    let cell = on.ds.r8(di);
+    assert_eq!(on.touch_bullet_cell(0, cell), Some(Pickup::Laser), "修正後判定成道具");
+    assert_ne!(on.pl.ship[0].hit, b'Y');
 }
 
 #[test]
@@ -133,16 +134,15 @@ fn armor_cell_on_leaves_dseg_0020() {
 
 #[test]
 fn armor_cell_pod_contact_path() {
+    // 砲座接觸與玩家彈共用 `damage_entity_at_cell`；整條掃描路徑在 `player/contact.rs` 的測試。
     let mut off = game(Fixes::NONE);
     off.ds.w16(0x0020, 0x0165);
-    off.ds.w8(a(0x1DA8A), 0xFE);
-    off.s14c18();
+    off.damage_entity_at_cell(0xFE, 1);
     assert_eq!(off.ds.r16(0x0020), 0x0166);
 
     let mut on = game(Fixes::ALL);
     on.ds.w16(0x0020, 0x0165);
-    on.ds.w8(a(0x1DA8A), 0xFE);
-    on.s14c18();
+    on.damage_entity_at_cell(0xFE, 1);
     assert_eq!(on.ds.r16(0x0020), 0x0165);
 }
 

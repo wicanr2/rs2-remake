@@ -1,1951 +1,1134 @@
-//! 玩家輸入、移動、命中、砲座與繪製（含玩家 2），以及頭目段背景 `sub_15906`。
-//! 逐函式移植自機器碼，查法見 `tools/q.sh`。規格：`docs/spec/001-rust-first-stage.md`。
+//! 玩家：輸入、移動、開火、砲座、命中與繪製。兩位玩家共用同一份程式。
 //!
-//! 玩家 1 與玩家 2 的函式一一平行，位址對照：
-//! `14458`～`14D68` 對 `14FC5`～`15896`（玩家 1 的本體在 `1DAC5h`～`1DAC9h`，玩家 2 在 `1DB1Fh`～`1DB37h`）。
-//! 兩邊都要照各自的機器碼寫，不共用，因為有些常數與次序不同（例如砲座像素偏移 `32h` 對 `14h`）。
+//! 原版把玩家 1（`sub_14458` 一族，變數在 `1DA8Ah` 至 `1DACBh`）與玩家 2（`sub_14F92` 一族，變數在 `1DAECh`
+//! 至 `1DB39h`）各抄一遍，機器碼逐項平行。這裡只有一份 [`Player`] 結構與一組函式，兩位的差異都在 [`Style`]
+//! 這張表：鍵位、本體圖、砲座偏移、發射閃光、展示錄影的讀法。表裡每一項都對照過兩邊的機器碼。
 //!
-//! 暫存器照原版走 `self.r`。`mov ax, seg dseg` 與 `mov ds/es, ax` 不移植，
-//! 其後 `ax` 的殘值在原版隨載入位址變動，沒有任何讀取端依賴它。
-//! `push`/`pop` 配對用區域變數保存還原。
+//! 狀態與資料段位移的對應在 `mirror.rs`，這個檔案不出現原版位移。
+//!
+//! | 入口 | 原版 |
+//! |---|---|
+//! | [`Core::update_player`] | `sub_14458`、`sub_14F92`：展示輸入、輸入與移動、錄製 |
+//! | [`Core::draw_player`] | `sub_14704`、`sub_15232`：砲座、本體、撿取光柱、碰撞、發射閃光、尾焰 |
+//! | [`Core::place_players_for_stage`] | `sub_14F47`、`sub_158BA`：每關開始的位置，第一關或展示模式另重設裝備 |
+//! | [`Core::player_alive`]、[`Core::player_cell`] | 敵人與敵彈讀玩家位置 |
+//!
+//! 檔案分工：本檔是狀態、常數、輸入與移動；`player/contact.rs` 是碰撞、撿取與升級；`player/draw.rs` 是砲座與繪製。
+//!
+//! 原版函式對照（玩家 1 / 玩家 2 / 新名）：
+//!
+//! | 原版 | 新名 |
+//! |---|---|
+//! | `sub_14497` / `sub_14FC5` | [`Core::replay_demo_input`] |
+//! | `sub_14501` / `sub_1502F` | [`Core::control_player`]，拆成 [`Core::steer`]、[`Core::turn_pods`]、[`Core::release_charge`]、[`Core::fire_main`] |
+//! | `sub_14474` / `sub_14FAE`（空） | [`Core::record_demo_input`] |
+//! | `sub_14679` / `sub_151A7` | [`Core::die_step`] |
+//! | `sub_146AC`、`146C3`、`146DA`、`146F2` / `151DA`、`151F1`、`15208`、`15220` | [`Player::move_up`]、`move_down`、`move_right`、`move_left` |
+//! | `sub_14F47` / `sub_158BA` | [`Core::place_players_for_stage`] |
+//! | `sub_14704` / `sub_15232` | [`Core::draw_player`] |
+//! | `sub_1480A` / `sub_15338` | [`Core::fly_pods`] |
+//! | `sub_14908`、`1496D`、`149D2` / `15436`、`1549B`、`15500` | [`Core::advance_pods`] |
+//! | `sub_147BC` / `sub_152EA` | [`Core::draw_pickup_beam`] |
+//! | `sub_1478B` / `sub_152B9` | [`Core::draw_muzzle_flash`] |
+//! | `sub_147E1` / `sub_1530F` | [`Core::collide_player`] |
+//! | `sub_14A2C` / `sub_1555A` | [`Core::mark_body_cells`] |
+//! | `sub_14A59` / `sub_15587` | [`Core::mark_flame_cells`]（走 [`Core::stamp_shape`]） |
+//! | `sub_14A90` / `sub_155BE` | [`Core::body_touches_terrain`] |
+//! | `sub_14B1E` / `sub_1564C` | [`Core::body_touches_entities`] |
+//! | `sub_14B63`、`sub_14C18` / `sub_15691`、`sub_15746` | [`Core::pod_touches_entities`]（走 [`Core::damage_entity_at_cell`]） |
+//! | `sub_14BAE` / `sub_156DC` | [`Core::pod_shields_bullets`] |
+//! | `sub_14C85`、`14CD4`、`14D04` / `sub_157B3`、`15802`、`15832` | [`Core::body_touches_bullets`]、[`Core::touch_bullet_cell`]、[`Core::upgrade`] |
+//! | `sub_14AD7`、`14AFC`、`14BF4`、`14C3D`、`14C61`、`14D68` 與玩家 2 的同型函式 | 算掃描位址，併入 [`Core::scan_footprint`] |
+//!
+//! 頭目段背景（原版 `sub_15906` 一族）原本和玩家擠在同一個檔案，不屬於這個領域，搬到 `boss_scroll.rs`。
+//!
+//! 之後的強化模式（規格 005）要換的地方都是獨立的名字：移動步長與邊界（[`ROW_STEP`]、[`COL_STEP`]、
+//! [`Player::can_move_up`] 一族）、開火決策（[`Core::fire_main`]、[`Core::release_charge`]、[`SWEEP_CHARGE`]）、
+//! 砲座狀態（[`Pods`]、[`Core::advance_pods`]、[`POD_FRAMES`]）。
 
-use crate::draw::Pool;
-use crate::dseg::a;
+mod contact;
+mod draw;
+
+#[cfg(test)]
+pub(crate) use contact::Pickup;
+
 use crate::fx::EffectKind;
 use crate::game::Core;
+use crate::mirror::FireFlag;
 use crate::pbullet::Facing;
 
+/// 玩家數。
+pub(crate) const PLAYER_COUNT: usize = 2;
+
+/// 旗標位元組：`Y` 成立，`N` 不成立。
+const YES: u8 = b'Y';
+const NO: u8 = b'N';
+
+/// 砲座與主機的朝向字組：`>` 朝右，`<` 朝左（判斷只看是不是 `>`）。
+const FACING_RIGHT: u16 = b'>' as u16;
+const FACING_LEFT: u16 = b'<' as u16;
+
+// ---- 移動 ----
+
+/// 一步移動 1 列，本體的繪製位置跟著動 10 像素列。
+pub(crate) const ROW_STEP: u16 = 1;
+pub(crate) const ROW_PIXELS: u16 = 10;
+/// 一步移動 2 欄，繪製位置的 x（單位是位元組）也動 2。
+pub(crate) const COL_STEP: u16 = 2;
+/// 上移要求列大於這個值（有號比較）。
+const TOP_ROW: i16 = 0;
+/// 下移要求列小於這個值（無號比較）。
+const BOTTOM_ROW: u16 = 0x10;
+/// 左移要求欄大於這個值（有號比較）。
+const LEFT_COL: i16 = 1;
+/// 右移要求欄小於這個值（無號比較）。
+const RIGHT_COL: u16 = 0x21;
+/// 每關開始的位置。
+const START_COL: u16 = 5;
+const START_ROW: u16 = 10;
+
+// ---- 命中與死亡 ----
+
+/// 受擊後的無敵幀數。
+const HIT_INVINCIBILITY: u8 = 6;
+/// 活著時的死亡倒數初值，血量歸零後每幀減 1。
+const DYING_FRAMES: u8 = 0x0F;
+/// 死亡動畫結束、清掉存活位元之後，倒數重設成的值。
+const DYING_RESET: u8 = 6;
+/// 血量初值：8 個位元全亮，每次受擊右移一位。
+const FULL_HEALTH: u16 = 0xFF;
+
+// ---- 撿取光柱 ----
+
+/// 撿到道具時光柱的起點 y（FF42h，有號 -190）。
+const BEAM_START: u16 = 0xFF42;
+/// 光柱每幀往下的像素列數；y 大於 0（有號）時結束，所以撿到後約 5 幀。
+const BEAM_STEP: u16 = 0x28;
+
+// ---- 開火 ----
+
+/// 放開開火鍵時，充能計數不小於這個值才射出大掃射。
+pub(crate) const SWEEP_CHARGE: u16 = 0x0E;
+/// 主機的普通彈（武器字母 0）。
+const PLAIN_WEAPON: u16 = 0;
+
+// ---- 展示錄影 ----
+
+/// 非展示時，幀計數超過這個值就不再錄（原版 `cmp ..., 5DBh; ja`，緩衝區前 1500 個位元組）。
+const LAST_RECORDED_FRAME: u16 = 0x5DB;
+
+/// 展示錄影每個位元組的內容，也是 `input_bits` 的位元。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputBit {
+    Up = 0x01,
+    Down = 0x02,
+    Right = 0x04,
+    Left = 0x08,
+    Fire = 0x10,
+    Turn = 0x20,
+}
+
+impl InputBit {
+    fn is_set(self, bits: u8) -> bool {
+        bits & self as u8 != 0
+    }
+}
+
+/// 一位玩家的方向鍵與開火鍵，掃描碼（set 1）。上下左右各有三個鍵，斜向的鍵同時算兩個方向。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Keys {
+    pub up_left: u8,
+    pub up: u8,
+    pub up_right: u8,
+    pub left: u8,
+    pub right: u8,
+    pub down_left: u8,
+    pub down: u8,
+    pub down_right: u8,
+    /// 開火鍵（Shift）。
+    pub fire: u8,
+}
+
+impl Keys {
+    fn upward(&self) -> [u8; 3] {
+        [self.up_left, self.up, self.up_right]
+    }
+
+    fn downward(&self) -> [u8; 3] {
+        [self.down_left, self.down, self.down_right]
+    }
+
+    fn leftward(&self) -> [u8; 3] {
+        [self.down_left, self.left, self.up_left]
+    }
+
+    fn rightward(&self) -> [u8; 3] {
+        [self.down_right, self.right, self.up_right]
+    }
+}
+
+/// 本體的三張圖（`MY.GO` 圖庫索引）：平飛、上移、下移。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BodyImages {
+    pub level: u16,
+    pub up: u16,
+    pub down: u16,
+}
+
+/// 發射閃光：圖庫索引與相對本體的位移（x 單位是位元組，y 是像素列）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Muzzle {
+    pub image: u16,
+    pub dx: u16,
+    pub dy: u16,
+}
+
+/// 砲座相對本體的偏移。第二座砲座在第一座下方 `gap_rows` 列。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PodStyle {
+    /// 砲座的列 = 本體的列減這個值。
+    pub row_offset: u16,
+    /// 砲座繪製位置的 y = 本體的 y 減這個值。
+    pub y_offset: u16,
+    /// 畫砲座時 y 再加這個值。
+    pub draw_dy: u16,
+    /// 第二座砲座在第一座下方幾列（繪製位置差 `gap_rows × ROW_PIXELS`）。
+    pub gap_rows: u16,
+}
+
+/// 兩位玩家的差異。每個欄位都對照過玩家 1 與玩家 2 的機器碼。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Style {
+    pub keys: Keys,
+    pub images: BodyImages,
+    pub muzzle: Muzzle,
+    pub pod: PodStyle,
+    /// 展示錄影的讀取位移：玩家 1 讀本幀的位元組，玩家 2 讀下一幀的（`0AAE3h`），而錄影只有玩家 1 的輸入。
+    pub demo_offset: u16,
+    /// 展示還原輸入時，轉向旗標的預設值：玩家 1 先清成 `N`，玩家 2 先設成 `Y`（`14FEFh` 起），
+    /// 所以玩家 2 在展示中每幀都有轉向事件。玩家 2 在展示裡不在場，旗標就一直是 `Y`。
+    pub demo_turn_default: bool,
+    /// 非展示時有沒有錄本幀輸入：只有玩家 1 錄（玩家 2 的 `sub_14FAE` 是空的）。
+    pub records_demo: bool,
+    /// 每關開始的砲座朝向：玩家 1 朝左（`<`），玩家 2 朝右（`>`）。
+    pub start_facing: u16,
+    /// 死亡動畫結束時，存活位元組與這個遮罩相與。原版玩家 1 是 `F0h`、玩家 2 是 `0Fh`，
+    /// 各自清掉自己那個半位元組（只用到位元 0 與位元 4）。
+    pub survivors_mask: u8,
+    /// 存活位元組裡這位玩家的位元。
+    pub alive_bit: u8,
+}
+
+pub(crate) static STYLES: [Style; PLAYER_COUNT] = [
+    Style {
+        // 玩家 1：方向鍵與數字鍵盤。
+        keys: Keys {
+            up_left: 0x47,    // Home（數字鍵盤 7）
+            up: 0x48,         // ↑
+            up_right: 0x49,   // PgUp
+            left: 0x4B,       // ←
+            right: 0x4D,      // →
+            down_left: 0x4F,  // End
+            down: 0x50,       // ↓
+            down_right: 0x51, // PgDn
+            fire: 0x36,       // 右 Shift
+        },
+        images: BodyImages { level: 9, up: 0x0B, down: 7 },
+        muzzle: Muzzle { image: 0x11, dx: 3, dy: 3 },
+        pod: PodStyle { row_offset: 3, y_offset: 0x1E, draw_dy: 5, gap_rows: 5 },
+        demo_offset: 0,
+        demo_turn_default: false,
+        records_demo: true,
+        start_facing: FACING_LEFT,
+        survivors_mask: 0xF0,
+        alive_bit: 0x01,
+    },
+    Style {
+        // 玩家 2：R T Y / F H / V B N。
+        keys: Keys {
+            up_left: 0x13,    // R
+            up: 0x14,         // T
+            up_right: 0x15,   // Y
+            left: 0x21,       // F
+            right: 0x23,      // H
+            down_left: 0x2F,  // V
+            down: 0x30,       // B
+            down_right: 0x31, // N
+            fire: 0x2A,       // 左 Shift
+        },
+        images: BodyImages { level: 0x10, up: 0x0E, down: 0x12 },
+        muzzle: Muzzle { image: 0x0A, dx: 3, dy: 6 },
+        pod: PodStyle { row_offset: 1, y_offset: 0x0A, draw_dy: 2, gap_rows: 2 },
+        demo_offset: 1,
+        demo_turn_default: true,
+        records_demo: false,
+        start_facing: FACING_RIGHT,
+        survivors_mask: 0x0F,
+        alive_bit: 0x10,
+    },
+];
+
+/// 砲座的狀態。位置與圖在每幀畫完之後才更新（[`Core::advance_pods`]），所以畫的與碰撞用的是上一幀算好的值。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Pods {
+    /// 第一座砲座的旗標位元組：`Y` 已裝上，`N` 沒有。畫、碰撞、發射都只認 `Y`。
+    pub first: u8,
+    /// 第二座砲座的旗標位元組：`N` 沒有，其他值（`Y`）已裝上。
+    pub second: u8,
+    /// 朝向字組：`>` 朝右，`<` 朝左。砲座的子彈與位置、圖都看它，主機彈不受影響。
+    pub facing: u16,
+    /// 砲座的圖庫索引。
+    pub image: u16,
+    /// 圖框動畫的計數。
+    pub anim: u16,
+    /// 砲座在格網上的位置：欄、列。第二座砲座在第一座下方 [`PodStyle::gap_rows`] 列。
+    pub col: u16,
+    pub row: u16,
+    /// 砲座的繪製位置：x（位元組）、y（像素列）。
+    pub blit_x: u16,
+    pub blit_y: u16,
+}
+
+impl Pods {
+    /// 第一座砲座在場（會畫、會碰撞、會發射）。
+    pub(crate) fn first_flying(&self) -> bool {
+        self.first == YES
+    }
+
+    /// 第二座砲座在場。
+    pub(crate) fn second_flying(&self) -> bool {
+        self.second != NO
+    }
+
+    /// 已裝上的砲座數，0 到 2（給介面顯示）。
+    pub(crate) fn installed(&self) -> u8 {
+        u8::from(self.first != NO) + u8::from(self.second != NO)
+    }
+}
+
+/// 一位玩家的狀態。欄位用原版的字組寬度，順序與位移對應見 `mirror.rs`。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Player {
+    /// 血量：初值 FFh，每次受擊右移一位，亮的位元數就是剩下的格數，0 是死亡。跨關保留，只在第一關或展示模式重設。
+    pub hp: u16,
+    /// 格網位置：欄、列。欄 1 至 33 的奇數，列 0 至 16。
+    pub col: u16,
+    pub row: u16,
+    /// 繪製位置：x（位元組）、y（像素列），和欄、列同步（x = 欄，y = 列 × 10）。
+    pub blit_x: u16,
+    pub blit_y: u16,
+    /// 本體的圖庫索引（[`BodyImages`]）。
+    pub image: u16,
+    /// 本幀受擊旗標：`Y` 受擊。下一幀的 [`Core::control_player`] 結算並清掉；死亡動畫中不清。
+    pub hit: u8,
+    /// 受擊後的無敵倒數，大於 0 的幀只畫遮罩、跳過所有碰撞。
+    pub invincible: u8,
+    /// 死亡倒數。活著時每幀設成 [`DYING_FRAMES`]，血量歸零後每幀減 1，到 0 清掉存活位元。
+    pub dying: u8,
+    /// 尾焰旗標：本幀往右移動過。
+    pub flame: u8,
+    /// 武器字母：0、`L`、`B`、`K`、`S`。跨關保留。
+    pub weapon: u16,
+    /// 充能計數：開火鍵按住時（第二座砲座在場）每個事件加 1，放開時不小於 [`SWEEP_CHARGE`] 就射大掃射，然後歸零。
+    pub charge: u16,
+    /// 本幀開火旗標：新按那一幀設 `Y`，沒有開火事件的幀清成 `N`，按住的幀不動（所以新按那幀的 `Y` 會延續，砲座多發）。
+    pub fired: u8,
+    /// 本幀的輸入位元（[`InputBit`]），也是展示錄影的內容。
+    pub input_bits: u8,
+    /// 撿取光柱的 y：撿到道具時設成負值，每幀加 [`BEAM_STEP`] 並畫一道光柱，大於 0（有號）結束。
+    pub beam_y: u16,
+    pub pods: Pods,
+}
+
+impl Player {
+    /// 上移的條件：列大於 0（有號）。
+    pub(crate) fn can_move_up(&self) -> bool {
+        (self.row as i16) > TOP_ROW
+    }
+
+    /// 下移的條件：列小於 10h（無號）。
+    pub(crate) fn can_move_down(&self) -> bool {
+        self.row < BOTTOM_ROW
+    }
+
+    /// 左移的條件：欄大於 1（有號）。
+    pub(crate) fn can_move_left(&self) -> bool {
+        (self.col as i16) > LEFT_COL
+    }
+
+    /// 右移的條件：欄小於 21h（無號）。
+    pub(crate) fn can_move_right(&self) -> bool {
+        self.col < RIGHT_COL
+    }
+
+    /// 上移一步，圖換成上移圖。到邊界不動，圖也不換。
+    fn move_up(&mut self, images: &BodyImages) {
+        if self.can_move_up() {
+            self.row = self.row.wrapping_sub(ROW_STEP);
+            self.blit_y = self.blit_y.wrapping_sub(ROW_STEP * ROW_PIXELS);
+            self.image = images.up;
+        }
+    }
+
+    /// 下移一步，圖換成下移圖。
+    fn move_down(&mut self, images: &BodyImages) {
+        if self.can_move_down() {
+            self.row = self.row.wrapping_add(ROW_STEP);
+            self.blit_y = self.blit_y.wrapping_add(ROW_STEP * ROW_PIXELS);
+            self.image = images.down;
+        }
+    }
+
+    /// 右移一步，尾焰旗標設 `Y`。
+    fn move_right(&mut self) {
+        if self.can_move_right() {
+            self.col = self.col.wrapping_add(COL_STEP);
+            self.blit_x = self.blit_x.wrapping_add(COL_STEP);
+            self.flame = YES;
+        }
+    }
+
+    /// 左移一步。
+    fn move_left(&mut self) {
+        if self.can_move_left() {
+            self.col = self.col.wrapping_sub(COL_STEP);
+            self.blit_x = self.blit_x.wrapping_sub(COL_STEP);
+        }
+    }
+
+    /// 每關開始的位置（欄 5、列 10，繪製位置同步）。
+    fn move_to_start(&mut self) {
+        self.col = START_COL;
+        self.row = START_ROW;
+        self.blit_x = START_COL;
+        self.blit_y = START_ROW * ROW_PIXELS;
+    }
+
+    /// 第一關或展示模式重設的裝備：武器、血量、砲座、砲座朝向。
+    fn reset_loadout(&mut self, style: &Style) {
+        self.weapon = 0;
+        self.hp = FULL_HEALTH;
+        self.pods.first = NO;
+        self.pods.second = NO;
+        self.pods.facing = style.start_facing;
+    }
+}
+
+/// 兩位玩家與共用的存活位元組。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Players {
+    /// 存活位元組（原版 `byte_1CFDD`）：玩家 1 是位元 0，玩家 2 是位元 4。標題選角色時設，死亡動畫結束時清，
+    /// 兩位都是 0 時回標題。
+    pub alive: u8,
+    pub ship: [Player; PLAYER_COUNT],
+}
+
+impl Players {
+    pub(crate) fn is_alive(&self, who: usize) -> bool {
+        self.alive & STYLES[who].alive_bit != 0
+    }
+}
+
 impl Core {
-    /// `loop`：`cx` 減 1，不為 0 則回傳 true（跳回）。
-    fn pl_loop(&mut self) -> bool {
-        self.r.cx = self.r.cx.wrapping_sub(1);
-        self.r.cx != 0
+    /// 玩家（0 是玩家 1，1 是玩家 2）是否在場。
+    pub(crate) fn player_alive(&self, who: usize) -> bool {
+        self.pl.is_alive(who)
     }
 
-    /// `lodsw`：`ax` = `[si]`，`si` 加 2。
-    fn pl_lodsw(&mut self) {
-        self.r.ax = self.ds.r16(self.r.si);
-        self.r.si = self.r.si.wrapping_add(2);
+    /// 玩家在格網上的位置：(欄, 列)。
+    pub(crate) fn player_cell(&self, who: usize) -> (u16, u16) {
+        let p = &self.pl.ship[who];
+        (p.col, p.row)
     }
 
-    /// `add word ptr [linear], v`（`sub` 以 `wrapping_neg` 傳入）。
-    fn pl_addw(&mut self, linear: u32, v: u16) {
-        let n = self.ds.r16(a(linear)).wrapping_add(v);
-        self.ds.w16(a(linear), n);
+    /// 還有沒有玩家在場。都不在時主迴圈回標題。
+    pub(crate) fn any_player_alive(&self) -> bool {
+        self.pl.alive != 0
     }
 
-    /// `or byte ptr [linear], v`。
-    fn pl_or8(&mut self, linear: u32, v: u8) {
-        let n = self.ds.r8(a(linear)) | v;
-        self.ds.w8(a(linear), n);
+    /// 標題選角色：設存活位元組（01h 玩家 1、10h 玩家 2、11h 雙人）。
+    pub(crate) fn set_players_present(&mut self, alive: u8) {
+        self.pl.alive = alive;
     }
 
-    /// 按鍵表的位元組等於 1（按下）。
-    fn pl_k(&self, linear: u32) -> bool {
-        self.ds.r8(a(linear)) == 1
-    }
-
-    // ---------------------------------------------------------------
-    // 玩家 1
-    // ---------------------------------------------------------------
-
-    /// `sub_14458`：玩家 1 每幀入口：示範輸入、輸入與移動、錄製。`byte_1CFAD` 為 `F` 時略過。
-    pub(crate) fn s14458(&mut self) {
-        if self.ds.r8(a(0x1CFAD)) == 0x46 {
-            return;
-        }
-        self.ds.w8(a(0x1DAA4), 0);
-        self.s14497();
-        self.s14501();
-        self.s14474();
-    }
-
-    /// `sub_14474`：非示範時把本幀的輸入位元 `byte_1DAA4` 錄到 `dseg:0AAE2h` 加幀計數處。
-    pub(crate) fn s14474(&mut self) {
-        if self.ds.r8(a(0x1CFDC)) == 0x59 {
-            return;
-        }
-        if self.ds.r16(a(0x1CFE2)) > 0x5DB {
-            return;
-        }
-        self.r.si = 0xAAE2u16.wrapping_add(self.ds.r16(a(0x1CFE2)));
-        self.r.set_al(self.ds.r8(a(0x1DAA4)));
-        self.ds.w8(self.r.si, self.r.al());
-    }
-
-    /// `sub_14497`：示範時由 `dseg:0AAE2h[幀計數]` 還原玩家 1 的方向與開火旗標。
-    pub(crate) fn s14497(&mut self) {
-        if self.ds.r8(a(0x1CFDC)) == 0x4E {
-            return;
-        }
-        self.ds.w8(a(0x274DB), 0);
-        self.ds.w8(a(0x274D6), 0);
-        self.ds.w8(a(0x274D8), 0);
-        self.ds.w8(a(0x274D3), 0);
-        self.ds.w8(a(0x274C1), 0);
-        self.ds.w8(a(0x273A7), 0x59);
-        self.ds.w8(a(0x273AA), 0x4E);
-        self.r.si = 0xAAE2u16.wrapping_add(self.ds.r16(a(0x1CFE2)));
-        self.r.set_al(self.ds.r8(self.r.si));
-        let al = self.r.al();
-        if al & 1 != 0 {
-            self.ds.w8(a(0x274D3), 1);
-        }
-        if al & 2 != 0 {
-            self.ds.w8(a(0x274DB), 1);
-        }
-        if al & 4 != 0 {
-            self.ds.w8(a(0x274D8), 1);
-        }
-        if al & 8 != 0 {
-            self.ds.w8(a(0x274D6), 1);
-        }
-        if al & 0x10 != 0 {
-            self.ds.w8(a(0x273A9), 0x59);
-        }
-        if al & 0x20 != 0 {
-            self.ds.w8(a(0x273AA), 0x59);
+    /// 開發者秘技（INT 9 的 `sub_1A8F4`）：兩位的血量補滿。
+    pub(crate) fn refill_health(&mut self) {
+        for p in &mut self.pl.ship {
+            p.hp = FULL_HEALTH;
         }
     }
 
-    /// `sub_14501`：玩家 1 的命中結算、方向鍵、轉向、充能與開火。
-    pub(crate) fn s14501(&mut self) {
-        if self.ds.r8(a(0x1CFDD)) & 1 == 0 {
-            return;
-        }
-        self.ds.w16(a(0x1DABD), 9);
-        self.ds.w8(a(0x1DAAB), 0x4E);
-        // 14515：byte_1DAC0 = N 時略過受擊。
-        if self.ds.r8(a(0x1DAC0)) != 0x4E {
-            // byte ptr word_273A5 = Y（作弊）時不減血。
-            if self.ds.r8(a(0x273A5)) != 0x59 {
-                self.r.ax = self.ds.r16(a(0x1CFDE));
-                self.r.ax >>= 1;
-                self.ds.w16(a(0x1CFDE), self.r.ax);
+    /// 每關開始的位置（原版 `sub_14F47`、`sub_158BA`）。第一關或展示模式另重設武器、血量、砲座與朝向，
+    /// 其他關保留，所以裝備跨關。
+    pub(crate) fn place_players_for_stage(&mut self) {
+        let reset = self.demo_playing() || self.on_first_stage();
+        for (p, style) in self.pl.ship.iter_mut().zip(&STYLES) {
+            p.move_to_start();
+            if reset {
+                p.reset_loadout(style);
             }
-            self.s11336();
-            self.ds.w8(a(0x1DAC1), 6);
-            if self.ds.r16(a(0x1CFDE)) == 0 {
-                self.s14679();
+        }
+    }
+
+    /// 玩家每幀的輸入與移動（原版 `sub_14458`、`sub_14F92`）。過關後不處理。
+    pub(crate) fn update_player(&mut self, who: usize) {
+        if self.stage_cleared() {
+            return;
+        }
+        self.pl.ship[who].input_bits = 0;
+        self.replay_demo_input(who);
+        self.control_player(who);
+        self.record_demo_input(who);
+    }
+
+    /// 展示模式：由展示錄影還原這位玩家本幀的方向鍵與開火旗標（原版 `sub_14497`、`sub_14FC5`）。
+    ///
+    /// 直接寫按鍵狀態表與開火旗標，後面的 [`Core::control_player`] 照一般輸入處理。不在場的玩家也照做，
+    /// 所以玩家 2 在單人展示裡仍會留下 `Y` 的轉向旗標（[`Style::demo_turn_default`]）。
+    /// 錄影位元組的位址 16 位元環繞，沒有檢查幀數上限。
+    fn replay_demo_input(&mut self, who: usize) {
+        if !self.demo_playing() {
+            return;
+        }
+        let style = &STYLES[who];
+        let keys = &style.keys;
+        for scan in [keys.up, keys.down, keys.right, keys.left, keys.fire] {
+            self.set_key(scan, false);
+        }
+        self.set_fire_flag(who, FireFlag::NewPress, true);
+        self.set_fire_flag(who, FireFlag::Turn, style.demo_turn_default);
+        let bits = self.demo_byte(self.stage_frame().wrapping_add(style.demo_offset));
+        for (bit, scan) in [(InputBit::Up, keys.up), (InputBit::Down, keys.down), (InputBit::Right, keys.right), (InputBit::Left, keys.left)] {
+            if bit.is_set(bits) {
+                self.set_key(scan, true);
+            }
+        }
+        if InputBit::Fire.is_set(bits) {
+            self.set_fire_flag(who, FireFlag::Event, true);
+        }
+        if InputBit::Turn.is_set(bits) {
+            self.set_fire_flag(who, FireFlag::Turn, true);
+        }
+    }
+
+    /// 非展示時，把本幀的輸入位元錄進展示錄影（原版 `sub_14474`）。只有玩家 1 錄，幀數不超過 [`LAST_RECORDED_FRAME`]。
+    fn record_demo_input(&mut self, who: usize) {
+        if !STYLES[who].records_demo || self.demo_playing() {
+            return;
+        }
+        let frame = self.stage_frame();
+        if frame > LAST_RECORDED_FRAME {
+            return;
+        }
+        self.record_demo_byte(frame, self.pl.ship[who].input_bits);
+    }
+
+    /// 在場玩家的一幀：結算上一幀的命中、方向鍵、轉向、充能與開火（原版 `sub_14501`、`sub_1502F`）。
+    fn control_player(&mut self, who: usize) {
+        if !self.pl.is_alive(who) {
+            return;
+        }
+        let style = &STYLES[who];
+        let p = &mut self.pl.ship[who];
+        p.image = style.images.level;
+        p.flame = NO;
+        if p.hit != NO {
+            self.take_hit(who);
+            if self.pl.ship[who].hp == 0 {
+                self.die_step(who);
                 return;
             }
         }
-        // 1453F
-        self.ds.w8(a(0x1DAC3), 0x0F);
-        self.ds.w8(a(0x1DAC0), 0x4E);
-        // 垂直：上（274D2、274D3、274D4）優先於下（274DA、274DB、274DC）。
-        if self.pl_k(0x274D2) || self.pl_k(0x274D3) || self.pl_k(0x274D4) {
-            self.s146ac();
-            self.pl_or8(0x1DAA4, 1);
-        } else if self.pl_k(0x274DA) || self.pl_k(0x274DB) || self.pl_k(0x274DC) {
-            self.s146c3();
-            self.pl_or8(0x1DAA4, 2);
+        let p = &mut self.pl.ship[who];
+        p.dying = DYING_FRAMES;
+        p.hit = NO;
+        self.steer(who);
+        self.turn_pods(who);
+        self.release_charge(who);
+        self.fire_main(who);
+    }
+
+    /// 結算受擊：血量右移一位（無敵秘技開著時不移），重畫血條，進入無敵倒數。
+    fn take_hit(&mut self, who: usize) {
+        if !self.invincible_cheat() {
+            self.pl.ship[who].hp >>= 1;
         }
-        // 水平：左（274DA、274D6、274D2）優先於右（274DC、274D8、274D4）。
-        if self.pl_k(0x274DA) || self.pl_k(0x274D6) || self.pl_k(0x274D2) {
-            self.s146f2();
-            self.pl_or8(0x1DAA4, 8);
-        } else if self.pl_k(0x274DC) || self.pl_k(0x274D8) || self.pl_k(0x274D4) {
-            self.s146da();
-            self.pl_or8(0x1DAA4, 4);
+        self.draw_health_bar(who);
+        self.pl.ship[who].invincible = HIT_INVINCIBILITY;
+    }
+
+    /// 血量歸零後的死亡動畫（原版 `sub_14679`、`sub_151A7`）：倒數減 1，到 0 清掉存活位元；否則不接受輸入，
+    /// 往下再往右走一步，並在位置播特效。受擊旗標沒有清，所以每幀都回到這裡。
+    fn die_step(&mut self, who: usize) {
+        let style = &STYLES[who];
+        let p = &mut self.pl.ship[who];
+        p.dying = p.dying.wrapping_sub(1);
+        if p.dying == 0 {
+            p.dying = DYING_RESET;
+            self.pl.alive &= style.survivors_mask;
+            return;
         }
-        // 145D1：轉向鍵。
-        if self.ds.r8(a(0x273AA)) == 0x59 {
-            self.ds.w8(a(0x273AA), 0x4E);
-            self.pl_or8(0x1DAA4, 0x20);
-            if self.ds.r16(a(0x1DA8F)) != 0x3E {
-                self.ds.w16(a(0x1DA8F), 0x3E);
-            } else {
-                self.ds.w16(a(0x1DA8F), 0x3C);
+        p.move_down(&style.images);
+        p.move_right();
+        let (col, row) = (p.col, p.row);
+        self.spawn_effect(EffectKind::PlayerDeath, col, row);
+    }
+
+    /// 方向鍵（原版 `sub_14501` 的 `1454Bh` 至 `145C6h`）。上優先於下，左優先於右；斜向鍵同時算兩個方向。
+    /// 輸入位元不管有沒有真的移動（到邊界）都記。
+    fn steer(&mut self, who: usize) {
+        let style = &STYLES[who];
+        let up = self.any_held(style.keys.upward());
+        let down = self.any_held(style.keys.downward());
+        let left = self.any_held(style.keys.leftward());
+        let right = self.any_held(style.keys.rightward());
+        let p = &mut self.pl.ship[who];
+        if up {
+            p.move_up(&style.images);
+            p.input_bits |= InputBit::Up as u8;
+        } else if down {
+            p.move_down(&style.images);
+            p.input_bits |= InputBit::Down as u8;
+        }
+        if left {
+            p.move_left();
+            p.input_bits |= InputBit::Left as u8;
+        } else if right {
+            p.move_right();
+            p.input_bits |= InputBit::Right as u8;
+        }
+    }
+
+    fn any_held(&self, scans: [u8; 3]) -> bool {
+        scans.into_iter().any(|scan| self.key_held(scan))
+    }
+
+    /// 轉向鍵：砲座的朝向在左右之間切換（原版 `145D1h`）。
+    fn turn_pods(&mut self, who: usize) {
+        if !self.fire_flag(who, FireFlag::Turn) {
+            return;
+        }
+        self.set_fire_flag(who, FireFlag::Turn, false);
+        let p = &mut self.pl.ship[who];
+        p.input_bits |= InputBit::Turn as u8;
+        p.pods.facing = if p.pods.facing != FACING_RIGHT { FACING_RIGHT } else { FACING_LEFT };
+    }
+
+    /// 開火鍵不在按住時結算充能（原版 `145F8h`）：累積到 [`SWEEP_CHARGE`] 以上就從玩家所在的欄射大掃射，
+    /// 無論有沒有射出，充能歸零。
+    fn release_charge(&mut self, who: usize) {
+        if self.key_held(STYLES[who].keys.fire) {
+            return;
+        }
+        let p = self.pl.ship[who];
+        if p.charge >= SWEEP_CHARGE {
+            self.fire_sweep(p.col);
+        }
+        self.pl.ship[who].charge = 0;
+    }
+
+    /// 主機開火（原版 `14621h` 起）：有開火事件才處理。新按射一發普通彈（朝右）並重新充能；
+    /// 按住不放只在第二座砲座在場時累計充能，不連射。
+    fn fire_main(&mut self, who: usize) {
+        if !self.fire_flag(who, FireFlag::Event) {
+            self.pl.ship[who].fired = NO;
+            return;
+        }
+        self.set_fire_flag(who, FireFlag::Event, false);
+        if !self.fire_flag(who, FireFlag::NewPress) {
+            let p = &mut self.pl.ship[who];
+            if p.pods.second != NO {
+                p.charge = p.charge.wrapping_add(1);
+            }
+            return;
+        }
+        self.set_fire_flag(who, FireFlag::NewPress, false);
+        let p = &mut self.pl.ship[who];
+        p.charge = 0;
+        p.input_bits |= InputBit::Fire as u8;
+        p.fired = YES;
+        let (col, row) = (p.col, p.row);
+        self.fire_player_bullets(PLAIN_WEAPON, Facing::Right, col, row);
+    }
+}
+
+/// 測試用的設定與讀取。
+#[cfg(test)]
+impl Core {
+    /// 設玩家的存活與位置。`None` 表示不存活，位置不動。
+    pub(crate) fn set_players(&mut self, players: [Option<(u16, u16)>; PLAYER_COUNT]) {
+        let mut alive = 0u8;
+        for (who, p) in players.into_iter().enumerate() {
+            if let Some((col, row)) = p {
+                alive |= STYLES[who].alive_bit;
+                self.set_player_cell(who, col, row);
             }
         }
-        // 145F8：右 Shift 不在按住（byte_274C1 != 1）：結算充能。
-        if self.ds.r8(a(0x274C1)) != 1 {
-            if self.ds.r16(a(0x1DA8B)) >= 0x0E {
-                self.fire_sweep(self.ds.r16(a(0x1DACB)));
-            }
-            self.ds.w16(a(0x1DA8B), 0);
-        }
-        // 14621
-        if self.ds.r8(a(0x273A9)) != 0x59 {
-            self.ds.w8(a(0x1DAA5), 0x4E);
-            return;
-        }
-        self.ds.w8(a(0x273A9), 0x4E);
-        if self.ds.r8(a(0x273A7)) != 0x59 {
-            // 按住不放：第二座砲座存在時才累計充能。
-            if self.ds.r8(a(0x1DA8E)) != 0x4E {
-                self.pl_addw(0x1DA8B, 1);
-            }
-            return;
-        }
-        // 14647：新按，主機射一發普通彈。
-        self.ds.w16(a(0x1DA8B), 0);
-        self.ds.w8(a(0x273A7), 0x4E);
-        self.fire_player_bullets(0, Facing::Right, self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
-        self.pl_or8(0x1DAA4, 0x10);
-        self.ds.w8(a(0x1DAA5), 0x59);
+        self.pl.alive = alive;
     }
 
-    /// `sub_14679`：玩家 1 血量歸零後的死亡動畫，15 幀後清存活位元 0。
-    pub(crate) fn s14679(&mut self) {
-        let v = self.ds.r8(a(0x1DAC3)).wrapping_sub(1);
-        self.ds.w8(a(0x1DAC3), v);
-        if v == 0 {
-            // 146A0
-            let f = self.ds.r8(a(0x1CFDD)) & 0xF0;
-            self.ds.w8(a(0x1CFDD), f);
-            self.ds.w8(a(0x1DAC3), 6);
-            return;
+    pub(crate) fn set_player_cell(&mut self, who: usize, col: u16, row: u16) {
+        self.pl.ship[who].col = col;
+        self.pl.ship[who].row = row;
+    }
+}
+
+/// 三個檔案的單元測試共用的設定。
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::game::{Fixes, Start};
+    use crate::mirror::{GRID1_START, GRID2_START};
+
+    /// 全 0 的映像開出來的核心，列表已擺好，玩家狀態是原版映像的初值（旗標 `N`、光柱 y 為 2）。
+    pub(crate) fn core() -> Core {
+        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let mut c = Core::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE);
+        c.fill_row_tables();
+        for p in &mut c.pl.ship {
+            p.hit = NO;
+            p.fired = NO;
+            p.flame = NO;
+            p.beam_y = 2;
         }
-        self.s146c3();
-        self.s146da();
-        let (x, y) = (self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
-        self.spawn_effect(EffectKind::PlayerDeath, x, y);
+        c.forget_stride();
+        c.set_draw_page(0);
+        c
     }
 
-    /// `sub_146AC`：玩家 1 上移，列大於 0（有號）才動，圖 0Bh。
-    pub(crate) fn s146ac(&mut self) {
-        if (self.ds.r16(a(0x1DAC9)) as i16) <= 0 {
-            return;
-        }
-        self.pl_addw(0x1DAC9, 1u16.wrapping_neg());
-        self.pl_addw(0x1DAC5, 0x0Au16.wrapping_neg());
-        self.ds.w16(a(0x1DABD), 0x0B);
-    }
-
-    /// `sub_146C3`：玩家 1 下移，列小於 10h（無號）才動，圖 7。
-    pub(crate) fn s146c3(&mut self) {
-        if self.ds.r16(a(0x1DAC9)) >= 0x10 {
-            return;
-        }
-        self.pl_addw(0x1DAC9, 1);
-        self.pl_addw(0x1DAC5, 0x0A);
-        self.ds.w16(a(0x1DABD), 7);
-    }
-
-    /// `sub_146DA`：玩家 1 右移，欄小於 21h（無號）才動，尾焰旗標 `Y`。
-    pub(crate) fn s146da(&mut self) {
-        if self.ds.r16(a(0x1DACB)) >= 0x21 {
-            return;
-        }
-        self.pl_addw(0x1DACB, 2);
-        self.pl_addw(0x1DAC7, 2);
-        self.ds.w8(a(0x1DAAB), 0x59);
-    }
-
-    /// `sub_146F2`：玩家 1 左移，欄大於 1（有號）才動。
-    pub(crate) fn s146f2(&mut self) {
-        if (self.ds.r16(a(0x1DACB)) as i16) <= 1 {
-            return;
-        }
-        self.pl_addw(0x1DACB, 2u16.wrapping_neg());
-        self.pl_addw(0x1DAC7, 2u16.wrapping_neg());
-    }
-
-    /// `sub_14704`：玩家 1 的碰撞、繪製（本體、尾焰、發射閃光、撿取光柱、砲座）。
-    pub(crate) fn s14704(&mut self) {
-        if self.ds.r8(a(0x1CFDD)) & 1 == 0 {
-            return;
-        }
-        self.s1480a();
-        self.r.ax = self.ds.r16(a(0x1DAC7));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC5));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DABD));
-        self.ds.w16(a(0x26888), self.r.ax);
-        self.set_obj(Pool::Player, 0);
-        self.s18d46();
-        if self.ds.r8(a(0x1DAC1)) != 0 {
-            // 14748：無敵倒數，只畫遮罩，跳過所有碰撞。
-            let v = self.ds.r8(a(0x1DAC1)).wrapping_sub(1);
-            self.ds.w8(a(0x1DAC1), v);
-            if self.ds.r16(a(0x26872)) != 0 {
-                self.s18d89();
-            }
-            self.clear_obj();
-            return;
-        }
-        self.pl_addw(0x26882, 1);
-        self.s18ce2();
-        self.s147bc();
-        self.s147e1();
-        self.s1478b();
-        if self.ds.r8(a(0x1DAAB)) != 0x59 {
-            self.clear_obj();
-            return;
-        }
-        // 14757：尾焰。
-        self.ds.w16(a(0x26888), 0x0D);
-        self.pl_addw(0x26882, 0x0Au16.wrapping_neg());
-        if self.ds.r16(a(0x26872)) != 0 {
-            self.ds.w16(a(0x26888), 0x0C);
-        }
-        self.r.ax = self.ds.r16(a(0x1DAC7)).wrapping_sub(4);
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC5)).wrapping_sub(2);
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.s18d46();
-        self.s18ce2();
-        self.s14a59();
-        self.clear_obj();
-    }
-
-    /// `sub_1478B`：本幀開火時在機頭畫發射閃光（圖 11h，位置加 3、3），x、y 還原。
-    pub(crate) fn s1478b(&mut self) {
-        if self.ds.r8(a(0x1DAA5)) != 0x59 {
-            return;
-        }
-        let ax = self.ds.r16(a(0x26880));
-        let bx = self.ds.r16(a(0x26882));
-        self.ds.w16(a(0x26888), 0x11);
-        self.pl_addw(0x26880, 3);
-        self.pl_addw(0x26882, 3);
-        self.s18d46();
-        self.s18ce2();
-        self.r.bx = bx;
-        self.r.ax = ax;
-        self.ds.w16(a(0x26880), ax);
-        self.ds.w16(a(0x26882), bx);
-    }
-
-    /// `sub_147BC`：撿取光柱，`word_1DAA6` 為 y，大於 0（有號）即結束，每幀加 28h，圖 8。
-    pub(crate) fn s147bc(&mut self) {
-        if (self.ds.r16(a(0x1DAA6)) as i16) > 0 {
-            return;
-        }
-        self.pl_addw(0x1DAA6, 0x28);
-        self.r.ax = self.ds.r16(a(0x1DAC7));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAA6));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.ds.w16(a(0x26888), 8);
-        self.s18d46();
-        self.s18ce2();
-    }
-
-    /// `sub_147E1`：玩家 1 的碰撞：標髒格、對 G1、對 G4、對 G2，受擊時播特效 `S`。
-    pub(crate) fn s147e1(&mut self) {
-        self.s14a2c();
-        self.s14b1e();
-        self.s14a90();
-        self.s14c85();
-        if self.ds.r8(a(0x1DAC0)) == 0x4E {
-            return;
-        }
-        let (x, y) = (self.ds.r16(a(0x1DACB)), self.ds.r16(a(0x1DAC9)));
-        self.spawn_effect(EffectKind::SparkRight, x, y);
-    }
-
-    /// `sub_1480A`：玩家 1 的砲座：位置、碰撞、繪製、發射。砲座編號 0、1。
-    pub(crate) fn s1480a(&mut self) {
-        if self.ds.r8(a(0x1DA8D)) != 0x59 {
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DA98));
-        self.ds.w16(a(0x1DA9C), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DA9A));
-        self.ds.w16(a(0x1DA9E), self.r.ax);
-        self.s14b63();
-        self.s14bae();
-        self.r.ax = self.ds.r16(a(0x1DAA0));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAA2)).wrapping_add(5);
-        self.ds.w16(a(0x26882), self.r.ax);
-        let y0 = self.r.ax; // push ax
-        self.r.ax = self.ds.r16(a(0x1DA94));
-        self.ds.w16(a(0x26888), self.r.ax);
-        self.set_obj(Pool::Pod, 0);
-        self.s18d46();
-        self.s18ce2();
-        if self.ds.r8(a(0x1DA8E)) != 0x4E {
-            self.pl_addw(0x26882, 0x32);
-            self.set_obj(Pool::Pod, 1);
-            self.s18d46();
-            self.s18ce2();
-            self.r.ax = self.ds.r16(a(0x1DA98));
-            self.ds.w16(a(0x1DA9C), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DA9A)).wrapping_add(5);
-            self.ds.w16(a(0x1DA9E), self.r.ax);
-            self.s14b63();
-            self.s14bae();
-        }
-        self.clear_obj();
-        // 14867
-        self.r.ax = y0; // pop ax
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.s14908();
-        if self.ds.r8(a(0x1DAA5)) != 0x59 {
-            return;
-        }
-        // 14876：砲座開火。
-        let facing = Facing::from_word(self.ds.r16(a(0x1DA8F)));
-        let (col, row, weapon) = (self.ds.r16(a(0x1DA98)), self.ds.r16(a(0x1DA9A)), self.ds.r16(a(0x1DAA9)));
-        self.fire_player_bullets(weapon, facing, col, row);
-        if self.ds.r8(a(0x1DA8E)) != 0x4E {
-            self.fire_player_bullets(weapon, facing, col, row.wrapping_add(5));
-        }
-        // 148B0：噴焰（圖 0Ah），朝左 148B5，朝右 148DF。
-        if self.ds.r16(a(0x1DA8F)) != 0x3E {
-            self.pl_addw(0x26880, 1u16.wrapping_neg());
-            self.pl_addw(0x26882, 2);
-        } else {
-            self.pl_addw(0x26880, 2);
-            self.pl_addw(0x26882, 2);
-        }
-        self.ds.w16(a(0x26888), 0x0A);
-        self.set_obj(Pool::Pod, 0);
-        self.s18d46();
-        self.s18ce2();
-        if self.ds.r8(a(0x1DA8E)) != 0x4E {
-            self.pl_addw(0x26882, 0x32);
-            self.set_obj(Pool::Pod, 1);
-            self.s18d46();
-            self.s18ce2();
-        }
-        self.clear_obj();
-    }
-
-    /// `sub_14908`：砲座位置與圖框。充能小於 6 用圖 1Eh 或 24h（5 格循環），否則交給 `sub_1496D`。
-    pub(crate) fn s14908(&mut self) {
-        if self.ds.r16(a(0x1DA8B)) >= 6 {
-            self.s1496d();
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAC5)).wrapping_sub(0x1E);
-        self.ds.w16(a(0x1DAA2), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC7)).wrapping_add(3);
-        self.ds.w16(a(0x1DAA0), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9)).wrapping_sub(3);
-        self.ds.w16(a(0x1DA9A), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DACB)).wrapping_add(3);
-        self.ds.w16(a(0x1DA98), self.r.ax);
-        self.pl_addw(0x1DA96, 1);
-        if self.ds.r16(a(0x1DA96)) >= 5 {
-            self.ds.w16(a(0x1DA96), 0);
-        }
-        if self.ds.r16(a(0x1DA8F)) == 0x3E {
-            // 14963
-            self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x1E);
-            self.ds.w16(a(0x1DA94), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x24);
-        self.ds.w16(a(0x1DA94), self.r.ax);
-        self.pl_addw(0x1DA98, 5u16.wrapping_neg());
-        self.pl_addw(0x1DAA0, 5u16.wrapping_neg());
-    }
-
-    /// `sub_1496D`：充能 6 至 13 的砲座圖框（31h 起 3 格循環），14 以上交給 `sub_149D2`。
-    pub(crate) fn s1496d(&mut self) {
-        if self.ds.r16(a(0x1DA8B)) >= 0x0E {
-            self.s149d2();
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAC5)).wrapping_sub(0x1E);
-        self.ds.w16(a(0x1DAA2), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC7)).wrapping_add(3);
-        self.ds.w16(a(0x1DAA0), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9)).wrapping_sub(3);
-        self.ds.w16(a(0x1DA9A), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DACB)).wrapping_add(3);
-        self.ds.w16(a(0x1DA98), self.r.ax);
-        self.pl_addw(0x1DA96, 1);
-        if self.ds.r16(a(0x1DA96)) >= 3 {
-            self.ds.w16(a(0x1DA96), 0);
-        }
-        if self.ds.r16(a(0x1DA8F)) == 0x3E {
-            // 149C8
-            self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x31);
-            self.ds.w16(a(0x1DA94), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x31);
-        self.ds.w16(a(0x1DA94), self.r.ax);
-        self.pl_addw(0x1DA98, 5u16.wrapping_neg());
-        self.pl_addw(0x1DAA0, 5u16.wrapping_neg());
-    }
-
-    /// `sub_149D2`：充能 14 以上的砲座圖框（34h 起 3 格循環）。
-    pub(crate) fn s149d2(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1DAC5)).wrapping_sub(0x1E);
-        self.ds.w16(a(0x1DAA2), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC7)).wrapping_add(3);
-        self.ds.w16(a(0x1DAA0), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9)).wrapping_sub(3);
-        self.ds.w16(a(0x1DA9A), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DACB)).wrapping_add(3);
-        self.ds.w16(a(0x1DA98), self.r.ax);
-        self.pl_addw(0x1DA96, 1);
-        if self.ds.r16(a(0x1DA96)) >= 3 {
-            self.ds.w16(a(0x1DA96), 0);
-        }
-        if self.ds.r16(a(0x1DA8F)) == 0x3E {
-            // 14A22
-            self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x34);
-            self.ds.w16(a(0x1DA94), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DA96)).wrapping_add(0x34);
-        self.ds.w16(a(0x1DA94), self.r.ax);
-        self.pl_addw(0x1DA98, 5u16.wrapping_neg());
-        self.pl_addw(0x1DAA0, 5u16.wrapping_neg());
-    }
-
-    /// `sub_14A2C`：在 G3（`dseg:964Ch` 起）以玩家 1 的位置標 2 列 4 欄的髒格（值 1）。
-    pub(crate) fn s14a2c(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1DAC9));
-        self.r.bx = 0x28;
-        // mul bl：ax = al * bl。
-        self.r.ax = (self.r.al() as u16) * (self.r.bl() as u16);
-        self.r.ax = self.r.ax.wrapping_add(self.ds.r16(a(0x1DACB)));
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.ax <<= 1;
-        self.r.bx = self.r.ax;
-        self.r.cx = 2;
-        self.r.ax = 1;
-        loop {
-            let outer = self.r.cx;
-            self.r.cx = 4;
-            loop {
-                // [bx-69B4h]
-                self.ds.w16(self.r.bx.wrapping_sub(0x69B4), self.r.ax);
-                self.r.bx = self.r.bx.wrapping_add(2);
-                if !self.pl_loop() {
-                    break;
+    /// 擺三張形狀表（本體 5 × 1、砲座 2 × 2、尾焰髒格 3 × 3，格值全 1），兩位玩家各一份。
+    pub(crate) fn set_shapes(c: &mut Core) {
+        use crate::mirror::PlayerShape;
+        for who in 0..PLAYER_COUNT {
+            for (shape, w, h) in [(PlayerShape::Body, 5u16, 1u16), (PlayerShape::Pod, 2, 2), (PlayerShape::Flame, 3, 3)] {
+                let at = shape.table_offset(who);
+                c.ds.w16(at, w);
+                c.ds.w16(at + 2, h);
+                for i in 0..w * h {
+                    c.ds.w8(at + 4 + i, 1);
                 }
             }
-            self.r.cx = outer;
-            self.r.bx = self.r.bx.wrapping_add(0x48);
-            if !self.pl_loop() {
-                break;
+        }
+    }
+
+    /// 一位在 (`col`, `row`) 的活玩家，位置與繪製位置同步。
+    pub(crate) fn place(c: &mut Core, who: usize, col: u16, row: u16) {
+        c.pl.alive |= STYLES[who].alive_bit;
+        let p = &mut c.pl.ship[who];
+        (p.col, p.row, p.blit_x, p.blit_y) = (col, row, col, row * ROW_PIXELS);
+    }
+
+    pub(crate) fn put_g1(c: &mut Core, col: u16, row: u16, cell: u8) {
+        c.ds.w8(GRID1_START + row * 0x28 + col, cell);
+    }
+
+    pub(crate) fn put_g2(c: &mut Core, col: u16, row: u16, cell: u8) {
+        c.ds.w8(GRID2_START + row * 0x28 + col, cell);
+    }
+
+    /// 邏輯寫過、還沒被繪製命令帶走的形狀寬；沒有則 `None`。
+    pub(crate) fn stride(c: &Core) -> Option<u16> {
+        c.pending_stride()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{core, place};
+    use super::*;
+    use crate::dseg::Dseg;
+    use crate::mirror::Mirror;
+
+    fn hold(c: &mut Core, scan: u8) {
+        c.set_key(scan, true);
+    }
+
+    #[test]
+    fn the_two_players_differ_only_in_the_style_table() {
+        // 同一個函式，同樣的按鍵（各自的鍵位）和同樣的起點，走出對稱的結果。
+        let mut c = core();
+        c.set_stage_frame(10);
+        for who in 0..PLAYER_COUNT {
+            place(&mut c, who, 7, 8);
+            let k = STYLES[who].keys;
+            hold(&mut c, k.up);
+            hold(&mut c, k.right);
+        }
+        c.update_player(0);
+        c.update_player(1);
+        for who in 0..PLAYER_COUNT {
+            let p = c.pl.ship[who];
+            assert_eq!((p.col, p.row, p.blit_x, p.blit_y), (9, 7, 9, 70), "玩家 {} 往右上走一步", who + 1);
+            assert_eq!(p.image, STYLES[who].images.up, "上移圖各自不同");
+            assert_eq!((p.flame, p.input_bits), (YES, 0x05), "尾焰旗標與輸入位元（上 1 + 右 4）");
+        }
+        assert_eq!((c.pl.ship[0].image, c.pl.ship[1].image), (0x0B, 0x0E));
+    }
+
+    #[test]
+    fn up_wins_over_down_and_left_over_right_and_diagonals_count_twice() {
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        let k = STYLES[0].keys;
+        hold(&mut c, k.up);
+        hold(&mut c, k.down);
+        hold(&mut c, k.left);
+        hold(&mut c, k.right);
+        c.update_player(0);
+        let p = c.pl.ship[0];
+        assert_eq!((p.col, p.row), (5, 7), "上優先於下，左優先於右");
+        assert_eq!(p.input_bits, 0x09);
+        assert_eq!(p.flame, NO);
+        // 斜向鍵：End（左下）= 下 + 左。
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        hold(&mut c, k.down_left);
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].col, c.pl.ship[0].row, c.pl.ship[0].input_bits), (5, 9, 0x0A));
+        // 玩家 2 的 V（左下）同理。
+        let mut c = core();
+        place(&mut c, 1, 7, 8);
+        hold(&mut c, STYLES[1].keys.down_left);
+        c.update_player(1);
+        assert_eq!((c.pl.ship[1].col, c.pl.ship[1].row, c.pl.ship[1].input_bits), (5, 9, 0x0A));
+    }
+
+    #[test]
+    fn movement_stops_at_the_limits_but_still_records_the_input_bit() {
+        let mut p = Player { col: 1, row: 0, blit_x: 1, blit_y: 0, ..Player::default() };
+        let images = STYLES[0].images;
+        p.move_up(&images);
+        p.move_left();
+        assert_eq!((p.col, p.row, p.blit_y, p.image), (1, 0, 0, 0), "欄 1 不能再左，列 0 不能再上，圖也不換");
+        assert!(!p.can_move_up() && !p.can_move_left() && p.can_move_down() && p.can_move_right());
+        let mut p = Player { col: 0x21, row: 0x10, blit_x: 0x21, blit_y: 0x100, ..Player::default() };
+        p.move_right();
+        p.move_down(&images);
+        assert_eq!((p.col, p.row, p.flame, p.image), (0x21, 0x10, 0, 0), "欄 21h 不能再右（無號），列 10h 不能再下");
+        assert!(!p.can_move_right() && !p.can_move_down());
+        // 負列、負欄是有號比較：不能上、不能左；無號比較：下與右的條件反而成立。
+        let p = Player { col: 0xFFFF, row: 0xFFFF, ..Player::default() };
+        assert!(!p.can_move_up() && !p.can_move_left());
+        assert!(!p.can_move_down() && !p.can_move_right(), "負值當無號是很大的數");
+        // 經 update_player：被擋住的方向仍記輸入位元。
+        let mut c = core();
+        place(&mut c, 0, 1, 0);
+        hold(&mut c, STYLES[0].keys.up);
+        hold(&mut c, STYLES[0].keys.left);
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].col, c.pl.ship[0].row, c.pl.ship[0].input_bits), (1, 0, 0x09));
+    }
+
+    #[test]
+    fn a_hit_halves_the_health_unless_the_cheat_is_on_and_starts_the_invincibility() {
+        for (cheat, want) in [(false, 0x7F), (true, 0xFF)] {
+            let mut c = core();
+            place(&mut c, 0, 7, 8);
+            c.pl.ship[0].hp = 0xFF;
+            c.pl.ship[0].hit = YES;
+            if cheat {
+                c.set_invincible_cheat(true);
+            }
+            c.update_player(0);
+            let p = c.pl.ship[0];
+            assert_eq!((p.hp, p.invincible, p.hit, p.dying), (want, HIT_INVINCIBILITY, NO, DYING_FRAMES), "秘技 {cheat}");
+        }
+    }
+
+    #[test]
+    fn health_reaching_zero_runs_the_death_animation_then_clears_only_that_players_alive_bit() {
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        place(&mut c, 1, 7, 8);
+        for p in &mut c.pl.ship {
+            p.dying = DYING_FRAMES;
+        }
+        c.pl.ship[0].hp = 1;
+        c.pl.ship[0].hit = YES;
+        c.update_player(0);
+        let p = c.pl.ship[0];
+        assert_eq!(p.hp, 0);
+        assert_eq!((p.dying, p.hit), (DYING_FRAMES - 1, YES), "倒數減 1，受擊旗標不清所以每幀都回到這裡");
+        assert_eq!((p.col, p.row), (9, 9), "每幀往下再往右走一步");
+        assert_eq!((p.image, p.flame), (STYLES[0].images.down, YES));
+        assert_eq!(c.fx.slots.iter().filter(|s| s.is_active()).count(), 1, "在位置播特效");
+        // 再 13 幀倒數到 0：清存活位元。玩家 2 的位元不受影響。
+        for _ in 0..DYING_FRAMES - 2 {
+            c.update_player(0);
+        }
+        assert_eq!(c.pl.ship[0].dying, 1);
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].dying, c.pl.alive), (DYING_RESET, 0x10), "倒數 0 時清玩家 1 的位元，倒數重設成 6");
+        let before = c.pl.ship[0];
+        c.update_player(0);
+        assert_eq!(c.pl.ship[0], before, "不在場的玩家不處理");
+        // 玩家 2 死亡清的是自己那邊。
+        c.pl.ship[1].hp = 1;
+        c.pl.ship[1].hit = YES;
+        for _ in 0..DYING_FRAMES {
+            c.update_player(1);
+        }
+        assert_eq!(c.pl.alive, 0);
+        assert!(!c.any_player_alive());
+    }
+
+    #[test]
+    fn no_player_logic_runs_after_the_stage_is_cleared() {
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        c.pl.ship[0].input_bits = 0x55;
+        hold(&mut c, STYLES[0].keys.up);
+        c.mark_stage_cleared();
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].row, c.pl.ship[0].input_bits), (8, 0x55), "連輸入位元都不清");
+    }
+
+    #[test]
+    fn firing_is_one_bullet_per_press_and_holding_only_charges_with_a_second_pod() {
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        c.set_fire_flag(0, FireFlag::NewPress, true);
+        c.set_fire_flag(0, FireFlag::Event, true);
+        c.update_player(0);
+        let p = c.pl.ship[0];
+        assert_eq!((p.fired, p.charge, p.input_bits), (YES, 0, 0x10));
+        assert_eq!(c.pb.slots.iter().filter(|s| s.is_active()).count(), 1, "主機射一發");
+        assert!(!c.fire_flag(0, FireFlag::NewPress) && !c.fire_flag(0, FireFlag::Event), "旗標處理後清掉");
+        // 按住：有事件、不是新按。沒有第二座砲座不累計，也不射。
+        c.set_fire_flag(0, FireFlag::Event, true);
+        hold(&mut c, STYLES[0].keys.fire);
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].charge, c.pl.ship[0].fired), (0, YES), "按住的幀不動 fired，新按那幀的 Y 延續");
+        assert_eq!(c.pb.slots.iter().filter(|s| s.is_active()).count(), 1);
+        // 有第二座砲座就累計。
+        c.pl.ship[0].pods.second = YES;
+        for _ in 0..3 {
+            c.set_fire_flag(0, FireFlag::Event, true);
+            c.update_player(0);
+        }
+        assert_eq!(c.pl.ship[0].charge, 3);
+        // 沒有事件的幀把 fired 清成 N。
+        c.update_player(0);
+        assert_eq!(c.pl.ship[0].fired, NO);
+    }
+
+    #[test]
+    fn releasing_the_fire_key_with_enough_charge_sweeps_and_always_clears_the_charge() {
+        let mut c = core();
+        place(&mut c, 1, 9, 8);
+        c.pl.ship[1].charge = SWEEP_CHARGE - 1;
+        c.update_player(1);
+        assert_eq!((c.pl.ship[1].charge, c.pb.slots.iter().filter(|s| s.is_active()).count()), (0, 0), "不夠就只歸零");
+        c.pl.ship[1].charge = SWEEP_CHARGE;
+        c.update_player(1);
+        assert_eq!(c.pb.slots.iter().filter(|s| s.is_active()).count(), 6, "大掃射六顆");
+        assert!(c.pb.slots.iter().filter(|s| s.is_active()).all(|s| s.bullet.col == 9), "從玩家所在的欄射出");
+        // 開火鍵還按著就不結算。
+        let mut c = core();
+        place(&mut c, 1, 9, 8);
+        c.pl.ship[1].charge = 20;
+        hold(&mut c, STYLES[1].keys.fire);
+        c.update_player(1);
+        assert_eq!(c.pl.ship[1].charge, 20);
+    }
+
+    #[test]
+    fn the_turn_key_toggles_the_pod_facing_and_records_its_bit() {
+        let mut c = core();
+        place(&mut c, 0, 7, 8);
+        c.pl.ship[0].pods.facing = FACING_LEFT;
+        c.set_fire_flag(0, FireFlag::Turn, true);
+        c.update_player(0);
+        assert_eq!((c.pl.ship[0].pods.facing, c.pl.ship[0].input_bits), (FACING_RIGHT, 0x20));
+        assert!(!c.fire_flag(0, FireFlag::Turn));
+        c.set_fire_flag(0, FireFlag::Turn, true);
+        c.update_player(0);
+        assert_eq!(c.pl.ship[0].pods.facing, FACING_LEFT);
+        // 任何不是 `>` 的值再轉一次都變成 `>`。
+        c.pl.ship[0].pods.facing = 0;
+        c.set_fire_flag(0, FireFlag::Turn, true);
+        c.update_player(0);
+        assert_eq!(c.pl.ship[0].pods.facing, FACING_RIGHT);
+    }
+
+    #[test]
+    fn demo_replay_restores_keys_and_flags_and_player_two_reads_the_next_byte() {
+        let mut c = core();
+        c.set_demo_playing(true);
+        c.set_stage_frame(3);
+        c.record_demo_byte(3, 0b0010_0101); // 上、右、轉向
+        c.record_demo_byte(4, 0b0001_1010); // 下、左、開火
+        // 先擺滿髒值，確認還原會清掉。
+        for who in 0..PLAYER_COUNT {
+            let k = STYLES[who].keys;
+            for scan in [k.up, k.down, k.right, k.left, k.fire] {
+                c.set_key(scan, true);
             }
         }
+        c.replay_demo_input(0);
+        c.replay_demo_input(1);
+        let k1 = STYLES[0].keys;
+        assert_eq!([k1.up, k1.down, k1.right, k1.left, k1.fire].map(|s| c.key_held(s)), [true, false, true, false, false], "玩家 1 讀本幀位元組");
+        assert!(c.fire_flag(0, FireFlag::NewPress) && !c.fire_flag(0, FireFlag::Event) && c.fire_flag(0, FireFlag::Turn));
+        let k2 = STYLES[1].keys;
+        assert_eq!([k2.up, k2.down, k2.right, k2.left, k2.fire].map(|s| c.key_held(s)), [false, true, false, true, false], "玩家 2 讀下一個位元組");
+        assert!(c.fire_flag(1, FireFlag::NewPress) && c.fire_flag(1, FireFlag::Event));
+        assert!(c.fire_flag(1, FireFlag::Turn), "玩家 2 的轉向旗標預設就是 Y");
+        // 沒有轉向位元：玩家 1 清成 N，玩家 2 仍是 Y。
+        c.set_stage_frame(0);
+        c.replay_demo_input(0);
+        c.replay_demo_input(1);
+        assert!(!c.fire_flag(0, FireFlag::Turn) && c.fire_flag(1, FireFlag::Turn), "原版玩家 1 與玩家 2 的不對稱");
+        // 非展示時完全不動。
+        let mut c = core();
+        c.set_demo_playing(false);
+        c.set_key(k1.up, true);
+        c.replay_demo_input(0);
+        assert!(c.key_held(k1.up));
     }
 
-    /// `sub_14A59`：把玩家 1 的髒格形狀（`dseg:0F1Eh`）以 OR 疊進 G3（`964Ch`～`9C3Ch`）。
-    pub(crate) fn s14a59(&mut self) {
-        self.r.si = 0x0F1E;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DAC9)).wrapping_sub(1);
-        loop {
-            let outer = self.r.cx;
-            self.s14ad7();
-            loop {
-                if !(self.r.di > 0x9C3C || self.r.di < 0x964C) {
-                    self.r.set_al(self.ds.r8(self.r.si));
-                    let v = self.ds.r8(self.r.di) | self.r.al();
-                    self.ds.w8(self.r.di, v);
-                }
-                self.r.di = self.r.di.wrapping_add(2);
-                self.r.si = self.r.si.wrapping_add(1);
-                if !self.pl_loop() {
-                    break;
-                }
+    #[test]
+    fn only_player_one_records_the_input_bits_and_never_during_a_demo_or_past_the_limit() {
+        let mut c = core();
+        c.set_demo_playing(false);
+        c.pl.ship[0].input_bits = 0x2A;
+        c.pl.ship[1].input_bits = 0x15;
+        c.set_stage_frame(7);
+        c.record_demo_input(0);
+        c.record_demo_input(1);
+        assert_eq!((c.demo_byte(7), c.demo_byte(8)), (0x2A, 0), "玩家 2 沒有錄製碼");
+        c.set_stage_frame(LAST_RECORDED_FRAME);
+        c.record_demo_input(0);
+        assert_eq!(c.demo_byte(LAST_RECORDED_FRAME), 0x2A, "5DBh 還錄");
+        c.pl.ship[0].input_bits = 0x01;
+        c.set_stage_frame(LAST_RECORDED_FRAME + 1);
+        c.record_demo_input(0);
+        assert_eq!(c.demo_byte(LAST_RECORDED_FRAME + 1), 0, "超過 5DBh 不錄");
+        c.set_demo_playing(true);
+        c.set_stage_frame(9);
+        c.record_demo_input(0);
+        assert_eq!(c.demo_byte(9), 0, "展示中不錄");
+    }
+
+    #[test]
+    fn stage_start_places_both_players_and_resets_the_loadout_only_on_the_first_stage_or_in_a_demo() {
+        let loadout = |p: &Player| (p.weapon, p.hp, p.pods.first, p.pods.second, p.pods.facing);
+        for (stage, demo, reset) in [(b'A', b'N', true), (b'B', b'N', false), (b'B', b'Y', true), (b'A', b'Y', true)] {
+            let mut c = core();
+            c.set_stage_letter(stage);
+            c.set_demo_playing(demo == b'Y');
+            for p in &mut c.pl.ship {
+                *p = Player { weapon: 0x4C, hp: 0x0F, col: 20, row: 3, blit_x: 20, blit_y: 30, ..Player::default() };
+                p.pods.first = YES;
+                p.pods.second = YES;
+                p.pods.facing = 0x77;
             }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_14A90`：玩家 1 對 G4 地形的碰撞，只在第三關（`byte_1CFDB` = `C`）。
-    pub(crate) fn s14a90(&mut self) {
-        if self.ds.r8(a(0x1CFDB)) != 0x43 {
-            return;
-        }
-        self.r.si = 0x0F1E;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DAC9));
-        self.r.cx = 1;
-        loop {
-            let outer = self.r.cx;
-            self.s14afc();
-            loop {
-                if !(self.r.di > 0x95FC || self.r.di < 0x900C) {
-                    self.r.ax = self.ds.r16(self.r.di);
-                    if self.r.ax != 0 {
-                        self.ds.w8(a(0x1DAC0), 0x59);
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(2);
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_14AD7`：G3 的列位址。`di` = `964Ch` + 列表（`21C2h`）+ (欄 - 4) * 2 + 1，`cx` = 寬。`bx` 保留。
-    pub(crate) fn s14ad7(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x14 {
-            self.r.bx = 0x14;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x21C2));
-        self.r.ax = self.r.ax.wrapping_add(0x964C);
-        self.r.di = self.r.ax;
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.r.ax = self.r.ax.wrapping_sub(4);
-        self.r.ax <<= 1;
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.di = self.r.di.wrapping_add(self.r.ax);
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.bx = saved;
-    }
-
-    /// `sub_14AFC`：G4 的列位址。`di` = `900Ch` + 列表（`21C2h`）+ 欄 * 2 + 1，`cx` = 寬。`bx` 保留。
-    pub(crate) fn s14afc(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x14 {
-            self.r.bx = 0x14;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x21C2));
-        self.r.ax = self.r.ax.wrapping_add(0x900C);
-        self.r.di = self.r.ax;
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.r.ax <<= 1;
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.di = self.r.di.wrapping_add(self.r.ax);
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.bx = saved;
-    }
-
-    /// `sub_14B1E`：玩家 1 本體（形狀 `0F0Dh`）對 G1：任何非 0 且非 FFh 的格設 `byte_1DAC0` = `Y`。
-    pub(crate) fn s14b1e(&mut self) {
-        self.r.si = 0x0F0D;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DAC9));
-        loop {
-            let outer = self.r.cx;
-            self.s14c61();
-            loop {
-                let saved_ax = self.r.ax;
-                if !(self.r.di >= 0x217C
-                    || self.r.di <= 0x1B32
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() != 0xFF {
-                        self.ds.w8(a(0x1DAC0), 0x59);
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_14B63`：玩家 1 砲座（形狀 `0F16h`）對 G1，記錄最後掃到的格值於 `byte_1DA8A`，再呼叫 `sub_14C18`。
-    pub(crate) fn s14b63(&mut self) {
-        self.ds.w8(a(0x1DA8A), 0);
-        self.r.si = 0x0F16;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DA9E));
-        loop {
-            let outer = self.r.cx;
-            self.s14c3d();
-            loop {
-                let saved_ax = self.r.ax;
-                if !(self.r.di >= 0x217C
-                    || self.r.di <= 0x1B32
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() != 0xFF {
-                        self.ds.w8(a(0x1DA8A), self.r.al());
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-        self.s14c18();
-    }
-
-    /// `sub_14BAE`：玩家 1 砲座（用本體形狀 `0F0Dh`）對 G2：格值高三位含 E0h 位元者略過，其餘刪除該敵彈。
-    /// `sub_14D54` 會改寫 `bx`，之後的列計數沿用殘值（原版行為）。
-    pub(crate) fn s14bae(&mut self) {
-        self.r.si = 0x0F0D;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DA9E));
-        loop {
-            let outer = self.r.cx;
-            self.s14bf4();
-            loop {
-                let (saved_cx, saved_ax) = (self.r.cx, self.r.ax);
-                if !(self.r.di >= 0x3266
-                    || self.r.di <= 0x2C1C
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() & 0xE0 == 0 {
-                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
-                            self.r.bx = bx;
-                        }
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                self.r.cx = saved_cx;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_14BF4`：G2 的列位址（玩家 1 砲座）。`di` = `2C1Ch` + 列表（`1B0Ah`，`bx` 不小於 17Ch 取 1F4h）+ `word_1DA9C`，
-    /// `dx` = 列基底 + 45h，`ax` = 列基底，`cx` = 寬。`bx` 保留。
-    pub(crate) fn s14bf4(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x2C1C);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DA9C)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_14C18`：砲座碰到的敵人（`byte_1DA8A` 為槽號加 1）：w16 的低位元組加 1，高位元組設 1。
-    /// 裝甲格 FEh 沒有檢查，會取到指標 0 而把字組寫到 `dseg:0020h`（`11` 第 5.3 節）。
-    /// 敵人池指標表與傷害字組經 `entity_link`、`add_entity_damage` 存取（`entity.rs`）。
-    pub(crate) fn s14c18(&mut self) {
-        self.r.set_al(self.ds.r8(a(0x1DA8A)));
-        if self.r.al() == 0xFF {
-            return;
-        }
-        if self.r.al() == 0 {
-            return;
-        }
-        self.r.set_al(self.r.al().wrapping_sub(1));
-        self.r.set_ah(0);
-        self.r.bx = self.r.ax;
-        self.r.bx <<= 1;
-        self.r.ax = self.entity_link(self.r.al());
-        // armor_cell_index：裝甲格 FEh 與已釋放的槽不寫傷害。
-        if self.fixes.armor_cell_index && (self.r.bx == 0x1FA || self.r.ax == 0) {
-            return;
-        }
-        let link = self.r.ax;
-        self.r.si = link.wrapping_add(0x20);
-        self.r.ax = self.add_entity_damage(link, 1);
-    }
-
-    /// `sub_14C3D`：G1 的列位址（玩家 1 砲座）。`di` = `1B32h` + 列表 + `word_1DA9C`，`dx` = 列基底 + 45h。
-    pub(crate) fn s14c3d(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x1B32);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DA9C)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_14C61`：G1 的列位址（玩家 1 本體）。`di` = `1B32h` + 列表 + `word_1DACB`，`dx` = 列基底 + 45h。
-    pub(crate) fn s14c61(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x1B32);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DACB)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_14C85`：玩家 1 本體（形狀 `0F0Dh`，列加 1）對 G2：非 0 的格刪除該敵彈，再判定道具或傷害。
-    /// `sub_14D54` 改寫 `bx`，之後的列計數沿用殘值（原版行為）。
-    pub(crate) fn s14c85(&mut self) {
-        self.ds.w8(a(0x1DAA8), 0x4E);
-        self.r.si = 0x0F0D;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DAC9));
-        self.r.bx = self.r.bx.wrapping_add(1);
-        loop {
-            let outer = self.r.cx;
-            self.s14d68();
-            loop {
-                let (saved_cx, saved_ax) = (self.r.cx, self.r.ax);
-                if !(self.r.di >= 0x3266
-                    || self.r.di <= 0x2C1C
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 {
-                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
-                            self.r.bx = bx;
-                        }
-                        self.s14cd4();
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                self.r.cx = saved_cx;
-                if !self.pl_loop() {
-                    break;
+            c.place_players_for_stage();
+            for (who, p) in c.pl.ship.iter().enumerate() {
+                assert_eq!((p.col, p.row, p.blit_x, p.blit_y), (5, 10, 5, 100), "玩家 {} 的起點", who + 1);
+                if reset {
+                    assert_eq!(loadout(p), (0, 0xFF, NO, NO, STYLES[who].start_facing), "關 {} 展示 {}", stage as char, demo as char);
+                } else {
+                    assert_eq!(loadout(p), (0x4C, 0x0F, YES, YES, 0x77), "裝備跨關保留");
                 }
             }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
         }
-        self.s14d04();
+        assert_eq!((STYLES[0].start_facing, STYLES[1].start_facing), (FACING_LEFT, FACING_RIGHT), "玩家 1 朝左，玩家 2 朝右");
     }
 
-    /// `sub_14CD4`：以格值高四位判定。80h、40h、C0h、20h 是道具，記到 `byte_1DAA8` 並設光柱 `word_1DAA6` = FF42h，其餘設 `byte_1DAC0` = `Y`。
-    pub(crate) fn s14cd4(&mut self) {
-        self.r.set_ah(self.r.al());
-        self.r.set_ah(self.r.ah() & 0xF0);
-        let ah = self.r.ah();
-        if ah == 0x80 || ah == 0x40 || ah == 0xC0 || ah == 0x20 {
-            self.ds.w8(a(0x1DAA8), ah);
-            self.ds.w16(a(0x1DAA6), 0xFF42);
-            return;
-        }
-        self.ds.w8(a(0x1DAC0), 0x59);
+    #[test]
+    fn a_new_core_starts_with_only_player_one_present() {
+        // Core::new 為了直接進第一關設存活位元組；它在結構裡，不能只寫資料段（資料段的值會在下一次 store 被蓋掉）。
+        let c = core();
+        assert_eq!(c.pl.alive, 0x01);
+        assert!(c.player_alive(0) && !c.player_alive(1));
+        assert!(c.any_player_alive());
     }
 
-    /// `sub_14D04`：依撿到的道具升級。先啟用砲座 1、砲座 2，之後依 80h、40h、C0h、20h 換武器 `L`、`B`、`K`、`S`。
-    pub(crate) fn s14d04(&mut self) {
-        self.r.set_al(self.ds.r8(a(0x1DAA8)));
-        let al = self.r.al();
-        if al == 0x4E {
-            return;
-        }
-        if self.ds.r8(a(0x1DA8D)) == 0x4E {
-            self.ds.w8(a(0x1DA8D), 0x59);
-            return;
-        }
-        if self.ds.r8(a(0x1DA8E)) == 0x4E {
-            self.ds.w8(a(0x1DA8E), 0x59);
-            return;
-        }
-        if al == 0x80 {
-            self.ds.w16(a(0x1DAA9), 0x4C);
-        } else if al == 0x40 {
-            self.ds.w16(a(0x1DAA9), 0x42);
-        } else if al == 0xC0 {
-            self.ds.w16(a(0x1DAA9), 0x4B);
-        } else if al == 0x20 {
-            self.ds.w16(a(0x1DAA9), 0x53);
-        }
+    #[test]
+    fn accessors_read_the_player_variables() {
+        let mut c = core();
+        c.set_players([Some((3, 4)), Some((5, 6))]);
+        assert_eq!((c.player_alive(0), c.player_alive(1)), (true, true));
+        assert_eq!((c.player_cell(0), c.player_cell(1)), ((3, 4), (5, 6)));
+        c.set_players([None, Some((9, 8))]);
+        assert_eq!((c.player_alive(0), c.player_alive(1)), (false, true));
+        assert_eq!(c.player_cell(1), (9, 8));
+        c.set_players_present(0x11);
+        assert_eq!(c.pl.alive, 0x11);
+        c.refill_health();
+        assert_eq!((c.pl.ship[0].hp, c.pl.ship[1].hp), (0xFF, 0xFF));
     }
 
-    /// `sub_14D68`：G2 的列位址（玩家 1 本體）。`di` = `2C1Ch` + 列表 + `word_1DACB`，`dx` = 列基底 + 45h。
-    pub(crate) fn s14d68(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x2C1C);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DACB)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
+    #[test]
+    fn the_public_status_views_read_the_mirrored_state() {
+        use crate::game::{Fixes, Game, Start};
+        // 全 0 的映像開一局：玩家 1 在場，起點欄 5 列 10，血量滿，砲座沒有。
+        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let game = Game::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE);
+        let status = game.player_status(0);
+        assert_eq!((status.x, status.y), (5, 100));
+        assert!(status.controllable && status.can_up && status.can_down && status.can_left && status.can_right);
+        let p2 = game.player_status(1);
+        assert!(!p2.controllable, "玩家 2 不在場");
+        let hud = game.hud_status(0);
+        assert_eq!((hud.active, hud.hp, hud.weapon, hud.pods, hud.charge), (true, 0xFF, 0, 0, 0));
+        assert!(!game.hud_status(1).active);
     }
 
-    /// `sub_14F47`：每關開始的玩家 1 位置（欄 5、列 10）。第一關或示範時另重設武器、血量、砲座與朝向。
-    pub(crate) fn s14f47(&mut self) {
-        self.ds.w16(a(0x1DACB), 5);
-        self.ds.w16(a(0x1DAC9), 0x0A);
-        self.r.ax = self.ds.r16(a(0x1DACB));
-        self.ds.w16(a(0x1DAC7), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAC9));
-        self.r.bx = 0x0A;
-        self.r.ax = (self.r.al() as u16) * (self.r.bl() as u16);
-        self.ds.w16(a(0x1DAC5), self.r.ax);
-        if self.ds.r8(a(0x1CFDC)) != 0x59 && self.ds.r8(a(0x1CFDB)) != 0x41 {
-            return;
-        }
-        // 14F73
-        self.ds.w16(a(0x1DAA9), 0);
-        self.ds.w16(a(0x1CFDE), 0xFF);
-        self.ds.w8(a(0x1DA8D), 0x4E);
-        self.ds.w8(a(0x1DA8E), 0x4E);
-        self.ds.w16(a(0x1DA8F), 0x3C);
+    #[test]
+    fn the_status_views_follow_the_documented_conditions() {
+        // Game 只有資料段複本，它的兩個視圖從 Mirror 讀回結構，條件和移動函式用的是同一組。
+        let mut players = Players { alive: 0x11, ..Players::default() };
+        players.ship[0] = Player { hp: 0, col: 0x21, row: 0, blit_x: 0x21, blit_y: 0, charge: 9, weapon: 0x4C, ..Player::default() };
+        players.ship[0].pods.first = YES;
+        players.ship[0].pods.second = YES;
+        players.ship[1] = Player { hp: 0x0F, col: 1, row: 0x10, blit_x: 1, blit_y: 0x100, ..Player::default() };
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        players.store(&mut ds);
+        let back = Players::from_dseg(&ds);
+        assert!(back.is_alive(0) && back.is_alive(1));
+        let p1 = back.ship[0];
+        assert!(!p1.can_move_right() && !p1.can_move_up() && p1.can_move_down() && p1.can_move_left());
+        assert_eq!((p1.hp, p1.pods.installed(), p1.charge, p1.weapon), (0, 2, 9, 0x4C));
+        let p2 = back.ship[1];
+        assert!(!p2.can_move_left() && !p2.can_move_down() && p2.can_move_up() && p2.can_move_right());
     }
 
-    // ---------------------------------------------------------------
-    // 玩家 2
-    // ---------------------------------------------------------------
-
-    /// `sub_14F92`：玩家 2 每幀入口。`byte_1CFAD` 為 `F` 時略過。
-    pub(crate) fn s14f92(&mut self) {
-        if self.ds.r8(a(0x1CFAD)) == 0x46 {
-            return;
-        }
-        self.ds.w8(a(0x1DB06), 0);
-        self.s14fc5();
-        self.s1502f();
-        self.s14fae();
+    #[test]
+    fn installed_pods_count_every_flag_that_is_not_n() {
+        let mut pods = Pods { first: NO, second: NO, ..Pods::default() };
+        assert_eq!(pods.installed(), 0);
+        pods.first = YES;
+        assert_eq!((pods.installed(), pods.first_flying(), pods.second_flying()), (1, true, false));
+        pods.second = YES;
+        assert_eq!((pods.installed(), pods.second_flying()), (2, true));
+        // 兩個旗標的判斷形式不同：第一座只認 `Y` 才飛，第二座只要不是 `N` 就飛，兩者都是原版的比較。
+        pods.first = 0;
+        pods.second = 0;
+        assert_eq!((pods.first_flying(), pods.second_flying(), pods.installed()), (false, true, 2));
     }
 
-    /// `sub_14FAE`：玩家 2 沒有錄製碼，只剩條件比較與段暫存器載入，沒有任何寫入。
-    pub(crate) fn s14fae(&mut self) {}
-
-    /// `sub_14FC5`：示範時由 `dseg:0AAE3h[幀計數]` 還原玩家 2 的方向與開火旗標。
-    pub(crate) fn s14fc5(&mut self) {
-        if self.ds.r8(a(0x1CFDC)) == 0x4E {
-            return;
-        }
-        self.ds.w8(a(0x274BB), 0);
-        self.ds.w8(a(0x274AC), 0);
-        self.ds.w8(a(0x274AE), 0);
-        self.ds.w8(a(0x2749F), 0);
-        self.ds.w8(a(0x274B5), 0);
-        self.ds.w8(a(0x273A8), 0x59);
-        self.ds.w8(a(0x273AC), 0x59);
-        self.r.si = 0xAAE3u16.wrapping_add(self.ds.r16(a(0x1CFE2)));
-        self.r.set_al(self.ds.r8(self.r.si));
-        let al = self.r.al();
-        if al & 1 != 0 {
-            self.ds.w8(a(0x2749F), 1);
-        }
-        if al & 2 != 0 {
-            self.ds.w8(a(0x274BB), 1);
-        }
-        if al & 4 != 0 {
-            self.ds.w8(a(0x274AE), 1);
-        }
-        if al & 8 != 0 {
-            self.ds.w8(a(0x274AC), 1);
-        }
-        if al & 0x10 != 0 {
-            self.ds.w8(a(0x273AB), 0x59);
-        }
-        if al & 0x20 != 0 {
-            self.ds.w8(a(0x273AC), 0x59);
-        }
+    #[test]
+    fn the_style_table_matches_the_documented_machine_code() {
+        // docs/re/11-entities-combat.md 第 9.4、9.6 節與機器碼：鍵位掃描碼由按鍵狀態表位址（2748Bh + 掃描碼）換算。
+        let [one, two] = STYLES;
+        assert_eq!(
+            [one.keys.up_left, one.keys.up, one.keys.up_right, one.keys.left, one.keys.right, one.keys.down_left, one.keys.down, one.keys.down_right, one.keys.fire]
+                .map(|s| 0x2748B + u32::from(s)),
+            [0x274D2, 0x274D3, 0x274D4, 0x274D6, 0x274D8, 0x274DA, 0x274DB, 0x274DC, 0x274C1]
+        );
+        assert_eq!(
+            [two.keys.up_left, two.keys.up, two.keys.up_right, two.keys.left, two.keys.right, two.keys.down_left, two.keys.down, two.keys.down_right, two.keys.fire]
+                .map(|s| 0x2748B + u32::from(s)),
+            [0x2749E, 0x2749F, 0x274A0, 0x274AC, 0x274AE, 0x274BA, 0x274BB, 0x274BC, 0x274B5]
+        );
+        assert_eq!([one.images.level, one.images.up, one.images.down], [9, 0x0B, 7]);
+        assert_eq!([two.images.level, two.images.up, two.images.down], [0x10, 0x0E, 0x12]);
+        assert_eq!((one.pod.row_offset, one.pod.gap_rows, two.pod.row_offset, two.pod.gap_rows), (3, 5, 1, 2));
+        assert_eq!((one.pod.y_offset, one.pod.draw_dy, two.pod.y_offset, two.pod.draw_dy), (0x1E, 5, 0x0A, 2));
+        assert_eq!(((one.muzzle.image, one.muzzle.dx, one.muzzle.dy), (two.muzzle.image, two.muzzle.dx, two.muzzle.dy)), ((0x11, 3, 3), (0x0A, 3, 6)));
+        assert_eq!((one.survivors_mask, two.survivors_mask, one.alive_bit, two.alive_bit), (0xF0, 0x0F, 0x01, 0x10));
     }
 
-    /// `sub_1502F`：玩家 2 的命中結算、方向鍵、轉向、充能與開火。
-    pub(crate) fn s1502f(&mut self) {
-        if self.ds.r8(a(0x1CFDD)) & 0x10 == 0 {
-            return;
-        }
-        self.ds.w16(a(0x1DB17), 0x10);
-        self.ds.w8(a(0x1DB0D), 0x4E);
-        if self.ds.r8(a(0x1DB1A)) != 0x4E {
-            if self.ds.r8(a(0x273A5)) != 0x59 {
-                self.r.ax = self.ds.r16(a(0x1CFE0));
-                self.r.ax >>= 1;
-                self.ds.w16(a(0x1CFE0), self.r.ax);
-            }
-            self.s1130d();
-            self.ds.w8(a(0x1DB1B), 6);
-            if self.ds.r16(a(0x1CFE0)) == 0 {
-                self.s151a7();
-                return;
-            }
-        }
-        // 1506D
-        self.ds.w8(a(0x1DB1D), 0x0F);
-        self.ds.w8(a(0x1DB1A), 0x4E);
-        // 垂直：上（2749E、2749F、274A0）優先於下（274BA、274BB、274BC）。
-        if self.pl_k(0x2749E) || self.pl_k(0x2749F) || self.pl_k(0x274A0) {
-            self.s151da();
-            self.pl_or8(0x1DB06, 1);
-        } else if self.pl_k(0x274BA) || self.pl_k(0x274BB) || self.pl_k(0x274BC) {
-            self.s151f1();
-            self.pl_or8(0x1DB06, 2);
-        }
-        // 水平：左（274BA、274AC、2749E）優先於右（274BC、274AE、274A0）。
-        if self.pl_k(0x274BA) || self.pl_k(0x274AC) || self.pl_k(0x2749E) {
-            self.s15220();
-            self.pl_or8(0x1DB06, 8);
-        } else if self.pl_k(0x274BC) || self.pl_k(0x274AE) || self.pl_k(0x274A0) {
-            self.s15208();
-            self.pl_or8(0x1DB06, 4);
-        }
-        // 150FF：轉向鍵。
-        if self.ds.r8(a(0x273AC)) == 0x59 {
-            self.ds.w8(a(0x273AC), 0x4E);
-            self.pl_or8(0x1DB06, 0x20);
-            if self.ds.r16(a(0x1DAF1)) != 0x3E {
-                self.ds.w16(a(0x1DAF1), 0x3E);
-            } else {
-                self.ds.w16(a(0x1DAF1), 0x3C);
-            }
-        }
-        // 15126：左 Shift 不在按住（byte_274B5 != 1）：結算充能。
-        if self.ds.r8(a(0x274B5)) != 1 {
-            if self.ds.r16(a(0x1DAED)) >= 0x0E {
-                self.fire_sweep(self.ds.r16(a(0x1DB39)));
-            }
-            self.ds.w16(a(0x1DAED), 0);
-        }
-        // 1514F
-        if self.ds.r8(a(0x273AB)) != 0x59 {
-            self.ds.w8(a(0x1DB07), 0x4E);
-            return;
-        }
-        self.ds.w8(a(0x273AB), 0x4E);
-        if self.ds.r8(a(0x273A8)) != 0x59 {
-            if self.ds.r8(a(0x1DAF0)) != 0x4E {
-                self.pl_addw(0x1DAED, 1);
-            }
-            return;
-        }
-        // 15175：新按，主機射一發普通彈。
-        self.ds.w16(a(0x1DAED), 0);
-        self.ds.w8(a(0x273A8), 0x4E);
-        self.fire_player_bullets(0, Facing::Right, self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
-        self.pl_or8(0x1DB06, 0x10);
-        self.ds.w8(a(0x1DB07), 0x59);
-    }
-
-    /// `sub_151A7`：玩家 2 血量歸零後的死亡動畫，15 幀後清存活位元 4。
-    pub(crate) fn s151a7(&mut self) {
-        let v = self.ds.r8(a(0x1DB1D)).wrapping_sub(1);
-        self.ds.w8(a(0x1DB1D), v);
-        if v == 0 {
-            // 151CE
-            let f = self.ds.r8(a(0x1CFDD)) & 0x0F;
-            self.ds.w8(a(0x1CFDD), f);
-            self.ds.w8(a(0x1DB1D), 6);
-            return;
-        }
-        self.s151f1();
-        self.s15208();
-        let (x, y) = (self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
-        self.spawn_effect(EffectKind::PlayerDeath, x, y);
-    }
-
-    /// `sub_151DA`：玩家 2 上移，圖 0Eh。
-    pub(crate) fn s151da(&mut self) {
-        if (self.ds.r16(a(0x1DB37)) as i16) <= 0 {
-            return;
-        }
-        self.pl_addw(0x1DB37, 1u16.wrapping_neg());
-        self.pl_addw(0x1DB1F, 0x0Au16.wrapping_neg());
-        self.ds.w16(a(0x1DB17), 0x0E);
-    }
-
-    /// `sub_151F1`：玩家 2 下移，圖 12h。
-    pub(crate) fn s151f1(&mut self) {
-        if self.ds.r16(a(0x1DB37)) >= 0x10 {
-            return;
-        }
-        self.pl_addw(0x1DB37, 1);
-        self.pl_addw(0x1DB1F, 0x0A);
-        self.ds.w16(a(0x1DB17), 0x12);
-    }
-
-    /// `sub_15208`：玩家 2 右移，尾焰旗標 `Y`。
-    pub(crate) fn s15208(&mut self) {
-        if self.ds.r16(a(0x1DB39)) >= 0x21 {
-            return;
-        }
-        self.pl_addw(0x1DB39, 2);
-        self.pl_addw(0x1DB21, 2);
-        self.ds.w8(a(0x1DB0D), 0x59);
-    }
-
-    /// `sub_15220`：玩家 2 左移。
-    pub(crate) fn s15220(&mut self) {
-        if (self.ds.r16(a(0x1DB39)) as i16) <= 1 {
-            return;
-        }
-        self.pl_addw(0x1DB39, 2u16.wrapping_neg());
-        self.pl_addw(0x1DB21, 2u16.wrapping_neg());
-    }
-
-    /// `sub_15232`：玩家 2 的碰撞與繪製。玩家編號 1。
-    pub(crate) fn s15232(&mut self) {
-        if self.ds.r8(a(0x1CFDD)) & 0x10 == 0 {
-            return;
-        }
-        self.s15338();
-        self.r.ax = self.ds.r16(a(0x1DB21));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB1F));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB17));
-        self.ds.w16(a(0x26888), self.r.ax);
-        self.set_obj(Pool::Player, 1);
-        self.s18d46();
-        if self.ds.r8(a(0x1DB1B)) != 0 {
-            // 15276
-            let v = self.ds.r8(a(0x1DB1B)).wrapping_sub(1);
-            self.ds.w8(a(0x1DB1B), v);
-            if self.ds.r16(a(0x26872)) != 0 {
-                self.s18d89();
-            }
-            self.clear_obj();
-            return;
-        }
-        self.pl_addw(0x26882, 1);
-        self.s18ce2();
-        self.s152ea();
-        self.s1530f();
-        self.s152b9();
-        if self.ds.r8(a(0x1DB0D)) != 0x59 {
-            self.clear_obj();
-            return;
-        }
-        // 15285：尾焰。
-        self.ds.w16(a(0x26888), 0x0D);
-        self.pl_addw(0x26882, 0x0Au16.wrapping_neg());
-        if self.ds.r16(a(0x26872)) != 0 {
-            self.ds.w16(a(0x26888), 0x0C);
-        }
-        self.r.ax = self.ds.r16(a(0x1DB21)).wrapping_sub(4);
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB1F)).wrapping_sub(2);
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.s18d46();
-        self.s18ce2();
-        self.s15587();
-        self.clear_obj();
-    }
-
-    /// `sub_152B9`：玩家 2 本幀開火時的發射閃光（圖 0Ah，位置加 3、6），x、y 還原。
-    pub(crate) fn s152b9(&mut self) {
-        if self.ds.r8(a(0x1DB07)) != 0x59 {
-            return;
-        }
-        let ax = self.ds.r16(a(0x26880));
-        let bx = self.ds.r16(a(0x26882));
-        self.ds.w16(a(0x26888), 0x0A);
-        self.pl_addw(0x26880, 3);
-        self.pl_addw(0x26882, 6);
-        self.s18d46();
-        self.s18ce2();
-        self.r.bx = bx;
-        self.r.ax = ax;
-        self.ds.w16(a(0x26880), ax);
-        self.ds.w16(a(0x26882), bx);
-    }
-
-    /// `sub_152EA`：玩家 2 的撿取光柱，`word_1DB08` 為 y。
-    pub(crate) fn s152ea(&mut self) {
-        if (self.ds.r16(a(0x1DB08)) as i16) > 0 {
-            return;
-        }
-        self.pl_addw(0x1DB08, 0x28);
-        self.r.ax = self.ds.r16(a(0x1DB21));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB08));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.ds.w16(a(0x26888), 8);
-        self.s18d46();
-        self.s18ce2();
-    }
-
-    /// `sub_1530F`：玩家 2 的碰撞，受擊時播特效 `S`。
-    pub(crate) fn s1530f(&mut self) {
-        self.s1555a();
-        self.s1564c();
-        self.s155be();
-        self.s157b3();
-        if self.ds.r8(a(0x1DB1A)) == 0x4E {
-            return;
-        }
-        let (x, y) = (self.ds.r16(a(0x1DB39)), self.ds.r16(a(0x1DB37)));
-        self.spawn_effect(EffectKind::SparkRight, x, y);
-    }
-
-    /// `sub_15338`：玩家 2 的砲座：位置、碰撞、繪製、發射。砲座編號 2、3。
-    pub(crate) fn s15338(&mut self) {
-        if self.ds.r8(a(0x1DAEF)) != 0x59 {
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAFA));
-        self.ds.w16(a(0x1DAFE), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DAFC));
-        self.ds.w16(a(0x1DB00), self.r.ax);
-        self.s15691();
-        self.s156dc();
-        self.r.ax = self.ds.r16(a(0x1DB02));
-        self.ds.w16(a(0x26880), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB04)).wrapping_add(2);
-        self.ds.w16(a(0x26882), self.r.ax);
-        let y0 = self.r.ax; // push ax
-        self.r.ax = self.ds.r16(a(0x1DAF6));
-        self.ds.w16(a(0x26888), self.r.ax);
-        self.set_obj(Pool::Pod, 2);
-        self.s18d46();
-        self.s18ce2();
-        if self.ds.r8(a(0x1DAF0)) != 0x4E {
-            self.pl_addw(0x26882, 0x14);
-            self.set_obj(Pool::Pod, 3);
-            self.s18d46();
-            self.s18ce2();
-            self.r.ax = self.ds.r16(a(0x1DAFA));
-            self.ds.w16(a(0x1DAFE), self.r.ax);
-            self.r.ax = self.ds.r16(a(0x1DAFC)).wrapping_add(2);
-            self.ds.w16(a(0x1DB00), self.r.ax);
-            self.s15691();
-            self.s156dc();
-        }
-        self.clear_obj();
-        // 15395
-        self.r.ax = y0; // pop ax
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.s15436();
-        if self.ds.r8(a(0x1DB07)) != 0x59 {
-            return;
-        }
-        // 153A4：砲座開火。第二座砲座在第一座下方 2 列（玩家 1 是 5 列）。
-        let facing = Facing::from_word(self.ds.r16(a(0x1DAF1)));
-        let (col, row, weapon) = (self.ds.r16(a(0x1DAFA)), self.ds.r16(a(0x1DAFC)), self.ds.r16(a(0x1DB0B)));
-        self.fire_player_bullets(weapon, facing, col, row);
-        if self.ds.r8(a(0x1DAF0)) != 0x4E {
-            self.fire_player_bullets(weapon, facing, col, row.wrapping_add(2));
-        }
-        // 153DE：噴焰（圖 0Ah）。
-        if self.ds.r16(a(0x1DAF1)) != 0x3E {
-            self.pl_addw(0x26880, 1u16.wrapping_neg());
-            self.pl_addw(0x26882, 2);
-        } else {
-            self.pl_addw(0x26880, 2);
-            self.pl_addw(0x26882, 2);
-        }
-        self.ds.w16(a(0x26888), 0x0A);
-        self.set_obj(Pool::Pod, 2);
-        self.s18d46();
-        self.s18ce2();
-        if self.ds.r8(a(0x1DAF0)) != 0x4E {
-            self.pl_addw(0x26882, 0x14);
-            self.set_obj(Pool::Pod, 3);
-            self.s18d46();
-            self.s18ce2();
-        }
-        self.clear_obj();
-    }
-
-    /// `sub_15436`：玩家 2 砲座位置與圖框，充能小於 6 用圖 1Eh 或 24h，否則交給 `sub_1549B`。
-    pub(crate) fn s15436(&mut self) {
-        if self.ds.r16(a(0x1DAED)) >= 6 {
-            self.s1549b();
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DB1F)).wrapping_sub(0x0A);
-        self.ds.w16(a(0x1DB04), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB21)).wrapping_add(3);
-        self.ds.w16(a(0x1DB02), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37)).wrapping_sub(1);
-        self.ds.w16(a(0x1DAFC), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB39)).wrapping_add(3);
-        self.ds.w16(a(0x1DAFA), self.r.ax);
-        self.pl_addw(0x1DAF8, 1);
-        if self.ds.r16(a(0x1DAF8)) >= 5 {
-            self.ds.w16(a(0x1DAF8), 0);
-        }
-        if self.ds.r16(a(0x1DAF1)) == 0x3E {
-            // 15491
-            self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x1E);
-            self.ds.w16(a(0x1DAF6), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x24);
-        self.ds.w16(a(0x1DAF6), self.r.ax);
-        self.pl_addw(0x1DAFA, 5u16.wrapping_neg());
-        self.pl_addw(0x1DB02, 5u16.wrapping_neg());
-    }
-
-    /// `sub_1549B`：玩家 2 充能 6 至 13 的砲座圖框（31h 起），14 以上交給 `sub_15500`。
-    pub(crate) fn s1549b(&mut self) {
-        if self.ds.r16(a(0x1DAED)) >= 0x0E {
-            self.s15500();
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DB1F)).wrapping_sub(0x0A);
-        self.ds.w16(a(0x1DB04), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB21)).wrapping_add(3);
-        self.ds.w16(a(0x1DB02), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37)).wrapping_sub(1);
-        self.ds.w16(a(0x1DAFC), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB39)).wrapping_add(3);
-        self.ds.w16(a(0x1DAFA), self.r.ax);
-        self.pl_addw(0x1DAF8, 1);
-        if self.ds.r16(a(0x1DAF8)) >= 3 {
-            self.ds.w16(a(0x1DAF8), 0);
-        }
-        if self.ds.r16(a(0x1DAF1)) == 0x3E {
-            // 154F6
-            self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x31);
-            self.ds.w16(a(0x1DAF6), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x31);
-        self.ds.w16(a(0x1DAF6), self.r.ax);
-        self.pl_addw(0x1DAFA, 5u16.wrapping_neg());
-        self.pl_addw(0x1DB02, 5u16.wrapping_neg());
-    }
-
-    /// `sub_15500`：玩家 2 充能 14 以上的砲座圖框（34h 起）。
-    pub(crate) fn s15500(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1DB1F)).wrapping_sub(0x0A);
-        self.ds.w16(a(0x1DB04), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB21)).wrapping_add(3);
-        self.ds.w16(a(0x1DB02), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37)).wrapping_sub(1);
-        self.ds.w16(a(0x1DAFC), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB39)).wrapping_add(3);
-        self.ds.w16(a(0x1DAFA), self.r.ax);
-        self.pl_addw(0x1DAF8, 1);
-        if self.ds.r16(a(0x1DAF8)) >= 3 {
-            self.ds.w16(a(0x1DAF8), 0);
-        }
-        if self.ds.r16(a(0x1DAF1)) == 0x3E {
-            // 15550
-            self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x34);
-            self.ds.w16(a(0x1DAF6), self.r.ax);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DAF8)).wrapping_add(0x34);
-        self.ds.w16(a(0x1DAF6), self.r.ax);
-        self.pl_addw(0x1DAFA, 5u16.wrapping_neg());
-        self.pl_addw(0x1DB02, 5u16.wrapping_neg());
-    }
-
-    /// `sub_1555A`：在 G3 以玩家 2 的位置標 2 列 4 欄的髒格（值 1）。
-    pub(crate) fn s1555a(&mut self) {
-        self.r.ax = self.ds.r16(a(0x1DB37));
-        self.r.bx = 0x28;
-        self.r.ax = (self.r.al() as u16) * (self.r.bl() as u16);
-        self.r.ax = self.r.ax.wrapping_add(self.ds.r16(a(0x1DB39)));
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.ax <<= 1;
-        self.r.bx = self.r.ax;
-        self.r.cx = 2;
-        self.r.ax = 1;
-        loop {
-            let outer = self.r.cx;
-            self.r.cx = 4;
-            loop {
-                self.ds.w16(self.r.bx.wrapping_sub(0x69B4), self.r.ax);
-                self.r.bx = self.r.bx.wrapping_add(2);
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.cx = outer;
-            self.r.bx = self.r.bx.wrapping_add(0x48);
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_15587`：玩家 2 的髒格形狀（`dseg:0F8Dh`）以 OR 疊進 G3。
-    pub(crate) fn s15587(&mut self) {
-        self.r.si = 0x0F8D;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB37)).wrapping_sub(1);
-        loop {
-            let outer = self.r.cx;
-            self.s15605();
-            loop {
-                if !(self.r.di > 0x9C3C || self.r.di < 0x964C) {
-                    self.r.set_al(self.ds.r8(self.r.si));
-                    let v = self.ds.r8(self.r.di) | self.r.al();
-                    self.ds.w8(self.r.di, v);
-                }
-                self.r.di = self.r.di.wrapping_add(2);
-                self.r.si = self.r.si.wrapping_add(1);
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_155BE`：玩家 2 對 G4 地形的碰撞，只在第三關。
-    pub(crate) fn s155be(&mut self) {
-        if self.ds.r8(a(0x1CFDB)) != 0x43 {
-            return;
-        }
-        self.r.si = 0x0F8D;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB37));
-        self.r.cx = 1;
-        loop {
-            let outer = self.r.cx;
-            self.s1562a();
-            loop {
-                if !(self.r.di > 0x95FC || self.r.di < 0x900C) {
-                    self.r.ax = self.ds.r16(self.r.di);
-                    if self.r.ax != 0 {
-                        self.ds.w8(a(0x1DB1A), 0x59);
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(2);
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_15605`：G3 的列位址（玩家 2）。
-    pub(crate) fn s15605(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x14 {
-            self.r.bx = 0x14;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x21C2));
-        self.r.ax = self.r.ax.wrapping_add(0x964C);
-        self.r.di = self.r.ax;
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.r.ax = self.r.ax.wrapping_sub(4);
-        self.r.ax <<= 1;
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.di = self.r.di.wrapping_add(self.r.ax);
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.bx = saved;
-    }
-
-    /// `sub_1562A`：G4 的列位址（玩家 2）。
-    pub(crate) fn s1562a(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x14 {
-            self.r.bx = 0x14;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x21C2));
-        self.r.ax = self.r.ax.wrapping_add(0x900C);
-        self.r.di = self.r.ax;
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.r.ax <<= 1;
-        self.r.ax = self.r.ax.wrapping_add(1);
-        self.r.di = self.r.di.wrapping_add(self.r.ax);
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.bx = saved;
-    }
-
-    /// `sub_1564C`：玩家 2 本體（形狀 `0F7Bh`）對 G1，設 `byte_1DB1A` = `Y`。
-    pub(crate) fn s1564c(&mut self) {
-        self.r.si = 0x0F7B;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB37));
-        loop {
-            let outer = self.r.cx;
-            self.s1578f();
-            loop {
-                let saved_ax = self.r.ax;
-                if !(self.r.di >= 0x217C
-                    || self.r.di <= 0x1B32
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() != 0xFF {
-                        self.ds.w8(a(0x1DB1A), 0x59);
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_15691`：玩家 2 砲座（形狀 `0F85h`）對 G1，記錄於 `byte_1DAEC`，再呼叫 `sub_15746`。
-    pub(crate) fn s15691(&mut self) {
-        self.ds.w8(a(0x1DAEC), 0);
-        self.r.si = 0x0F85;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB00));
-        loop {
-            let outer = self.r.cx;
-            self.s1576b();
-            loop {
-                let saved_ax = self.r.ax;
-                if !(self.r.di >= 0x217C
-                    || self.r.di <= 0x1B32
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() != 0xFF {
-                        self.ds.w8(a(0x1DAEC), self.r.al());
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-        self.s15746();
-    }
-
-    /// `sub_156DC`：玩家 2 砲座（用本體形狀 `0F7Bh`）對 G2。`sub_15882` 改寫 `bx`，之後的列計數沿用殘值（原版行為）。
-    pub(crate) fn s156dc(&mut self) {
-        self.r.si = 0x0F7B;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB00));
-        loop {
-            let outer = self.r.cx;
-            self.s15722();
-            loop {
-                let (saved_cx, saved_ax) = (self.r.cx, self.r.ax);
-                if !(self.r.di >= 0x3266
-                    || self.r.di <= 0x2C1C
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 && self.r.al() & 0xE0 == 0 {
-                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
-                            self.r.bx = bx;
-                        }
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                self.r.cx = saved_cx;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-    }
-
-    /// `sub_15722`：G2 的列位址（玩家 2 砲座，`word_1DAFE`）。
-    pub(crate) fn s15722(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x2C1C);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DAFE)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_15746`：玩家 2 砲座碰到的敵人（`byte_1DAEC`）加 1 傷害，同 `sub_14C18`（含 FEh 的表外寫入）。
-    pub(crate) fn s15746(&mut self) {
-        self.r.set_al(self.ds.r8(a(0x1DAEC)));
-        if self.r.al() == 0xFF {
-            return;
-        }
-        if self.r.al() == 0 {
-            return;
-        }
-        self.r.set_al(self.r.al().wrapping_sub(1));
-        self.r.set_ah(0);
-        self.r.bx = self.r.ax;
-        self.r.bx <<= 1;
-        self.r.ax = self.entity_link(self.r.al());
-        // armor_cell_index：裝甲格 FEh 與已釋放的槽不寫傷害。
-        if self.fixes.armor_cell_index && (self.r.bx == 0x1FA || self.r.ax == 0) {
-            return;
-        }
-        let link = self.r.ax;
-        self.r.si = link.wrapping_add(0x20);
-        self.r.ax = self.add_entity_damage(link, 1);
-    }
-
-    /// `sub_1576B`：G1 的列位址（玩家 2 砲座，`word_1DAFE`）。
-    pub(crate) fn s1576b(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x1B32);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DAFE)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_1578F`：G1 的列位址（玩家 2 本體，`word_1DB39`）。
-    pub(crate) fn s1578f(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x1B32);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DB39)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_157B3`：玩家 2 本體（形狀 `0F7Bh`，列加 1）對 G2：刪除敵彈，再判定道具或傷害。
-    /// `sub_15882` 改寫 `bx`，之後的列計數沿用殘值（原版行為）。
-    pub(crate) fn s157b3(&mut self) {
-        self.ds.w8(a(0x1DB0A), 0x4E);
-        self.r.si = 0x0F7B;
-        self.pl_lodsw();
-        self.ds.w16(a(0x2687E), self.r.ax);
-        self.pl_lodsw();
-        self.r.cx = self.r.ax;
-        self.r.bx = self.ds.r16(a(0x1DB37));
-        self.r.bx = self.r.bx.wrapping_add(1);
-        loop {
-            let outer = self.r.cx;
-            self.s15896();
-            loop {
-                let (saved_cx, saved_ax) = (self.r.cx, self.r.ax);
-                if !(self.r.di >= 0x3266
-                    || self.r.di <= 0x2C1C
-                    || self.r.di >= self.r.dx
-                    || self.r.di <= self.r.ax)
-                {
-                    self.r.set_al(self.ds.r8(self.r.di));
-                    if self.r.al() != 0 {
-                        if let Some(bx) = self.remove_hit_bullet(self.r.al(), self.r.di) {
-                            self.r.bx = bx;
-                        }
-                        self.s15802();
-                    }
-                }
-                self.r.di = self.r.di.wrapping_add(1);
-                self.r.ax = saved_ax;
-                self.r.cx = saved_cx;
-                if !self.pl_loop() {
-                    break;
-                }
-            }
-            self.r.bx = self.r.bx.wrapping_add(1);
-            self.r.cx = outer;
-            if !self.pl_loop() {
-                break;
-            }
-        }
-        self.s15832();
-    }
-
-    /// `sub_15802`：玩家 2 的道具或傷害判定，同 `sub_14CD4`。
-    pub(crate) fn s15802(&mut self) {
-        self.r.set_ah(self.r.al());
-        self.r.set_ah(self.r.ah() & 0xF0);
-        let ah = self.r.ah();
-        if ah == 0x80 || ah == 0x40 || ah == 0xC0 || ah == 0x20 {
-            self.ds.w8(a(0x1DB0A), ah);
-            self.ds.w16(a(0x1DB08), 0xFF42);
-            return;
-        }
-        self.ds.w8(a(0x1DB1A), 0x59);
-    }
-
-    /// `sub_15832`：玩家 2 依撿到的道具升級，同 `sub_14D04`。
-    pub(crate) fn s15832(&mut self) {
-        self.r.set_al(self.ds.r8(a(0x1DB0A)));
-        let al = self.r.al();
-        if al == 0x4E {
-            return;
-        }
-        if self.ds.r8(a(0x1DAEF)) == 0x4E {
-            self.ds.w8(a(0x1DAEF), 0x59);
-            return;
-        }
-        if self.ds.r8(a(0x1DAF0)) == 0x4E {
-            self.ds.w8(a(0x1DAF0), 0x59);
-            return;
-        }
-        if al == 0x80 {
-            self.ds.w16(a(0x1DB0B), 0x4C);
-        } else if al == 0x40 {
-            self.ds.w16(a(0x1DB0B), 0x42);
-        } else if al == 0xC0 {
-            self.ds.w16(a(0x1DB0B), 0x4B);
-        } else if al == 0x20 {
-            self.ds.w16(a(0x1DB0B), 0x53);
-        }
-    }
-
-    /// `sub_15896`：G2 的列位址（玩家 2 本體，`word_1DB39`）。
-    pub(crate) fn s15896(&mut self) {
-        let saved = self.r.bx;
-        if self.r.bx >= 0x17C {
-            self.r.bx = 0x1F4;
-        }
-        self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x1B0A));
-        self.r.ax = self.r.ax.wrapping_add(0x2C1C);
-        self.r.dx = self.r.ax;
-        self.r.di = self.r.ax;
-        self.r.di = self.r.di.wrapping_add(self.ds.r16(a(0x1DB39)));
-        self.r.cx = self.ds.r16(a(0x2687E));
-        self.r.dx = self.r.dx.wrapping_add(0x45);
-        self.r.bx = saved;
-    }
-
-    /// `sub_158BA`：每關開始的玩家 2 位置（欄 5、列 10）。第一關或示範時另重設武器、血量、砲座與朝向（3Eh）。
-    pub(crate) fn s158ba(&mut self) {
-        self.ds.w16(a(0x1DB39), 5);
-        self.ds.w16(a(0x1DB37), 0x0A);
-        self.r.ax = self.ds.r16(a(0x1DB39));
-        self.ds.w16(a(0x1DB21), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB37));
-        self.r.bx = 0x0A;
-        self.r.ax = (self.r.al() as u16) * (self.r.bl() as u16);
-        self.ds.w16(a(0x1DB1F), self.r.ax);
-        if self.ds.r8(a(0x1CFDC)) != 0x59 && self.ds.r8(a(0x1CFDB)) != 0x41 {
-            return;
-        }
-        // 158E6
-        self.ds.w16(a(0x1DB0B), 0);
-        self.ds.w16(a(0x1CFE0), 0xFF);
-        self.ds.w8(a(0x1DAEF), 0x4E);
-        self.ds.w8(a(0x1DAF0), 0x4E);
-        self.ds.w16(a(0x1DAF1), 0x3E);
-    }
-
-    // ---------------------------------------------------------------
-    // 頭目段背景
-    // ---------------------------------------------------------------
-
-    /// `sub_15906`：第一關頭目段的背景：清頁後畫頭目捲動背景。
-    /// 同位置的 `15912`（第二關）與 `15924`（第三關）是各自的入口，不在本函式內。
-    pub(crate) fn s15906(&mut self) {
-        self.s19cf9();
-        self.s15930();
-    }
-
-    /// `sub_15930`：第一關頭目背景的捲動：幀計數不超過 26Eh 時重設，之後讀腳本位元組（`word_1DB6D`）逐幀移動，
-    /// 腳本結束位元組 0Fh 時設 `byte_1CFAD` = `F`（過關連爆）。
-    pub(crate) fn s15930(&mut self) {
-        if self.ds.r16(a(0x1CFE2)) <= 0x26E {
-            self.ds.w16(a(0x1DB5F), 0xC8);
-            self.ds.w16(a(0x1DB61), 0xFFEC);
-            self.ds.w16(a(0x1DB6D), 0x0FB3);
-            return;
-        }
-        self.r.ax = self.ds.r16(a(0x1DB61));
-        self.ds.w16(a(0x1DB5D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5F));
-        self.ds.w16(a(0x1DB5B), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB6D));
-        self.ds.w16(a(0x1DB6B), self.r.ax);
-        self.s15bb0();
-        self.r.ax = self.ds.r16(a(0x1DB6B));
-        self.ds.w16(a(0x1DB6D), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5B));
-        self.ds.w16(a(0x1DB5F), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5D));
-        self.ds.w16(a(0x1DB61), self.r.ax);
-        self.s15ac5();
-        if self.ds.r8(a(0x1DB5A)) == 0x0F {
-            self.ds.w8(a(0x1CFAD), 0x46);
-        }
-    }
-
-    /// `sub_15AC5`：把暫存區 B（`word_2685C` = 8000h）的整幅背景以水平位移 `-word_1DB5D` 畫到目前頁，共 C1h 列。
-    pub(crate) fn s15ac5(&mut self) {
-        self.ds.w16(a(0x2685C), 0x8000);
-        self.ds.w16(a(0x26864), 0);
-        self.ds.w16(a(0x26866), 0);
-        self.ds.w16(a(0x26880), 0);
-        self.r.ax = 0;
-        self.r.ax = self.r.ax.wrapping_sub(self.ds.r16(a(0x1DB5D)));
-        self.ds.w16(a(0x26868), self.r.ax);
-        self.r.ax = self.ds.r16(a(0x1DB5B));
-        self.ds.w16(a(0x26882), self.r.ax);
-        self.r.cx = 0xC1;
-        self.set_obj(Pool::Boss, 0);
-        self.s19d08();
-        self.clear_obj();
-    }
-
-    /// `sub_15BB0`：讀腳本位元組（`word_1DB6B` 指向），存 `byte_1DB5A`。不是結束位元組 0Fh 就前進並執行該指令，
-    /// 是 0Fh 則以指令 0 執行（不前進）。
-    pub(crate) fn s15bb0(&mut self) {
-        self.r.si = self.ds.r16(a(0x1DB6B));
-        self.r.set_al(self.ds.r8(self.r.si));
-        self.ds.w8(a(0x1DB5A), self.r.al());
-        if self.r.al() == 0x0F {
-            self.r.set_al(0);
-            self.s15bcb();
-            return;
-        }
-        self.pl_addw(0x1DB6B, 1);
-        self.s15bcb();
-    }
-
-    /// `sub_15BCB`：八向指令 1 至 8（上、右上、右、右下、下、左下、左、左上）對 `word_1DB5B`（y，每步 0Ah）與
-    /// `word_1DB5D`（x，每步 1）的增減。`byte_1CFAD` 為 `F` 時指令一律視為 0。
-    pub(crate) fn s15bcb(&mut self) {
-        self.s15c1b();
-        match self.r.al() {
-            1 => self.s15c25(),
-            2 => {
-                self.s15c25();
-                self.s15c36();
-            }
-            3 => self.s15c36(),
-            4 => {
-                self.s15c2b();
-                self.s15c36();
-            }
-            5 => self.s15c2b(),
-            6 => {
-                self.s15c2b();
-                self.s15c31();
-            }
-            7 => self.s15c31(),
-            8 => {
-                self.s15c25();
-                self.s15c31();
-            }
-            _ => {}
-        }
-    }
-
-    /// `sub_15C1B`：`byte_1CFAD` 為 `F` 時 `al` 歸 0。
-    pub(crate) fn s15c1b(&mut self) {
-        if self.ds.r8(a(0x1CFAD)) == 0x46 {
-            self.r.set_al(0);
-        }
-    }
-
-    /// `sub_15C25`：`word_1DB5B` 減 0Ah。
-    pub(crate) fn s15c25(&mut self) {
-        self.pl_addw(0x1DB5B, 0x0Au16.wrapping_neg());
-    }
-
-    /// `sub_15C2B`：`word_1DB5B` 加 0Ah。
-    pub(crate) fn s15c2b(&mut self) {
-        self.pl_addw(0x1DB5B, 0x0A);
-    }
-
-    /// `sub_15C31`：`word_1DB5D` 減 1。
-    pub(crate) fn s15c31(&mut self) {
-        self.pl_addw(0x1DB5D, 1u16.wrapping_neg());
-    }
-
-    /// `sub_15C36`：`word_1DB5D` 加 1。
-    pub(crate) fn s15c36(&mut self) {
-        self.pl_addw(0x1DB5D, 1);
-    }
 }

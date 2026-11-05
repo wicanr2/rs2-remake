@@ -123,15 +123,15 @@ impl Core {
         self.spawn_scheduled(Timetable::Stage1);
         self.spawn_scenery();
         self.update_enemies();
-        self.s14458();
+        self.update_player(0);
         self.s16302();
         self.draw_scenery();
         self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s14f92();
-        self.s15232();
+        self.draw_player(0);
+        self.update_player(1);
+        self.draw_player(1);
         self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
@@ -157,16 +157,16 @@ impl Core {
         self.spawn_scheduled(Timetable::Stage1);
         self.spawn_scenery();
         self.update_enemies();
-        self.s14458();
+        self.update_player(0);
         self.s15906();
         self.draw_enemies();
         self.draw_enemy_overlays();
         self.draw_scenery();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s14f92();
-        self.s15232();
+        self.draw_player(0);
+        self.update_player(1);
+        self.draw_player(1);
         self.update_effects();
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
@@ -243,7 +243,7 @@ impl Core {
 
     /// `sub_10D8D`。
     pub(crate) fn s10d8d(&mut self) {
-        if self.ds.r8(a(0x1CFDD)) == 0 {
+        if !self.any_player_alive() {
             self.r.dx = b'E' as u16;
         }
     }
@@ -298,8 +298,7 @@ impl Core {
             self.ds.w8(o, 0);
         }
         self.ds.w16(0x042A, 0);
-        self.s14f47();
-        self.s158ba();
+        self.place_players_for_stage();
         self.ds.w16(0x9004, 0);
         self.pb.seekers_in_flight = 0;
         self.ds.w8(0x03ED, b'N');
@@ -399,30 +398,19 @@ impl Core {
         self.s1890d();
     }
 
-    /// `sub_1130D`：玩家 2 的血條。
-    pub(crate) fn s1130d(&mut self) {
-        self.ds.w16(a(0x26880), 6);
+    /// 玩家（0 是玩家 1，1 是玩家 2）的血條，血量的低 8 位元由低到高各畫一格（原版 `sub_11336`、`sub_1130D`）。
+    /// 玩家 1 的條在右側，x = 22h 往左畫；玩家 2 的在左側，x = 6 往右畫。y 都是 BEh。
+    /// 只在受擊時重畫（`Core::take_hit`）。
+    pub(crate) fn draw_health_bar(&mut self, who: usize) {
+        let (first_x, step) = if who == 0 { (0x22u16, 1u16.wrapping_neg()) } else { (6, 1) };
+        self.ds.w16(a(0x26880), first_x);
         self.ds.w16(a(0x26882), 0xBE);
-        self.r.ax = self.ds.r16(a(0x1CFE0)) & 0x00FF;
+        self.r.ax = self.pl.ship[who].hp & 0x00FF;
         for _ in 0..8 {
             let saved = self.r.ax;
             self.s1135f();
             self.r.ax = saved >> 1;
-            let x = self.ds.r16(a(0x26880)).wrapping_add(1);
-            self.ds.w16(a(0x26880), x);
-        }
-    }
-
-    /// `sub_11336`：玩家 1 的血條。
-    pub(crate) fn s11336(&mut self) {
-        self.ds.w16(a(0x26880), 0x22);
-        self.ds.w16(a(0x26882), 0xBE);
-        self.r.ax = self.ds.r16(a(0x1CFDE)) & 0x00FF;
-        for _ in 0..8 {
-            let saved = self.r.ax;
-            self.s1135f();
-            self.r.ax = saved >> 1;
-            let x = self.ds.r16(a(0x26880)).wrapping_sub(1);
+            let x = self.ds.r16(a(0x26880)).wrapping_add(step);
             self.ds.w16(a(0x26880), x);
         }
     }
@@ -522,8 +510,7 @@ impl Core {
         if self.ds.r8(a(0x274C4)) == 1 {
             self.ds.w8(a(0x274C4), 0);
             if self.ds.r16(a(0x2739D)) == 0x59 {
-                self.ds.w16(a(0x1CFDE), 0xFF);
-                self.ds.w16(a(0x1CFE0), 0xFF);
+                self.refill_health();
                 self.ds.w16(a(0x2739D), 0x4E);
             }
         }

@@ -61,6 +61,19 @@ impl Core {
         self.ds.w16(a(0x2687E), v);
     }
 
+    /// 測試用：邏輯寫過、還沒被繪製命令帶走的形狀寬；沒有則 `None`。
+    #[cfg(test)]
+    pub(crate) fn pending_stride(&self) -> Option<u16> {
+        let v = self.ds.r16(a(0x2687E));
+        (v != STRIDE_UNTOUCHED).then_some(v)
+    }
+
+    /// 測試用：回到「上一個繪製命令之後邏輯沒有寫過」的狀態。
+    #[cfg(test)]
+    pub(crate) fn forget_stride(&mut self) {
+        self.ds.w16(a(0x2687E), STRIDE_UNTOUCHED);
+    }
+
     pub(crate) fn s18c0a(&mut self) {
         self.emit(Op::S18C0A)
     }

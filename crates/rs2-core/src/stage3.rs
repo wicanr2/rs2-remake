@@ -130,13 +130,13 @@ impl Core {
         self.ds.w16(a(0x2685C), 0);
         self.spawn_scheduled(Timetable::Stage3);
         self.update_enemies();
-        self.s14458();
-        self.s14f92();
+        self.update_player(0);
+        self.update_player(1);
         self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s15232();
+        self.draw_player(0);
+        self.draw_player(1);
         self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
@@ -165,13 +165,13 @@ impl Core {
         self.spawn_scheduled(Timetable::Stage3);
         self.s15924();
         self.update_enemies();
-        self.s14458();
-        self.s14f92();
+        self.update_player(0);
+        self.update_player(1);
         self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s15232();
+        self.draw_player(0);
+        self.draw_player(1);
         self.draw_enemy_overlays();
         self.update_effects();
         // 13B9Fh 的 cmp word_26872, 0 與 jz $+2 沒有效果。

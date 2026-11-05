@@ -290,8 +290,8 @@ impl Core {
         self.ds.w16(a(0x2685C), 0);
         self.spawn_scheduled(Timetable::Stage2);
         self.update_enemies();
-        self.s14458();
-        self.s14f92();
+        self.update_player(0);
+        self.update_player(1);
         self.s1355b();
         self.s13580();
         self.s135eb();
@@ -300,8 +300,8 @@ impl Core {
         self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s15232();
+        self.draw_player(0);
+        self.draw_player(1);
         self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
@@ -323,14 +323,14 @@ impl Core {
         self.ds.w16(a(0x2685C), 0);
         self.spawn_scheduled(Timetable::Stage2);
         self.update_enemies();
-        self.s14458();
-        self.s14f92();
+        self.update_player(0);
+        self.update_player(1);
         self.s137c6();
         self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
-        self.s14704();
-        self.s15232();
+        self.draw_player(0);
+        self.draw_player(1);
         self.draw_enemy_overlays();
         self.update_effects();
         // 1336E 的 cmp word_26872, 0 與 jz short $+2 沒有效果。

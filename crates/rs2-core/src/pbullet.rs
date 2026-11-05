@@ -30,6 +30,7 @@
 //! `sub_165CF` 在 `165FCh` 至 `16619h` 的雙彈碼前面是 `retn`，無跳入，也不移植。
 
 use crate::draw::Pool;
+use crate::entity::ARMOR_CELL;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
 use crate::mirror::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end, pb_record_link};
@@ -51,10 +52,6 @@ const SEEKER_LIMIT: u16 = 5;
 /// 追蹤彈沿某方向找不到格的距離。
 const NOT_FOUND: u16 = 0xFF;
 
-/// G1 的格值：裝甲，不記錄為傷害目標，但子彈仍會消失。
-const ARMOR_CELL: u8 = 0xFE;
-/// 裝甲格的實體索引（格值減 1）。雷射與砲座沒有裝甲檢查，會以這個索引讀實體指標表（文件第 5.3 節）。
-const ARMOR_INDEX: u8 = ARMOR_CELL - 1;
 /// 命中結算的目標：沒有實體要扣血（命中地形，或雷射沒打到東西），仍播命中特效。
 const NO_ENTITY: u8 = 0xFF;
 
@@ -602,16 +599,10 @@ impl Core {
     /// 命中結算（原版 `sub_16946`）：`target` 是格值，實體索引 = 格值 - 1。對那個實體累計傷害，
     /// 然後在子彈目前位置播命中特效。[`NO_ENTITY`] 只播特效。
     ///
-    /// 裝甲格 FEh 取到索引 FDh，讀實體指標表之後的 `dseg:248Eh`（實體槽 9 的 w21，實測全為 0），
-    /// 於是把傷害字組寫到 `dseg:0020h`（啟動時文字畫面的色彩屬性，關卡內不再讀取）。指向已釋放槽的格值也走同一路徑。
-    /// `Fixes::armor_cell_index` 開啟時這兩種都不寫。
+    /// 裝甲格與已釋放的槽的表外寫入見 [`Core::damage_entity_at_cell`]，砲座接觸共用同一份判斷。
     pub(crate) fn strike(&mut self, bullet: &PlayerBullet, target: u8) {
         if target != NO_ENTITY {
-            let index = target.wrapping_sub(1);
-            let link = self.entity_link(index);
-            if !(self.fixes.armor_cell_index && (index == ARMOR_INDEX || link == 0)) {
-                self.add_entity_damage(link, bullet.behavior().damage());
-            }
+            self.damage_entity_at_cell(target, bullet.behavior().damage());
         }
         self.spawn_effect(EffectKind::from_letter(bullet.hit_effect), bullet.col, bullet.row);
     }

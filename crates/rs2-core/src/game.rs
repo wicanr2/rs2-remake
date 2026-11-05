@@ -5,7 +5,9 @@ use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
 use crate::entity::Enemies;
 use crate::fx::Effects;
+use crate::mirror::{demo_playing, stage_cleared};
 use crate::pbullet::PlayerBullets;
+use crate::player::Players;
 use crate::regs::Regs;
 use crate::scenery::Scenery;
 use std::cell::RefCell;
@@ -197,6 +199,22 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
                       用 rep movsw 寫滿 24 字組，之後才由 sub_15E68 一族與 sub_15DBE 讀寫，sub_15E2F 複製回 1F174 指的記錄；\
                       sub_15D1C 寫 1F174 的樣板位址，只有 sub_15D41 讀；sub_164F3、16541 另把渲染陣列的 kind 寫進 w18（1F19A），之後沒有人讀。\
                       重製改成 update_enemies 的區域 Enemy 與 spawn_enemy 的樣板參數"),
+    // ---- 玩家領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫，並用 tools/q.sh callers 確認讀取端只在同一個呼叫鏈裡
+    // （結果記在 workspace/progress/rewrite-player.md）。其餘玩家變數（血量、位置、圖、旗標、砲座、光柱、輸入位元、存活位元組）
+    // 是狀態，走 Mirror，不在這裡。
+    (0x0ECA, 0x0ECA, "byte_1DA8A 玩家 1 砲座接觸的格值：sub_14B63 先歸零（14B63h）、掃描中寫（14B9Fh），只有它呼叫的 sub_14C18 讀（14C18h）。\
+                      重製改成 pod_touches_entities 的區域變數"),
+    (0x0F2C, 0x0F2C, "byte_1DAEC 玩家 2 砲座接觸的格值：sub_15691 先歸零（15691h）、掃描中寫（156CDh），只有它呼叫的 sub_15746 讀（15746h）。\
+                      重製改成 pod_touches_entities 的區域變數"),
+    (0x0EDC, 0x0EDF, "word_1DA9C、word_1DA9E 玩家 1 砲座掃描的欄與列：sub_1480A 每次掃描前寫（14815h、1481Bh、14855h、1485Eh），\
+                      只有 sub_14B63（14B78h）、sub_14BAE（14BBFh）、sub_14BF4（14C0Bh）、sub_14C3D（14C54h）讀。重製改成 pod_collide 的參數"),
+    (0x0F3E, 0x0F41, "word_1DAFE、word_1DB00 玩家 2 砲座掃描的欄與列：sub_15338 每次掃描前寫（15343h、15349h、15383h、1538Ch），\
+                      只有 sub_15691（156A6h）、sub_156DC（156EDh）、sub_15722（15739h）、sub_1576B（15782h）讀。重製改成 pod_collide 的參數"),
+    (0x0EE8, 0x0EE8, "byte_1DAA8 玩家 1 本幀撿到的道具：sub_14C85 先設 N（14C8Ch）、sub_14CD4 寫（14CF9h），只有 sub_14C85 呼叫的 sub_14D04 讀（14D04h）。\
+                      重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
+    (0x0F4A, 0x0F4A, "byte_1DB0A 玩家 2 本幀撿到的道具：sub_157B3 先設 N（157BAh）、sub_15802 寫（15827h），只有 sub_157B3 呼叫的 sub_15832 讀（15832h）。\
+                      重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -222,9 +240,11 @@ pub fn boot_ds(image: &[u8]) -> Dseg {
 pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
     let base = Dseg::from_image(image);
     let mut core = Core::new(image, dm1, Start::NewGame { difficulty: None }, Fixes::NONE);
-    for o in [0x041Cu16, 0x041D, 0x03EC, 0x03EB] {
+    for o in [0x041Cu16, 0x03EC, 0x03EB] {
         core.ds.w8(o, base.r8(o));
     }
+    // 存活位元組（041Dh，原版 byte_1CFDD）在玩家領域的結構裡。
+    core.set_players_present(base.r8(0x041D));
     core.s19a37();
     let v = core.ds.r16(0x1B02);
     if v >= 0xD2 {
@@ -303,6 +323,8 @@ pub struct Core {
     pub(crate) en: Enemies,
     /// 第一關的視差景物。
     pub(crate) sc: Scenery,
+    /// 兩位玩家與存活位元組。
+    pub(crate) pl: Players,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -348,6 +370,7 @@ impl Core {
             pb: PlayerBullets::default(),
             en: Enemies::default(),
             sc: Scenery::default(),
+            pl: Players::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,
@@ -371,7 +394,7 @@ impl Core {
         // 標題流程設定的值。
         let demo = matches!(start, Start::Demo);
         g.ds.w8(0x041C, if demo { b'Y' } else { b'N' });
-        g.ds.w8(0x041D, 1);
+        g.set_players_present(0x01);
         g.ds.w8(0x03EC, b'Y');
         g.ds.w8(0x03EB, b'Y');
         if let Start::NewGame { difficulty: Some(d) } = start {
@@ -536,7 +559,7 @@ impl Game {
         core.load_mirrors();
         core.s11375_patched = patched;
         core.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
-        core.ds.w8(0x041D, 1);
+        core.set_players_present(0x01);
         core.draws.clear();
         core.enter_stage();
         core.store_mirrors();
@@ -632,23 +655,13 @@ impl Game {
 
     /// HD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。
     pub fn hud_status(&self, player: usize) -> HudStatus {
-        let r16 = |l: u32| self.ds.r16(a(l));
-        let r8 = |l: u32| self.ds.r8(a(l));
-        let (bit, hp, weapon, pod1, pod2, charge) = if player == 0 {
-            (0x01, 0x1CFDE, 0x1DAA9, 0x1DA8D, 0x1DA8E, 0x1DA8B)
-        } else {
-            (0x10, 0x1CFE0, 0x1DB0B, 0x1DAEF, 0x1DAF0, 0x1DAED)
-        };
-        HudStatus {
-            active: r8(0x1CFDD) & bit != 0,
-            hp: r16(hp),
-            weapon: r16(weapon),
-            pods: u8::from(r8(pod1) != b'N') + u8::from(r8(pod2) != b'N'),
-            charge: r16(charge),
-        }
+        let players = Players::from_dseg(&self.ds);
+        let p = &players.ship[player];
+        HudStatus { active: players.is_alive(player), hp: p.hp, weapon: p.weapon, pods: p.pods.installed(), charge: p.charge }
     }
 
-    /// 無敵選項（規格 005）：沿用原版秘技的旗標，`word_273A5` 是 `Y` 時受傷不減血（`1451Ch`、`1504Ah`）。
+    /// 無敵選項（規格 005）：沿用原版秘技的旗標，`word_273A5` 是 `Y` 時受傷不減血（`1451Ch`、`1504Ah`，
+    /// 玩家領域的 `take_hit` 讀它）。
     /// 原版的 Alt 鍵會把旗標清成 `N`，所以開著的時候呼叫端每步都要呼叫一次。從沒開過就不寫，模擬和原版相同。
     pub fn set_invincible(&mut self, on: bool) {
         self.poke16(a(0x273A5), if on { 0x59 } else { 0x4E });
@@ -657,25 +670,20 @@ impl Game {
     /// 玩家機的狀態，給前端的顯示層預測用。`player` 是 0 或 1。
     ///
     /// 啟用位元與界限來自 `sub_14501`、`sub_1502F` 與各方向的移動函式，位置與列欄是它們更新的變數。
+    /// 界限用玩家領域移動函式的同一組條件（`Player::can_move_up` 一族）。
     pub fn player_status(&self, player: usize) -> PlayerStatus {
-        let r16 = |l: u32| self.ds.r16(a(l));
-        let r8 = |l: u32| self.ds.r8(a(l));
-        let (bit, y, x, row, col, hp) = if player == 0 {
-            (0x01, 0x1DAC5, 0x1DAC7, 0x1DAC9, 0x1DACB, 0x1CFDE)
-        } else {
-            (0x10, 0x1DB1F, 0x1DB21, 0x1DB37, 0x1DB39, 0x1CFE0)
-        };
-        let (row, col) = (r16(row), r16(col));
+        let players = Players::from_dseg(&self.ds);
+        let p = &players.ship[player];
         PlayerStatus {
-            x: r16(x) as i16,
-            y: r16(y) as i16,
-            // `byte_1CFDD` 的玩家位元：還在場上。血量 0：死亡動畫中，`sub_14679` 自己往下往右走，不接受輸入。
+            x: p.blit_x as i16,
+            y: p.blit_y as i16,
+            // 玩家位元：還在場上。血量 0：死亡動畫中，`die_step` 自己往下往右走，不接受輸入。
             // `byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
-            controllable: r8(0x1CFDD) & bit != 0 && r16(hp) != 0 && r8(0x1CFDC) != b'Y' && r8(0x1CFAD) != b'F',
-            can_up: (row as i16) > 0,
-            can_down: row < 0x10,
-            can_left: (col as i16) > 1,
-            can_right: col < 0x21,
+            controllable: players.is_alive(player) && p.hp != 0 && !demo_playing(&self.ds) && !stage_cleared(&self.ds),
+            can_up: p.can_move_up(),
+            can_down: p.can_move_down(),
+            can_left: p.can_move_left(),
+            can_right: p.can_move_right(),
         }
     }
 

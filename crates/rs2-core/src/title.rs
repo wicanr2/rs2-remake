@@ -236,7 +236,7 @@ impl Core {
     /// 有按鍵（`byte_27422` 非 0）也返回。`116DFh` 以後的第三關示範不可達。
     pub(crate) async fn s11685(&mut self) {
         loop {
-            self.ds.w8(a(0x1CFDD), 1);
+            self.set_players_present(0x01);
             if self.t_key() != 0 {
                 return;
             }
@@ -1122,9 +1122,9 @@ impl Core {
     /// `sub_127A5`：角色選項 0、1、2 對應 `byte_1CFDD` 的 01h、10h、11h（玩家 1、玩家 2、雙人）。
     pub(crate) fn s127a5(&mut self) {
         match self.ds.r16(a(0x1D144)) {
-            0 => self.ds.w8(a(0x1CFDD), 0x01),
-            1 => self.ds.w8(a(0x1CFDD), 0x10),
-            2 => self.ds.w8(a(0x1CFDD), 0x11),
+            0 => self.set_players_present(0x01),
+            1 => self.set_players_present(0x10),
+            2 => self.set_players_present(0x11),
             _ => {}
         }
     }
