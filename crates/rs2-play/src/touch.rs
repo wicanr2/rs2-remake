@@ -25,6 +25,8 @@ pub enum Role {
     Primary,
     /// 遊玩中是砲座轉向，其餘是選單。
     Secondary,
+    /// 砲座分離（規格 005「砲座像 Force」）。選項開著才有這顆鈕。
+    Split,
     /// 前端暫停。
     Pause,
     /// 展開工具列。
@@ -45,17 +47,26 @@ pub struct Control {
 
 /// 依視窗大小排出控制鈕。`dp` 是每 dp 幾個像素。視窗太矮時縮小，全部放得下。
 pub fn layout(win_w: u32, win_h: u32, dp: f32) -> Vec<Control> {
+    layout_with(win_w, win_h, dp, false)
+}
+
+/// 同 [`layout`]。`split` 開著時多一顆分離鈕，疊在轉向鈕上方，一樣不蓋到遊戲畫面。
+pub fn layout_with(win_w: u32, win_h: u32, dp: f32, split: bool) -> Vec<Control> {
     let (w, h) = (win_w as f32, win_h as f32);
     // 設計稿的高度是 432 dp，低於 360 dp 就放不下了，再按比例縮。
     let d = dp.min(h / 360.0).max(0.1);
     let c = |role, x: f32, y: f32, r: f32, hit: f32| Control { role, x, y, r: r * d, hit: hit * d };
-    vec![
+    let mut controls = vec![
         c(Role::Dpad, 68.0 * d, h - 78.0 * d, 64.0, 92.0),
         c(Role::Primary, w - 62.0 * d, h - 62.0 * d, 42.0, 52.0),
         c(Role::Secondary, w - 62.0 * d, h - 146.0 * d, 30.0, 38.0),
         c(Role::Pause, w - 38.0 * d, 38.0 * d, 24.0, 32.0),
         c(Role::Menu, 38.0 * d, 38.0 * d, 24.0, 32.0),
-    ]
+    ];
+    if split {
+        controls.push(c(Role::Split, w - 62.0 * d, h - 222.0 * d, 30.0, 36.0));
+    }
+    controls
 }
 
 /// 距離中心 `(dx, dy)` 的方向，最多兩個。八個扇區，每個 45 度。`dead` 以內沒有方向。
@@ -90,6 +101,7 @@ fn code_of(role: Role, playable: bool) -> Option<u8> {
         (Role::Primary, false) => CODE_CONFIRM,
         (Role::Secondary, true) => Act::Turn.counted_code(0),
         (Role::Secondary, false) => CODE_MENU,
+        (Role::Split, true) => Act::Split.counted_code(0),
         _ => return None,
     })
 }
@@ -121,12 +133,26 @@ pub struct TouchMapper {
     dead: f32,
     fingers: HashMap<i64, Finger>,
     held: HashMap<u8, u32>,
+    split: bool,
 }
 
 impl TouchMapper {
     pub fn new(win_w: u32, win_h: u32, dp: f32) -> TouchMapper {
         let d = dp.min(win_h as f32 / 360.0).max(0.1);
-        TouchMapper { controls: layout(win_w, win_h, dp), dead: DEAD_DP * d, fingers: HashMap::new(), held: HashMap::new() }
+        TouchMapper { controls: layout(win_w, win_h, dp), dead: DEAD_DP * d, fingers: HashMap::new(), held: HashMap::new(), split: false }
+    }
+
+    /// 分離鈕有沒有顯示。
+    pub fn split_button(&self) -> bool {
+        self.split
+    }
+
+    /// 顯示或收起分離鈕（「砲座像 Force」選項開關時）。版面變了，手指都放開。
+    pub fn set_split_button(&mut self, on: bool, win_w: u32, win_h: u32, dp: f32) -> Vec<PadEvent> {
+        let ev = self.release_all();
+        self.controls = layout_with(win_w, win_h, dp, on);
+        self.split = on;
+        ev
     }
 
     pub fn controls(&self) -> &[Control] {
@@ -136,7 +162,10 @@ impl TouchMapper {
     /// 視窗大小變了（旋轉、分割畫面）。手指都放開。
     pub fn resize(&mut self, win_w: u32, win_h: u32, dp: f32) -> Vec<PadEvent> {
         let ev = self.release_all();
+        let split = self.split;
         *self = TouchMapper::new(win_w, win_h, dp);
+        self.controls = layout_with(win_w, win_h, dp, split);
+        self.split = split;
         ev
     }
 
@@ -261,6 +290,7 @@ fn label(role: Role, playable: bool) -> &'static str {
         (Role::Primary, false) => text::TOUCH_OK,
         (Role::Secondary, true) => text::TOUCH_TURN,
         (Role::Secondary, false) => text::TOUCH_MENU,
+        (Role::Split, _) => text::TOUCH_SPLIT,
         // 這兩顆畫圖示。
         (Role::Pause, _) | (Role::Menu, _) => "",
     }
@@ -400,10 +430,45 @@ mod tests {
     }
 
     #[test]
+    fn split_button_appears_with_the_option_and_sends_the_split_code() {
+        let mut m = map();
+        assert!(!m.controls().iter().any(|c| c.role == Role::Split), "預設沒有分離鈕");
+        m.set_split_button(true, W, H, DP);
+        let (x, y) = at(&m, Role::Split);
+        let t = m.down(1, x, y, true, false);
+        assert_eq!(t.keys, vec![PadEvent::Down(Act::Split.counted_code(0))]);
+        assert_eq!(m.up(1), vec![PadEvent::Up(Act::Split.counted_code(0))]);
+        assert!(m.down(2, x, y, false, false).keys.is_empty(), "不在遊玩中沒有作用");
+        m.up(2);
+        // 旋轉之後還在；關掉之後收起來，按著的手指會放開。
+        m.resize(H, W, DP);
+        assert!(m.controls().iter().any(|c| c.role == Role::Split));
+        m.resize(W, H, DP);
+        let (x, y) = at(&m, Role::Split);
+        m.down(3, x, y, true, false);
+        let ev = m.set_split_button(false, W, H, DP);
+        assert_eq!(ev, vec![PadEvent::Up(Act::Split.counted_code(0))]);
+        assert!(!m.controls().iter().any(|c| c.role == Role::Split));
+    }
+
+    #[test]
+    fn split_button_fits_and_keeps_clear_of_the_other_right_hand_buttons() {
+        for (w, h, dp) in [(2400u32, 1080u32, 2.5f32), (1920, 1080, 2.0), (1280, 800, 2.0), (800, 480, 1.5), (960, 432, 1.0)] {
+            let l = layout_with(w, h, dp, true);
+            let s = *l.iter().find(|c| c.role == Role::Split).unwrap();
+            assert!(s.x + s.r <= w as f32 && s.y - s.r >= 0.0, "{s:?} 超出 {w}x{h}");
+            for o in l.iter().filter(|c| c.role != Role::Split) {
+                let dist = ((s.x - o.x).powi(2) + (s.y - o.y).powi(2)).sqrt();
+                assert!(dist >= s.r + o.r, "{:?} 和分離鈕重疊（{w}x{h}）", o.role);
+            }
+        }
+    }
+
+    #[test]
     fn right_hand_buttons_stay_out_of_the_game_on_a_wide_phone() {
         // 2400×1080：遊戲 1728 寬置中，右邊留白從 x = 2064 起。
-        for c in layout(W, H, DP) {
-            if matches!(c.role, Role::Primary | Role::Secondary) {
+        for c in layout_with(W, H, DP, true) {
+            if matches!(c.role, Role::Primary | Role::Secondary | Role::Split) {
                 assert!(c.x - c.r >= 2064.0, "{:?} 蓋到遊戲：{}", c.role, c.x - c.r);
             }
         }

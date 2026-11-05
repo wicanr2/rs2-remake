@@ -275,6 +275,7 @@ pub fn scale_value(n: u32) -> String {
 pub const TOUCH_FIRE: &str = "開火";
 pub const TOUCH_OK: &str = "確定";
 pub const TOUCH_TURN: &str = "轉向";
+pub const TOUCH_SPLIT: &str = "分離";
 pub const TOUCH_MENU: &str = "選單";
 
 // ---------------------------------------------------------------------------

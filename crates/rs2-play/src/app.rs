@@ -889,6 +889,16 @@ fn window_loop<'a>(
     'main: loop {
         let iter_start = Instant::now();
         let now = timer.performance_counter();
+        // 手機上的分離鈕跟著「砲座像 Force」選項。
+        let force_pod = front.ctl.settings.rules().force_pod;
+        if front.touch.as_ref().is_some_and(|t| t.split_button() != force_pod) {
+            let (ww, wh) = canvas.output_size()?;
+            let dp = front.ctl.dp;
+            let t_us = ticks_to_us(now, freq);
+            let ev = front.touch.as_mut().map(|t| t.set_split_button(force_pod, ww, wh, dp)).unwrap_or_default();
+            front.feed(Source::Touch, ev, t_us);
+            dirty = true;
+        }
         if let Some(secs) = cx.args.max_secs {
             if (now - t_start) as f64 / freq as f64 >= secs {
                 eprintln!("[window] --max-secs {secs} 到了，結束");
