@@ -1,0 +1,4 @@
+# MGA（Hercules）的全流程收據 wt_title-h，本體見 mono-body-title.txt。
+set MODEKEY h
+set RNAME wt_title-h
+include /tools-dos/scenarios/mono-body-title.txt

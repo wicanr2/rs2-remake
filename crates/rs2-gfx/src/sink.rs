@@ -20,6 +20,18 @@ pub(crate) const AC: [usize; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 56, 57, 58, 59, 60, 
 /// 與 `rs2dyn` 的 `ac[0..16] = VGA.Pal(i)`、`ac[16] = VGA.Overscan()` 同序。
 pub const ATTR_REGS: [u8; 17] = [0, 1, 2, 3, 4, 5, 6, 7, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0];
 
+/// 16 個 EGA 屬性暫存器值（6 位元 rgbRGB）換成 8 位元 RGB。
+pub fn ega_rgb16(regs: &[u8; 16]) -> [[u8; 3]; 16] {
+    let mut o = [[0u8; 3]; 16];
+    for (i, c) in regs.iter().enumerate() {
+        let r = ((c >> 2) & 1) * 2 + ((c >> 5) & 1);
+        let g = ((c >> 1) & 1) * 2 + ((c >> 4) & 1);
+        let b = (c & 1) * 2 + ((c >> 3) & 1);
+        o[i] = [r * 85, g * 85, b * 85];
+    }
+    o
+}
+
 /// 顯示頁的列位址表 `dseg:A00Ah`：200 列、每列 40 位元組。第 200 項起接著暫存區列表 `A19Ah`。
 /// 規則是 `40 * 列`，由 `rs2-trace` 的 A5 測試對映像的表格逐項核對。
 pub fn disp_row(row: u16) -> u16 {
@@ -240,6 +252,9 @@ pub struct VgaSink {
     assets: Assets,
     vga: Vga,
     dac: [[u8; 3]; 256],
+    /// EGA 屬性暫存器 0 至 15（6 位元 rgbRGB），調色盤函式在 EGA（`byte_1CF75` = `Y`）寫的值。
+    /// 初值是 `sub_1007D` 開機時載入的 `00～07,38h～3Fh`，也就是標準的 16 色。VGA 的畫面不用它。
+    ega: [u8; 16],
     /// 幀計數（`sub_1890D`）預設不畫。設了 BIOS 字型（`set_counter_font`）之後永遠畫。
     pub show_counter: bool,
     /// BIOS 8x8 字型 2048 位元組（`F000:FA6Eh` 起 256 字元，每字元 8 列），`sub_18A61` 讀的來源。
@@ -256,6 +271,7 @@ impl VgaSink {
             assets,
             vga: Vga::new(),
             dac: [[0; 3]; 256],
+            ega: ATTR_REGS[..16].try_into().expect("16 個暫存器"),
             show_counter: false,
             counter_font: None,
             st: State { dump: None, stride_reg: 0, anomalies: 0, log: Vec::new(), max_disp_row: 0, max_scratch_row: 0 },
@@ -391,6 +407,7 @@ impl VgaSink {
             DrawCmd::SetDacOne { index, rgb } => {
                 self.dac[*index as usize] = [rgb[0] & 0x3F, rgb[1] & 0x3F, rgb[2] & 0x3F];
             }
+            DrawCmd::EgaAttr { regs } => self.ega.copy_from_slice(&regs[..16]),
             DrawCmd::VramFill { off, words, value } => vram_fill(&mut self.vga, *off, *words, *value),
             DrawCmd::SetMapMask { mask } => set_map_mask(&mut self.vga, *mask),
             DrawCmd::Blit(c) => self.blit(c),
@@ -399,6 +416,36 @@ impl VgaSink {
             self.watch_seq = Some(self.seq);
         }
         self.seq += 1;
+    }
+
+    /// EGA 屬性暫存器 0 至 15 的目前值（6 位元 rgbRGB）。
+    pub fn ega_regs(&self) -> [u8; 16] {
+        self.ega
+    }
+
+    /// 色號 0 至 15 在 EGA 的 8 位元 RGB。6 位元 rgbRGB 的位元 2、1、0 是紅、綠、藍（2/3 亮度），位元 5、4、3 是紅、綠、藍
+    /// （1/3 亮度），每個通道 `2 × 主 + 副` 個 55h（EGA 彩色顯示器的 4 階，`tools/rs2_common.py` 的 `ega6_to_rgb` 同）。
+    pub fn ega_colors(&self) -> [[u8; 3]; 16] {
+        ega_rgb16(&self.ega)
+    }
+
+    /// 同 `render_page`，但用 EGA 屬性暫存器的顏色（顯示模式 EGA）。平面的內容與 VGA 相同，差別只在色號對到的顏色。
+    pub fn render_page_ega(&self, page: u16, out: &mut [u8]) {
+        assert!(out.len() >= 320 * 200 * 3, "輸出緩衝區不足 192000 位元組");
+        let pal = self.ega_colors();
+        let pl = [self.vga.plane(0), self.vga.plane(1), self.vga.plane(2), self.vga.plane(3)];
+        for y in 0..200usize {
+            for bx in 0..40usize {
+                let a = page.wrapping_add((y * 40 + bx) as u16) as usize;
+                let b = [pl[0][a], pl[1][a], pl[2][a], pl[3][a]];
+                for bit in 0..8usize {
+                    let sh = 7 - bit;
+                    let color = ((b[0] >> sh) & 1) | (((b[1] >> sh) & 1) << 1) | (((b[2] >> sh) & 1) << 2) | (((b[3] >> sh) & 1) << 3);
+                    let o = (y * 320 + bx * 8 + bit) * 3;
+                    out[o..o + 3].copy_from_slice(&pal[color as usize]);
+                }
+            }
+        }
     }
 
     /// 320x200 RGB（每像素 3 位元組，共 192000）。`page` 是頁偏移，0 或 8000h。
@@ -475,6 +522,8 @@ impl VgaSink {
             Op::S17F5D => scroll_col_merge(vga, c),
             Op::S17FA0 | Op::S18031 => scroll_view(vga, c),
             Op::S180C6 => scroll_left(vga),
+            // MGA 專用（`sub_1117F`），E 直接 `retn`。
+            Op::S1117F => {}
             Op::S1890D => {
                 // 沒設 BIOS 字型時，幀計數由工具列開關控制；設了就永遠畫（對拍用）。
                 // 其他位置的數字是 sub_16C7D 的擊中計數，照原版畫。

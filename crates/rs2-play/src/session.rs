@@ -1,17 +1,36 @@
-//! 一局遊戲：`Game` 加兩個繪製接收端，以及視窗模式與 `--headless-steps` 共用的步進與繪製路徑。
+//! 一局遊戲：`Game` 加四個繪製接收端，以及視窗模式與 `--headless-steps` 共用的步進與繪製路徑。
 //! 不依賴 SDL，所以主迴圈以外的邏輯（模式選擇、排程）可以直接測。
 //!
-//! `Game::step` 回傳的 `draws` 同時餵給 `VgaSink`（補間關閉的原版圖）與 `LayerSink`（補間與 HD），
-//! 兩邊都隨時是最新的，所以 F1、F3 切換不需要重播。畫面顯示的選擇只影響 `render`，不碰 `Game`。
+//! `Game::step` 回傳的 `draws` 同時餵給 `VgaSink`（補間關閉的原版圖）、`LayerSink`（補間與 HD）和兩個 `MonoSink`
+//! （CGA、MGA），四邊都隨時是最新的，所以 F1、F3、F6 切換不需要重播，切換當下的畫面一定是對的。
+//! 畫面顯示的選擇只影響 `render`，不碰 `Game`。
+//!
+//! # 顯示模式（`docs/re/14-display-modes.md`、規格 006）
+//!
+//! | 模式 | `render` 的來源 | 輸出 |
+//! |---|---|---|
+//! | VGA | 補間關且原版圖：`VgaSink::render_page`（逐像素）；否則 `LayerSink` | 320×200，HD 1280×800 |
+//! | EGA | 補間關且原版圖：`VgaSink::render_page_ega`（逐像素）；否則 `LayerSink` 的每個像素量化到 EGA 16 色中最近的一色 | 同 VGA |
+//! | CGA | `MonoSink`（`MonoKind::Cga`）；補間與 HD 暫不支援，固定原版時序、原版圖 | 640×200 |
+//! | MGA | `MonoSink`（`MonoKind::Mga`） | 640×300 |
+//!
+//! 模式只影響兩件和模擬有關的事，都在這裡處理：
+//!
+//! - 第三關地形來源。`Game::set_terrain_scr(mode.is_mono())` 在建立時與每次切換模式時呼叫，核心在進第三關時讀取。
+//!   一局裡每個第三關各用進場當下的模式，關內切換只換畫面（已決定的取捨）。
+//! - PC 喇叭附帶音。原版只有 E 的特效 blit 驅動喇叭，CGA、MGA 沒有，所以單色模式不產生 `AudioMsg::Speaker`。
 
 use rs2_audio::SpkEv;
 use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, MixFile, Pool, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
-use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink};
+use rs2_gfx::{Assets, HdAssets, LayerSink, MonoAssets, MonoHdSink, MonoKind, MonoSink, RenderOpts, VgaSink};
 use rs2_trace::Inputs;
+use std::sync::Arc;
 
+use crate::mode::DisplayMode;
 use crate::predict::{Dir, Predictor, Reach};
+use crate::view::Fit;
 
 /// 遊戲從哪裡開始。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +58,8 @@ pub struct ViewOpts {
     pub hd: bool,
     /// 玩家機預測。只在補間開著時有作用，補間關著的畫面要逐像素等於原版。
     pub feel: bool,
+    /// 顯示模式。CGA、MGA 需要單色圖庫（`Session::new` 的 `mono`），沒有就當 VGA。
+    pub mode: DisplayMode,
 }
 
 /// `Session::step` 之後主迴圈要做的事。
@@ -49,10 +70,112 @@ pub enum Outcome {
     Ended(Exit),
 }
 
+/// 單色接收端：CGA 與 MGA 各一個，永遠一起餵。
+struct MonoPair {
+    cga: MonoSink,
+    mga: MonoSink,
+}
+
+impl MonoPair {
+    fn new(assets: Arc<MonoAssets>) -> MonoPair {
+        MonoPair { cga: MonoSink::new(MonoKind::Cga, Arc::clone(&assets)), mga: MonoSink::new(MonoKind::Mga, assets) }
+    }
+
+    fn sink(&self, mode: DisplayMode) -> Option<&MonoSink> {
+        match mode {
+            DisplayMode::Cga => Some(&self.cga),
+            DisplayMode::Mga => Some(&self.mga),
+            _ => None,
+        }
+    }
+}
+
+/// 單色的 HD 接收端：CGA 與 MGA 各一個（幀計數在 CGA 只寫第一頁，兩個畫面不同），永遠一起餵。
+/// 要有單色圖庫與 HD 資料夾才有。HD 圖（`<HD 資料夾>/mono/`）用到才讀，缺的圖退回 SD 圖庫項的 4 倍放大。
+struct MonoHdPair {
+    cga: MonoHdSink,
+    mga: MonoHdSink,
+}
+
+impl MonoHdPair {
+    fn new(assets: Arc<MonoAssets>, hd_dir: &std::path::Path) -> MonoHdPair {
+        MonoHdPair {
+            cga: MonoHdSink::with_kind(MonoKind::Cga, Arc::clone(&assets), hd_dir),
+            mga: MonoHdSink::with_kind(MonoKind::Mga, assets, hd_dir),
+        }
+    }
+
+    fn sink(&self, mode: DisplayMode) -> Option<&MonoHdSink> {
+        match mode {
+            DisplayMode::Cga => Some(&self.cga),
+            DisplayMode::Mga => Some(&self.mga),
+            _ => None,
+        }
+    }
+}
+
+/// 把 RGBA 的每個像素換成 EGA 16 色中最近（RGB 歐氏距離，同距取編號小的）的一色，結果是精確的最近色。
+///
+/// 逐像素搜 16 色，另有直接映射的快取（鍵是完整的 24 位元色，色表變了就清掉），所以 HD 圖裡大片的平色不重算。
+struct EgaQuant {
+    pal: [[u8; 3]; 16],
+    /// 快取：槽位 `hash(rgb)` 存色與結果。色是 `u32::MAX` 表示空。
+    key: Vec<u32>,
+    val: Vec<u8>,
+}
+
+impl EgaQuant {
+    const SLOTS: usize = 1 << 16;
+
+    fn new() -> EgaQuant {
+        EgaQuant { pal: [[0; 3]; 16], key: Vec::new(), val: Vec::new() }
+    }
+
+    fn nearest(pal: &[[u8; 3]; 16], r: u8, g: u8, b: u8) -> u8 {
+        let mut best = (i32::MAX, 0u8);
+        for (i, c) in pal.iter().enumerate() {
+            let d = (r as i32 - c[0] as i32).pow(2) + (g as i32 - c[1] as i32).pow(2) + (b as i32 - c[2] as i32).pow(2);
+            if d < best.0 {
+                best = (d, i as u8);
+            }
+        }
+        best.1
+    }
+
+    /// 原地量化。alpha 不動。
+    fn apply(&mut self, pal: &[[u8; 3]; 16], rgba: &mut [u8]) {
+        if self.key.len() != Self::SLOTS || self.pal != *pal {
+            self.pal = *pal;
+            self.key = vec![u32::MAX; Self::SLOTS];
+            self.val = vec![0; Self::SLOTS];
+        }
+        for p in rgba.chunks_exact_mut(4) {
+            let rgb = (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32;
+            let slot = (rgb.wrapping_mul(0x9E37_79B1) >> 16) as usize;
+            let idx = if self.key[slot] == rgb {
+                self.val[slot]
+            } else {
+                let i = Self::nearest(&self.pal, p[0], p[1], p[2]);
+                self.key[slot] = rgb;
+                self.val[slot] = i;
+                i
+            };
+            p[..3].copy_from_slice(&self.pal[idx as usize]);
+        }
+    }
+}
+
 pub struct Session {
     game: Game,
     vga: VgaSink,
     layer: LayerSink,
+    /// 單色圖庫載入成功才有。沒有時 CGA、MGA 退回 VGA。
+    mono: Option<MonoPair>,
+    /// 單色圖庫與 HD 資料夾都有才有。單色模式選了 HD 時 `render` 用它。
+    mono_hd: Option<MonoHdPair>,
+    /// 實際使用的顯示模式。`view.mode` 是要求的模式，單色圖庫缺檔時兩者不同。
+    mode: DisplayMode,
+    ega_quant: EgaQuant,
     view: ViewOpts,
     hd_available: bool,
     steps: u64,
@@ -76,7 +199,18 @@ pub struct Session {
 
 impl Session {
     /// 建立並把進入關卡的初始化命令餵給接收端。
-    pub fn new(inputs: &Inputs, assets: Assets, hd: Option<HdAssets>, begin: Begin, fixes: Fixes, view: ViewOpts) -> Session {
+    ///
+    /// `mono` 是 CGA、MGA 用的單色圖庫，`None`（載入失敗）時 `view.mode` 是 CGA 或 MGA 也退回 VGA，
+    /// 呼叫端用 `mono_available` 決定要不要讓使用者選。
+    pub fn new(
+        inputs: &Inputs,
+        assets: Assets,
+        mono: Option<Arc<MonoAssets>>,
+        hd: Option<HdAssets>,
+        begin: Begin,
+        fixes: Fixes,
+        view: ViewOpts,
+    ) -> Session {
         let mut game = match begin {
             Begin::Title => {
                 let ds = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
@@ -86,10 +220,20 @@ impl Session {
         };
         let init = game.take_draws();
         let hd_available = hd.is_some();
+        let mode = if view.mode.is_mono() && mono.is_none() { DisplayMode::Vga } else { view.mode };
+        game.set_terrain_scr(mode.is_mono());
+        let mono_hd = match (&mono, hd.as_ref()) {
+            (Some(m), Some(h)) => Some(MonoHdPair::new(Arc::clone(m), h.dir())),
+            _ => None,
+        };
         let mut s = Session {
             game,
             vga: VgaSink::new(assets.clone()),
             layer: LayerSink::new(assets.clone(), hd),
+            mono: mono.map(MonoPair::new),
+            mono_hd,
+            mode,
+            ega_quant: EgaQuant::new(),
             view,
             hd_available,
             steps: 0,
@@ -105,9 +249,32 @@ impl Session {
             live_input: false,
             player_drawn: [false; 2],
         };
-        s.vga.show_counter = view.counter;
+        s.set_counter(view.counter);
         s.feed(&init);
         s
+    }
+
+    /// 幀計數開關給所有接收端。
+    fn set_counter(&mut self, on: bool) {
+        self.vga.show_counter = on;
+        if let Some(m) = &mut self.mono {
+            m.cga.show_counter = on;
+            m.mga.show_counter = on;
+        }
+        if let Some(m) = &mut self.mono_hd {
+            m.cga.show_counter = on;
+            m.mga.show_counter = on;
+        }
+    }
+
+    /// 單色圖庫載入成功，CGA、MGA 選得到。
+    pub fn mono_available(&self) -> bool {
+        self.mono.is_some()
+    }
+
+    /// 實際使用的顯示模式。單色圖庫缺檔時要求 CGA、MGA 會是 VGA。
+    pub fn mode(&self) -> DisplayMode {
+        self.mode
     }
 
     /// 這一步玩家的按鍵會不會移動玩家機。
@@ -160,18 +327,31 @@ impl Session {
         self.playable(0) || self.playable(1)
     }
 
-    /// 這一幀要給繪製層的玩家機偏移。
+    /// 這一幀要給繪製層的玩家機偏移。預測只作用在 VGA、EGA 的 `LayerSink` 路徑，單色模式固定原版時序，沒有預測。
     fn player_offsets(&self) -> [Option<(i32, i32)>; 2] {
-        if self.live_input && self.view.feel && self.view.tween {
+        if self.live_input && self.view.feel && self.view.tween && !self.mode.is_mono() {
             [self.predictor.offset_hd(0), self.predictor.offset_hd(1)]
         } else {
             [None, None]
         }
     }
 
+    /// 同一批繪製命令餵給全部接收端，不管現在顯示哪一個模式，所以隨時可以切換。
     fn feed(&mut self, draws: &[DrawCmd]) {
         for c in draws {
             self.vga.apply(c);
+        }
+        if let Some(m) = &mut self.mono {
+            for c in draws {
+                m.cga.apply(c);
+                m.mga.apply(c);
+            }
+        }
+        if let Some(m) = &mut self.mono_hd {
+            for c in draws {
+                m.cga.apply(c);
+                m.mga.apply(c);
+            }
         }
         self.layer.push_frame(draws);
     }
@@ -189,7 +369,8 @@ impl Session {
                 AudioCmd::Speaker(on) => self.speaker_on = on,
             }
         }
-        if self.speaker_on {
+        // 原版只有 E 模式（VGA、EGA）的特效 blit 驅動喇叭，單色模式沒有（docs/re/14-display-modes.md 5.4）。
+        if self.speaker_on && self.mode.speaker() {
             for d in &frame.draws {
                 if let DrawCmd::Blit(b) = d {
                     let ev = speaker_events(&self.assets, b);
@@ -222,9 +403,39 @@ impl Session {
         self.steps
     }
 
+    /// 換顯示選項。模式變了就同步第三關的地形來源（核心在進第三關時讀）；其餘只影響 `render`。
     pub fn set_view(&mut self, v: ViewOpts) {
         self.view = v;
-        self.vga.show_counter = v.counter;
+        self.set_counter(v.counter);
+        self.set_mode(v.mode);
+    }
+
+    /// 換顯示模式。單色圖庫缺檔時要求 CGA、MGA 會被拒絕（回傳假），維持原來的模式。
+    ///
+    /// 只換 `render` 選哪一個接收端，並呼叫 `Game::set_terrain_scr`（單色讀 `SHT.SCR`，E 讀 `SHT.SCN`）。
+    /// 接收端隨時是最新的，所以不用重播，切換當下的畫面是對的。
+    pub fn set_mode(&mut self, m: DisplayMode) -> bool {
+        if m.is_mono() && self.mono.is_none() {
+            return false;
+        }
+        self.view.mode = m;
+        self.mode = m;
+        self.game.set_terrain_scr(m.is_mono());
+        true
+    }
+
+    /// 目前這一幀在視窗裡的比例與縮放濾鏡，要和 `render` 的輸出一起交給 `Presenter::draw`。
+    pub fn fit(&self) -> Fit {
+        match self.mode {
+            DisplayMode::Cga | DisplayMode::Mga => Fit::MONO,
+            DisplayMode::Vga | DisplayMode::Ega => {
+                if self.hd_effective() {
+                    Fit::HD
+                } else {
+                    Fit::SD
+                }
+            }
+        }
     }
 
     /// 無敵（規格 005）：呼叫 `Game::set_invincible`（原版作秘技的旗標 `word_273A5`）。
@@ -233,9 +444,9 @@ impl Session {
         self.game.set_invincible(on);
     }
 
-    /// 實際用 HD 圖：選了 HD 而且有 HD 資料夾。
+    /// 實際用 HD 圖：選了 HD 而且有 HD 資料夾。單色模式還要有單色圖庫（`MonoHdSink`，圖是 `mono/` 的推導結果）。
     pub fn hd_effective(&self) -> bool {
-        self.view.hd && self.hd_available
+        self.view.hd && self.hd_available && (!self.mode.is_mono() || self.mono_hd.is_some())
     }
 
     /// `Game` 資料段的 SHA-256（十六進位）。
@@ -256,20 +467,42 @@ impl Session {
         (self.vga.anomalies(), self.layer.anomalies())
     }
 
+    /// 診斷用計數：單色接收端（CGA, MGA）。沒有單色圖庫時是 `None`。
+    pub fn mono_anomalies(&self) -> Option<(u64, u64)> {
+        self.mono.as_ref().map(|m| (m.cga.anomalies(), m.mga.anomalies()))
+    }
+
     pub fn palette_name(&self) -> Option<&'static str> {
         self.layer.palette_name()
     }
 
-    /// 輸出目前畫面的 RGBA 與尺寸。
+    /// 輸出目前畫面的 RGBA 與尺寸。依顯示模式（見檔頭的表）：
     ///
-    /// - 補間關且原版圖：`VgaSink::render_page(取樣時畫的那一頁)`，320×200，逐像素等於原版。
-    /// - 其餘：`LayerSink::render(alpha, ..)`，原版圖 320×200，HD 1280×800。
+    /// - VGA，補間關且原版圖：`VgaSink::render_page(取樣時畫的那一頁)`，320×200，逐像素等於原版。
+    /// - VGA 其餘：`LayerSink::render(alpha, ..)`，原版圖 320×200，HD 1280×800。
+    /// - EGA，補間關且原版圖：`VgaSink::render_page_ega`，320×200，逐像素。
+    /// - EGA 其餘：`LayerSink` 的輸出，每個像素量化到目前 EGA 16 色中最近的一色。這是強推論，待使用者看畫面決定
+    ///   （補間與 HD 的畫面沒有 EGA 的原版對照）。
+    /// - CGA、MGA：`MonoSink::render_rgba(取樣時畫的那一頁)`，640×200 或 640×300。補間與玩家機預測固定關閉。
     pub fn render(&mut self, alpha: f32) -> (&[u8], usize, usize) {
         let hd = self.hd_effective();
         let alpha = if self.hold { 1.0 } else { alpha };
         let (w, h);
-        if !self.view.tween && !hd {
-            self.vga.render_page(self.layer.draw_page(), &mut self.rgb);
+        if let Some(sink) = self.mono.as_ref().and_then(|m| m.sink(self.mode)) {
+            // 單色：補間不支援（固定原版時序）。HD 時用 `MonoHdSink`，1280×800，CGA 與 MGA 的 HD 畫面比例都是 4:3
+            // （SD 的 640×300 垂直 1.5 倍是 MGA 顯示的產物，HD 不重現）。
+            let page = self.layer.draw_page();
+            match self.mono_hd.as_ref().and_then(|m| m.sink(self.mode)).filter(|_| hd) {
+                Some(hd_sink) => (w, h) = hd_sink.render_rgba(page, &mut self.frame),
+                None => (w, h) = sink.render_rgba(page, &mut self.frame),
+            }
+        } else if !self.view.tween && !hd {
+            let page = self.layer.draw_page();
+            if self.mode == DisplayMode::Ega {
+                self.vga.render_page_ega(page, &mut self.rgb);
+            } else {
+                self.vga.render_page(page, &mut self.rgb);
+            }
             self.frame.resize(320 * 200 * 4, 0);
             for (dst, src) in self.frame.chunks_exact_mut(4).zip(self.rgb.chunks_exact(3)) {
                 dst[..3].copy_from_slice(src);
@@ -282,11 +515,20 @@ impl Session {
             let (img, iw, ih) = self.layer.render(alpha, opts);
             self.frame.clear();
             self.frame.extend_from_slice(img);
+            if self.mode == DisplayMode::Ega {
+                let pal = self.vga.ega_colors();
+                self.ega_quant.apply(&pal, &mut self.frame);
+            }
             (w, h) = (iw, ih);
         }
         (&self.frame, w, h)
     }
 }
+
+/// 顯示模式的測試（切換不影響模擬、切換當下顯示正確等），放在子模組才讀得到 `Session` 的私有欄位。
+#[cfg(test)]
+#[path = "session_modes_tests.rs"]
+mod modes_tests;
 
 #[cfg(test)]
 mod tests {
@@ -296,7 +538,7 @@ mod tests {
     use rs2_trace::load_inputs;
     use std::path::PathBuf;
 
-    const VIEW: ViewOpts = ViewOpts { tween: true, counter: false, hd: false, feel: true };
+    const VIEW: ViewOpts = ViewOpts { tween: true, counter: false, hd: false, feel: true, mode: DisplayMode::Vga };
     const RIGHT: u8 = 0x4D;
     const LEFT: u8 = 0x4B;
 
@@ -308,7 +550,7 @@ mod tests {
         let dir = orig();
         let inputs = load_inputs(&dir).unwrap();
         let assets = Assets::load(&dir).unwrap();
-        Session::new(&inputs, assets, None, begin, Fixes::ALL, view)
+        Session::new(&inputs, assets, None, None, begin, Fixes::ALL, view)
     }
 
     fn new_game(view: ViewOpts) -> Session {

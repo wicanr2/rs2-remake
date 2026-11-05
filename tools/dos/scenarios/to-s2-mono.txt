@@ -1,0 +1,6 @@
+# 單色模式的 to-s2.txt：第一關開局（秘技之前），以 Ctrl+C 離開，停在第二關入口 sub_13205。需先 set MODEKEY。
+include /tools-dos/scenarios/prefix-to-stage1-mono.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 2
+set ENTRY 0x13205
+include /tools-dos/scenarios/next-entry-mono.txt

@@ -2,9 +2,10 @@
 //! 版面只由視窗寬度（手機版再加每 dp 的像素數）決定，和 SDL 無關，所以命中測試可以單元測試。
 //! 文字用 `ui::font` 的點陣字型，字串在 `ui::text`。
 //!
-//! F1 補間、F2 幀計數、F3 原貌／HD、F4 倍率、F5 手感、F10 設定畫面、F11 全螢幕的快捷鍵照舊，
+//! F1 補間、F2 幀計數、F3 原貌／HD、F4 倍率、F5 手感、F6 顯示模式、F10 設定畫面、F11 全螢幕的快捷鍵照舊，
 //! 補間、幀計數、倍率與手感的按鈕移進設定畫面的「顯示」與「遊戲」頁。
 
+use crate::mode::DisplayMode;
 pub use crate::ui::Rect;
 use crate::ui::{Align, Canvas, font, text};
 
@@ -20,7 +21,7 @@ pub enum Button {
     Fullscreen,
     /// 原貌／HD。
     Gfx,
-    /// 顯示模式。目前只有 VGA，按鈕灰掉。
+    /// 顯示模式（VGA、EGA、CGA、MGA 輪流）。單色圖庫缺檔時跳過 CGA、MGA，但按鈕照常能按。
     Mode,
     /// 手機版：開授權頁面。
     About,
@@ -43,13 +44,27 @@ pub struct BarState {
     /// 無敵開著。
     pub god: bool,
     pub mobile: bool,
+    /// 目前的顯示模式。
+    pub mode: DisplayMode,
+    /// 單色圖庫載入成功，CGA、MGA 選得到。為假時狀態列常駐一段說明。
+    pub mono_available: bool,
     /// 最近一則訊息（手把接上、拔除等），空字串是沒有。
     pub notice: String,
 }
 
 impl Default for BarState {
     fn default() -> BarState {
-        BarState { hd: false, hd_available: false, paused: false, rules: false, god: false, mobile: false, notice: String::new() }
+        BarState {
+            hd: false,
+            hd_available: false,
+            paused: false,
+            rules: false,
+            god: false,
+            mobile: false,
+            mode: DisplayMode::Vga,
+            mono_available: true,
+            notice: String::new(),
+        }
     }
 }
 
@@ -119,23 +134,30 @@ impl Button {
             Button::Game => text::BTN_GAME.to_string(),
             Button::Fullscreen => text::BTN_FULLSCREEN.to_string(),
             Button::Gfx => text::BTN_GFX.to_string(),
-            Button::Mode => format!("{}{}", text::BTN_MODE_PREFIX, text::MODE_VGA),
+            Button::Mode => format!("{}{}", text::BTN_MODE_PREFIX, s.mode.label()),
             Button::About => text::BTN_ABOUT.to_string(),
             Button::Quit => text::BTN_QUIT.to_string(),
             Button::Hide => text::BTN_HIDE.to_string(),
         }
     }
 
-    /// 決定按鈕寬度的字：同一個按鈕不管狀態怎麼變，寬度都不跳。顯示模式之後會換成 CGA、EGA、MGA，字數相同。
-    fn widest(self) -> String {
-        self.label(&BarState::default())
+    /// 這個按鈕在字高 `fh` 下最寬的字寬：同一個按鈕不管狀態怎麼變，寬度都不跳。
+    /// 顯示模式四個名稱的字寬不同（M 比 V 寬），所以逐一量。
+    fn widest_width(self, f: &font::Font, fh: i32) -> i32 {
+        match self {
+            Button::Mode => DisplayMode::ALL
+                .into_iter()
+                .map(|mode| f.text_width(&self.label(&BarState { mode, ..BarState::default() }), fh))
+                .max()
+                .unwrap_or(0),
+            _ => f.text_width(&self.label(&BarState::default()), fh),
+        }
     }
 
     pub fn enabled(self, s: &BarState) -> bool {
         match self {
             Button::Gfx => s.hd_available,
-            // 目前只有 VGA，之後才接 CGA、MGA。
-            Button::Mode => false,
+            // 顯示模式永遠能按：單色圖庫缺檔時只在 VGA 與 EGA 之間循環，說明在狀態列。
             _ => true,
         }
     }
@@ -159,7 +181,7 @@ pub fn layout(width: u32, mobile: bool, dp: f32) -> BarLayout {
     let mut buttons = Vec::with_capacity(list.len());
     let (mut x, mut row) = (m.gap, 0);
     for &b in list {
-        let bw = (f.text_width(&b.widest(), m.fh) + 2 * m.pad).min((w - 2 * m.gap).max(1));
+        let bw = (b.widest_width(f, m.fh) + 2 * m.pad).min((w - 2 * m.gap).max(1));
         if x + bw > w - m.gap && x > m.gap {
             row += 1;
             x = m.gap;
@@ -180,6 +202,9 @@ pub fn status_parts(s: &BarState) -> Vec<(String, [u8; 4])> {
     ];
     if s.god {
         v.push((text::ST_GOD.to_string(), INK_WARN));
+    }
+    if !s.mono_available {
+        v.push((text::ST_MONO_MISSING.to_string(), INK_WARN));
     }
     if !s.notice.is_empty() {
         v.push((s.notice.clone(), INK));
@@ -241,7 +266,7 @@ impl Toolbar {
             c.rect(*r, if on { BTN_ACTIVE } else { BTN_BG });
             let ink = if !b.enabled(s) {
                 INK_OFF
-            } else if *b == Button::Gfx && s.hd {
+            } else if (*b == Button::Gfx && s.hd) || (*b == Button::Mode && s.mode != DisplayMode::Vga) {
                 INK_ON
             } else {
                 INK
@@ -347,15 +372,48 @@ mod tests {
     }
 
     #[test]
-    fn display_mode_button_is_greyed_and_hd_follows_availability() {
+    fn display_mode_button_is_always_enabled_and_hd_follows_availability() {
         let mut s = st();
-        assert!(!Button::Mode.enabled(&s), "顯示模式目前只有 VGA，按鈕灰掉");
+        assert!(Button::Mode.enabled(&s), "顯示模式能按");
         assert!(Button::Gfx.enabled(&s));
         s.hd_available = false;
         assert!(!Button::Gfx.enabled(&s));
-        for b in [Button::Start, Button::Pause, Button::Controls, Button::Game, Button::Fullscreen, Button::About, Button::Quit, Button::Hide] {
-            assert!(b.enabled(&s));
+        // 單色圖庫缺檔時 CGA、MGA 選不到，按鈕仍能按（VGA 與 EGA 之間循環）。
+        s.mono_available = false;
+        for b in [Button::Mode, Button::Start, Button::Pause, Button::Controls, Button::Game, Button::Fullscreen, Button::About, Button::Quit, Button::Hide] {
+            assert!(b.enabled(&s), "{b:?}");
         }
+    }
+
+    #[test]
+    fn display_mode_label_follows_the_mode_and_keeps_the_prefix() {
+        for (mode, want) in DisplayMode::ALL.into_iter().zip(["顯示模式：VGA", "顯示模式：EGA", "顯示模式：CGA", "顯示模式：MGA"]) {
+            assert_eq!(Button::Mode.label(&BarState { mode, ..BarState::default() }), want);
+        }
+    }
+
+    #[test]
+    fn mode_button_width_does_not_jump_when_the_mode_changes() {
+        // 寬度由四個名稱最寬的決定，和目前的模式無關；每個名稱都放得進去。
+        let f = font::builtin();
+        for width in [320u32, 640, 960, 1280, 1600] {
+            let m = metrics(width, false, 1.0);
+            let (_, r) = layout(width, false, 1.0).buttons.into_iter().find(|(b, _)| *b == Button::Mode).unwrap();
+            for mode in DisplayMode::ALL {
+                let t = Button::Mode.label(&BarState { mode, ..BarState::default() });
+                assert!(f.text_width(&t, m.fh) + 2 * (m.pad / 2) <= r.w, "{t} 超出按鈕 {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn mono_missing_adds_one_persistent_status_part() {
+        let ok = status_parts(&BarState::default());
+        assert!(!ok.iter().any(|p| p.0 == text::ST_MONO_MISSING));
+        let missing = status_parts(&BarState { mono_available: false, ..BarState::default() });
+        assert_eq!(missing.len(), ok.len() + 1);
+        assert!(missing.iter().any(|p| p.0 == text::ST_MONO_MISSING && p.1 == INK_WARN));
+        assert!(font::builtin().missing(text::ST_MONO_MISSING).is_empty());
     }
 
     #[test]
@@ -377,10 +435,12 @@ mod tests {
             for (b, r) in layout(width, mobile, dp).buttons {
                 for hd in [false, true] {
                     for avail in [false, true] {
-                        let s = BarState { hd, hd_available: avail, mobile, ..BarState::default() };
-                        let t = b.label(&s);
-                        assert!(f.missing(&t).is_empty());
-                        assert!(f.text_width(&t, m.fh) + 2 * (m.pad / 2) <= r.w, "{t} 超出按鈕 {width}（{mobile}）：{} > {}", f.text_width(&t, m.fh), r.w);
+                        for mode in DisplayMode::ALL {
+                            let s = BarState { hd, hd_available: avail, mobile, mode, ..BarState::default() };
+                            let t = b.label(&s);
+                            assert!(f.missing(&t).is_empty());
+                            assert!(f.text_width(&t, m.fh) + 2 * (m.pad / 2) <= r.w, "{t} 超出按鈕 {width}（{mobile}）：{} > {}", f.text_width(&t, m.fh), r.w);
+                        }
                     }
                 }
             }
@@ -440,6 +500,10 @@ mod tests {
             BarState { notice: "x".into(), ..st() },
             BarState { hd: false, ..st() },
             BarState { hd_available: false, ..st() },
+            BarState { mode: DisplayMode::Ega, ..st() },
+            BarState { mode: DisplayMode::Cga, ..st() },
+            BarState { mode: DisplayMode::Mga, ..st() },
+            BarState { mono_available: false, ..st() },
         ] {
             assert_ne!(a, tb.render(960, &variant), "{variant:?}");
         }

@@ -21,25 +21,51 @@ pub fn window_size(scale: u32, toolbar_visible: bool) -> (u32, u32) {
     (w, GAME_H * scale + bar)
 }
 
-/// 遊戲畫面在視窗中的位置：可用區域是工具列以下，能放整數倍就放整數倍（最近鄰不糊），
-/// 放不下 1 倍時才縮小。置中，剩下的邊填黑。
-pub fn fit_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
+/// 遊戲畫面怎麼放進視窗：顯示比例、要不要整數倍、縮放濾鏡。由 `Session::fit` 依顯示模式給。
+///
+/// 視窗大小固定是 `window_size`（倍率 × 320×200 加工具列），換顯示模式不改視窗，只改畫面在視窗裡的矩形：
+/// 比例不同的模式在視窗內置中，其餘填黑，不拉伸。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fit {
+    /// 顯示比例（寬, 高）。
+    pub aspect: (u32, u32),
+    /// 放得下就放整數倍，放不下 1 倍才縮小（以比例的最小整數矩形為 1 倍，8:5 是 320×200）。為假則填滿可用區域。
+    pub integer: bool,
+    /// 線性縮放。為假是最近鄰（原版圖的像素不糊）。
+    pub smooth: bool,
+}
+
+impl Fit {
+    /// VGA、EGA 的原版圖，320×200：8:5，整數倍，最近鄰。
+    pub const SD: Fit = Fit { aspect: (8, 5), integer: true, smooth: false };
+    /// HD 圖，1280×800：8:5，整數倍，線性。
+    pub const HD: Fit = Fit { aspect: (8, 5), integer: true, smooth: true };
+    /// CGA 640×200、MGA 640×300：原版在 4:3 螢幕上都是 4:3。填滿可用區域，線性縮放
+    /// （水平不是整數倍，最近鄰會讓 1 位元的點陣花紋忽寬忽窄）。
+    pub const MONO: Fit = Fit { aspect: (4, 3), integer: false, smooth: true };
+}
+
+/// 遊戲畫面在視窗中的位置：可用區域是工具列以下，依 `fit` 放（見 `Fit`）。置中，剩下的邊填黑。
+/// `mobile`（手機版）一律填滿可用區域，不限整數倍：HD 是線性縮放，原版圖的像素不等寬也比留大黑邊好。
+pub fn fit_rect_for(win_w: u32, win_h: u32, bar_h: u32, fit: Fit, mobile: bool) -> BarRect {
     let avail_h = win_h.saturating_sub(bar_h);
     let (aw, ah) = (win_w as f64, avail_h as f64);
-    let k = (aw / GAME_W as f64).min(ah / GAME_H as f64);
-    let k = if k >= 1.0 { k.floor() } else { k };
-    let w = ((GAME_W as f64 * k).round() as i32).max(1);
-    let h = ((GAME_H as f64 * k).round() as i32).max(1);
+    let (uw, uh) = (fit.aspect.0 as f64 * 40.0, fit.aspect.1 as f64 * 40.0);
+    let k = (aw / uw).min(ah / uh);
+    let k = if fit.integer && !mobile && k >= 1.0 { k.floor() } else { k };
+    let w = ((uw * k).round() as i32).max(1);
+    let h = ((uh * k).round() as i32).max(1);
     BarRect { x: (win_w as i32 - w) / 2, y: bar_h as i32 + (avail_h as i32 - h) / 2, w, h }
 }
 
-/// 手機版：填滿可用區域，不限整數倍。HD 是線性縮放，原版圖的像素不等寬也比留大黑邊好。
+/// VGA、EGA 原版圖（8:5）在視窗中的位置：能放整數倍就放整數倍（最近鄰不糊），放不下 1 倍時才縮小。
+pub fn fit_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
+    fit_rect_for(win_w, win_h, bar_h, Fit::SD, false)
+}
+
+/// 手機版：填滿可用區域，不限整數倍。
 pub fn fill_rect(win_w: u32, win_h: u32, bar_h: u32) -> BarRect {
-    let avail_h = win_h.saturating_sub(bar_h);
-    let k = (win_w as f64 / GAME_W as f64).min(avail_h as f64 / GAME_H as f64);
-    let w = ((GAME_W as f64 * k).round() as i32).max(1);
-    let h = ((GAME_H as f64 * k).round() as i32).max(1);
-    BarRect { x: (win_w as i32 - w) / 2, y: bar_h as i32 + (avail_h as i32 - h) / 2, w, h }
+    fit_rect_for(win_w, win_h, bar_h, Fit::SD, true)
 }
 
 /// 觸控控制鈕的疊加層。
@@ -83,8 +109,8 @@ pub fn count_nonblack(rgba: &[u8]) -> usize {
 
 pub struct Presenter<'a> {
     creator: &'a TextureCreator<WindowContext>,
-    small: Texture<'a>,
-    big: Option<Texture<'a>>,
+    /// 遊戲畫面的貼圖與它的尺寸、是否線性縮放。畫面尺寸或濾鏡變了（換顯示模式、開關 HD）才重建。
+    game: (Texture<'a>, u32, u32, bool),
     bar: Option<(Texture<'a>, u32, u32)>,
     bar_key: Option<(BarState, Toolbar, u32)>,
     overlay: Option<(Texture<'a>, u32, u32)>,
@@ -99,12 +125,15 @@ fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: Scal
     Ok(t)
 }
 
+fn scale_mode(smooth: bool) -> ScaleMode {
+    if smooth { ScaleMode::Linear } else { ScaleMode::Nearest }
+}
+
 impl<'a> Presenter<'a> {
     pub fn new(creator: &'a TextureCreator<WindowContext>) -> Result<Presenter<'a>, String> {
         Ok(Presenter {
             creator,
-            small: make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?,
-            big: None,
+            game: (make_tex(creator, GAME_W, GAME_H, ScaleMode::Nearest)?, GAME_W, GAME_H, false),
             bar: None,
             bar_key: None,
             overlay: None,
@@ -116,8 +145,7 @@ impl<'a> Presenter<'a> {
 
     /// 繪圖裝置重置（Android 切回前景時 GL context 可能重建）：貼圖都要重建。內容每次繪製都會重新上傳。
     pub fn invalidate(&mut self) -> Result<(), String> {
-        self.small = make_tex(self.creator, GAME_W, GAME_H, ScaleMode::Nearest)?;
-        self.big = None;
+        self.game = (make_tex(self.creator, GAME_W, GAME_H, ScaleMode::Nearest)?, GAME_W, GAME_H, false);
         self.bar = None;
         self.bar_key = None;
         self.overlay = None;
@@ -128,7 +156,8 @@ impl<'a> Presenter<'a> {
     }
 
     /// 畫一幀：工具列在上，遊戲畫面在下；`shot` 有值時在 `present` 之前擷取視窗內容存成 PNG。
-    /// `frame` 是 RGBA，`fw × fh` 是 320×200（原版圖，最近鄰放大）或 1280×800（HD，線性縮放）。
+    /// `frame` 是 RGBA，`fw × fh` 隨顯示模式：320×200（VGA、EGA 原版圖）、1280×800（HD）、640×200（CGA）、640×300（MGA）。
+    /// `fit` 決定畫面在視窗內的比例與縮放濾鏡（`Session::fit`），畫面尺寸或濾鏡變了就重建貼圖。
     /// `layer` 是設定畫面或暫停標示，蓋在遊戲畫面與觸控鈕之上、工具列之下。
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -137,6 +166,7 @@ impl<'a> Presenter<'a> {
         frame: &[u8],
         fw: usize,
         fh: usize,
+        fit: Fit,
         toolbar: &Toolbar,
         bar_state: &BarState,
         overlay: Option<Overlay<'_>>,
@@ -165,17 +195,13 @@ impl<'a> Presenter<'a> {
         if frame.len() != fw * fh * 4 {
             return Err(format!("畫面緩衝區長度 {} 與 {fw}x{fh} 不符", frame.len()));
         }
-        let tex = if fw == GAME_W as usize && fh == GAME_H as usize {
-            &mut self.small
-        } else {
-            // 建立一次，尺寸固定 1280×800（LayerSink 的 HD 輸出）。
-            if self.big.is_none() {
-                self.big = Some(make_tex(self.creator, fw as u32, fh as u32, ScaleMode::Linear)?);
-            }
-            self.big.as_mut().ok_or("HD 貼圖不存在")?
-        };
+        let want = (fw as u32, fh as u32, fit.smooth);
+        if (self.game.1, self.game.2, self.game.3) != want {
+            self.game = (make_tex(self.creator, want.0, want.1, scale_mode(want.2))?, want.0, want.1, want.2);
+        }
+        let tex = &mut self.game.0;
         tex.update(None, frame, fw * 4).map_err(|e| format!("更新畫面貼圖失敗：{e}"))?;
-        let r = if toolbar.mobile { fill_rect(ww, wh, bar_h) } else { fit_rect(ww, wh, bar_h) };
+        let r = fit_rect_for(ww, wh, bar_h, fit, toolbar.mobile);
         canvas.copy(tex, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
         if let Some(o) = overlay {
             let key = (o.playable, ww, wh);
@@ -302,6 +328,51 @@ mod tests {
         // 16:10 平板填滿。
         let r = fill_rect(1280, 800, 0);
         assert_eq!((r.x, r.y, r.w, r.h), (0, 0, 1280, 800));
+    }
+
+    #[test]
+    fn sd_and_hd_fit_are_exactly_the_old_eight_by_five_layout() {
+        for (w, h, bar) in [(960u32, 600 + 26, 26u32), (1920, 1080, 26), (200, 150, 0), (640, 400, 0), (2400, 1080, 0), (100, 10, 20)] {
+            assert_eq!(fit_rect_for(w, h, bar, Fit::SD, false), fit_rect(w, h, bar));
+            assert_eq!(fit_rect_for(w, h, bar, Fit::HD, false), fit_rect(w, h, bar), "HD 的矩形和原版圖相同，只有濾鏡不同");
+            assert_eq!(fit_rect_for(w, h, bar, Fit::SD, true), fill_rect(w, h, bar));
+        }
+        assert!(!Fit::SD.smooth && Fit::HD.smooth && Fit::MONO.smooth);
+    }
+
+    #[test]
+    fn mono_fit_is_four_by_three_centred_and_never_stretched() {
+        // 預設倍率 3 的視窗：可用區域 960×600，4:3 的矩形取滿高度，左右各留 80。
+        let r = fit_rect_for(960, 626, 26, Fit::MONO, false);
+        assert_eq!((r.x, r.y, r.w, r.h), (80, 26, 800, 600));
+        // 倍率 2 到 5 與全螢幕，比例都是 4:3（取整誤差一個像素內），整個矩形在視窗內。
+        for (w, h, bar) in [(640u32, 400 + 26, 26u32), (960, 626, 26), (1280, 800 + 40, 40), (1600, 1000 + 40, 40), (1920, 1080, 26), (2400, 1080, 0)] {
+            let r = fit_rect_for(w, h, bar, Fit::MONO, false);
+            assert!((r.w * 3 - r.h * 4).abs() <= 4, "{w}x{h}：{}x{} 不是 4:3", r.w, r.h);
+            assert!(r.x >= 0 && r.y >= bar as i32 && r.x + r.w <= w as i32 && r.y + r.h <= h as i32, "{w}x{h}：{r:?} 超出視窗");
+            // 取滿可用區域的一個方向，另一個方向置中。
+            let avail_h = (h - bar) as i32;
+            assert!(r.h == avail_h || r.w == w as i32, "{w}x{h}：沒有取滿 {r:?}");
+            assert_eq!(r.x, (w as i32 - r.w) / 2);
+            assert_eq!(r.y, bar as i32 + (avail_h - r.h) / 2);
+            // 手機版也是填滿同一個矩形。
+            assert_eq!(fit_rect_for(w, h, bar, Fit::MONO, true), r);
+        }
+        // 很小的視窗也不會變成零大小。
+        let r = fit_rect_for(10, 5, 4, Fit::MONO, false);
+        assert!(r.w >= 1 && r.h >= 1);
+    }
+
+    #[test]
+    fn mono_frames_are_not_distorted_relative_to_the_vga_window() {
+        // 同一個視窗（倍率 3）裡，VGA 的 8:5 矩形取滿寬度，單色的 4:3 矩形取滿高度，兩者高度相同。
+        let (w, h) = window_size(3, true);
+        let bar = crate::toolbar::desktop_height(w);
+        let vga = fit_rect_for(w, h, bar, Fit::SD, false);
+        let mono = fit_rect_for(w, h, bar, Fit::MONO, false);
+        assert_eq!((vga.w, vga.h), (960, 600));
+        assert_eq!((mono.w, mono.h), (800, 600));
+        assert_eq!(vga.y, mono.y);
     }
 
     #[test]

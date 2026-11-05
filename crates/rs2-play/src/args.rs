@@ -1,5 +1,6 @@
 //! 命令列參數。解析不依賴 SDL，可單元測試。
 
+use crate::mode::DisplayMode;
 use crate::ui::panel::Page;
 use std::path::PathBuf;
 
@@ -38,7 +39,9 @@ pub const USAGE: &str = "\
   --feel on|off         覆寫玩家機預測與短按保留的初值（F5）
   --touch               畫觸控控制鈕並用手機版工具列（Android 預設，桌面版驗證用）
   --counter on|off      覆寫幀計數開關的初值
-  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd 或 feel（測試用，可重複）
+  --mode vga|ega|cga|mga
+                        起始的顯示模式，覆寫設定檔（驗證與截圖用）。cga、mga 需要單色圖庫，缺檔時退回 vga
+  --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd、feel 或 mode（mode 是換下一個顯示模式，測試用，可重複）
   --max-secs S          視窗模式跑 S 秒後自行結束（驗證用）
   --record FILE         視窗模式結束時寫出每步實際送進遊戲的掃描碼（JSONL，每步一行，可再用 --replay 重播）
   --open-panel 頁名      開設定畫面到指定頁（驗證用）：手把、手把按鍵、鍵盤、遊戲、顯示，或 pad、padkeys、keyboard、game、display；
@@ -47,8 +50,8 @@ pub const USAGE: &str = "\
   --dp X                手機版每 dp 的像素數（驗證用，預設讀螢幕 DPI，讀不到用 2）
   --fake-pads           列出兩支假的手把與一支不支援的搖桿，沒有實體手把也能看手把頁的版面（驗證用）
 
-視窗內：F1 補間、F2 幀計數、F3 原貌／HD、F4 倍率（2、3、4、5）、F5 手感（新或原版時序）、F8 設定畫面換頁、
-F10 設定畫面、F11 全螢幕。工具列的按鈕與設定畫面見規格 005。
+視窗內：F1 補間、F2 幀計數、F3 原貌／HD、F4 倍率（2、3、4、5）、F5 手感（新或原版時序）、F6 顯示模式（VGA、EGA、CGA、MGA）、
+F8 設定畫面換頁、F10 設定畫面、F11 全螢幕。工具列的按鈕與設定畫面見規格 005。
 ";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +68,8 @@ pub enum ToggleName {
     Counter,
     Hd,
     Feel,
+    /// 換下一個顯示模式（VGA、EGA、CGA、MGA 輪流）。
+    Mode,
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +91,8 @@ pub struct Args {
     pub shots: Vec<(u64, PathBuf)>,
     pub tween: Option<bool>,
     pub feel: Option<bool>,
+    /// 起始的顯示模式，覆寫設定檔。
+    pub mode: Option<DisplayMode>,
     /// 畫觸控控制鈕並用手機版工具列。Android 一律開著，桌面版給驗證用。
     pub touch: bool,
     pub counter: Option<bool>,
@@ -136,6 +143,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         shots: Vec::new(),
         tween: None,
         feel: None,
+        mode: None,
         touch: cfg!(target_os = "android"),
         counter: None,
         toggles: Vec::new(),
@@ -190,6 +198,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--tween" => a.tween = Some(onoff("--tween", val!("--tween")?)?),
             "--feel" => a.feel = Some(onoff("--feel", val!("--feel")?)?),
+            "--mode" => {
+                let v = val!("--mode")?;
+                a.mode = Some(DisplayMode::from_code(v).ok_or_else(|| format!("--mode 要是 vga、ega、cga 或 mga，收到 {v}"))?);
+            }
             "--touch" => a.touch = true,
             "--counter" => a.counter = Some(onoff("--counter", val!("--counter")?)?),
             "--toggle-at" => {
@@ -199,7 +211,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                     "counter" => ToggleName::Counter,
                     "hd" => ToggleName::Hd,
                     "feel" => ToggleName::Feel,
-                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter、hd 或 feel，收到 {v}")),
+                    "mode" => ToggleName::Mode,
+                    v => return Err(format!("--toggle-at 的 NAME 要是 tween、counter、hd、feel 或 mode，收到 {v}")),
                 };
                 a.toggles.push((n, t));
             }
@@ -319,6 +332,23 @@ mod tests {
         let a = p("--open-panel 手把按鍵 --open-panel 顯示 --open-panel 無").unwrap();
         assert_eq!(a.open_panels, vec![Some(Page::PadKeys), Some(Page::Display), None]);
         assert!(p("--orig /o").unwrap().open_panels.is_empty());
+    }
+
+    #[test]
+    fn mode_flag_and_mode_toggle() {
+        assert_eq!(p("--orig /o").unwrap().mode, None, "不給就讀設定檔");
+        for m in DisplayMode::ALL {
+            assert_eq!(p(&format!("--mode {}", m.code())).unwrap().mode, Some(m));
+        }
+        assert_eq!(p("--mode CGA").unwrap().mode, Some(DisplayMode::Cga), "不分大小寫");
+        let a = p("--mode mga --headless-steps 10 --shot-at 5:/a.png --toggle-at 3:mode --toggle-at 7:mode").unwrap();
+        assert_eq!(a.mode, Some(DisplayMode::Mga));
+        assert_eq!(a.toggles, vec![(3, ToggleName::Mode), (7, ToggleName::Mode)]);
+        assert_eq!(a.shots, vec![(5, PathBuf::from("/a.png"))], "--mode 可以搭配 --shot-at");
+        for bad in ["--mode", "--mode hercules", "--mode 4", "--mode vga2"] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
+        assert!(USAGE.contains("--mode") && USAGE.contains("F6"));
     }
 
     #[test]

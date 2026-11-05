@@ -268,6 +268,8 @@ pub(crate) struct Port {
     s11375_patched: bool,
     display_start: Option<u16>,
     audio: Vec<AudioCmd>,
+    /// 第三關進場時讀 `SHT.SCR`（單色，C、H）而不是 `SHT.SCN`（E）。不屬於原版狀態，由前端在進第三關之前設定。
+    pub(crate) terrain_scr: bool,
 }
 
 struct YieldOnce(bool);
@@ -335,6 +337,7 @@ impl Core {
             s11375_patched: false,
             display_start: None,
             audio: Vec::new(),
+            terrain_scr: false,
         };
         let mut g = Core {
             ds,
@@ -561,6 +564,13 @@ impl Game {
 
     pub fn poke16(&mut self, offset: u16, value: u16) {
         self.port.borrow_mut().pokes.push((offset, value, true));
+    }
+
+    /// 第三關的地形資料來源（`docs/spec/006-display-modes.md`「第三關地形」）：原版 E（VGA、EGA）讀 `SHT.SCN`，
+    /// 單色（CGA、MGA）讀 `SHT.SCR`，兩份在 514 格的零與非零不同，而這份陣列就是碰撞格 G4。
+    /// 第三關進場（`sub_13A51`）時讀取，所以進場之後再設不生效：一局裡每個第三關各用進場當下的選擇。
+    pub fn set_terrain_scr(&mut self, on: bool) {
+        self.port.borrow_mut().terrain_scr = on;
     }
 
     fn poll_once(&mut self) -> Poll<Exit> {

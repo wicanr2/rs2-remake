@@ -18,5 +18,5 @@ for n in "$@"; do
   [[ "$n" =~ ^[a-z0-9-]+$ ]] || { echo "wt_run.sh：名稱 $n 不合格式" >&2; exit 1; }
   test -f "$ROOT/tools/dos/scenarios/wt-$n.txt" || { echo "wt_run.sh：缺 wt-$n.txt" >&2; exit 1; }
 done
-export ROOT T RS2_CPUS=2 RS2_MEM=2g RS2_CNAME=rs2-wt
+export ROOT T RS2_CPUS="${RS2_CPUS:-2}" RS2_MEM="${RS2_MEM:-2g}" RS2_CNAME="${RS2_CNAME:-rs2-wt}"
 printf '%s\n' "$@" | xargs -P "$J" -I{} bash -c '"$ROOT/tools/dos/run_scenario.sh" "wt-{}" "wt_{}" A "$T" 2>&1 | sed "s/^/{}: /"'

@@ -89,6 +89,10 @@ pub enum Op {
     S18031,
     /// 第三關捲動（`sub_180C6`）：暫存區 A、B 各整體左移 28h 位元組，寫入模式 1。
     S180C6,
+    /// MGA（Hercules）專用（`sub_1117F`）：目前頁 `0000h`～`1FFFh` 複製到 `2000h`～`3FFFh`，也就是偶數列那一組複製到
+    /// 中間那條掃描線。`byte_1CF74` 為 `E` 時直接 `retn`，所以 VGA、EGA 與 CGA 沒有動作。
+    /// 原版呼叫端在一幀畫完之後、翻頁之前，位置見 `docs/re/14-display-modes.md`。這個命令不帶參數，只有 `page` 有意義。
+    S1117F,
 }
 
 /// `sub_19ADC` 那組段變數目前指向的圖庫。BH 與 SHT 共用同一組，載入 BH 時會蓋掉 SHT。
@@ -180,6 +184,10 @@ pub enum DrawCmd {
     SetDac { start: u8, rgb: [u8; 48] },
     /// 寫 1 個 DAC 暫存器（INT 10h AX=1010h）。
     SetDacOne { index: u8, rgb: [u8; 3] },
+    /// EGA 屬性暫存器（INT 10h AX=1002h）：16 個調色盤暫存器接邊框色，值是 6 位元的 rgbRGB。
+    /// 調色盤函式在 `byte_1CF75` 為 `Y`（EGA）時寫它，為 `N`（VGA）時寫 DAC（`SetDac`）。核心兩種都記，
+    /// 接收端依顯示模式取用。`SetDac` 的 `start` 為 0 時一起記，表在 DAC 表之前 11h 位元組（`loader` 例外，見 `flow.rs`）。
+    EgaAttr { regs: [u8; 17] },
     /// 對顯示記憶體 `rep stosw`，平面由目前的 map mask 決定。
     VramFill { off: u16, words: u16, value: u16 },
     /// 設序列器 map mask（`sub_1882E` 的 `bl` 轉換後、`sub_18878` 的 0Fh）。

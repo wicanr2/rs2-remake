@@ -1,0 +1,4 @@
+# MGA（Hercules）的全流程收據 wt_stage1-h，本體見 mono-body-stage1.txt。
+set MODEKEY h
+set RNAME wt_stage1-h
+include /tools-dos/scenarios/mono-body-stage1.txt

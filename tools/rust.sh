@@ -11,6 +11,7 @@
 #   tools/rust.sh play-test [參數...]  跑 rs2-play 的單元測試與 A6（SDL_VIDEODRIVER=dummy，需要原版檔）
 #   tools/rust.sh play-gui-check <名稱> <秒數> [參數...]  Xvfb 下開視窗跑指定秒數，存 PNG 到 workspace/rs2/shots
 #
+# RS2_CPUS 限制容器核心數（預設 4）。
 # 專案目錄以唯讀掛載，輸出在 workspace/cargo、workspace/target、workspace/rs2。
 # tools/rust.sh lock 產生 Cargo.lock，這是唯一可寫掛載專案根的子命令。
 # play-* 另用 workspace/cargo-play（離線 crate 快取）與 workspace/target-play；
@@ -30,12 +31,16 @@ test -d "$ORIG" || { echo "缺原版目錄 $ORIG，先跑 tools/run_all.sh" >&2;
 test -d "$DOSRUN" || { echo "缺 $DOSRUN" >&2; exit 1; }
 
 base=(docker run --rm -u "$(id -u):$(id -g)"
-  --memory 4g --cpus 4 --pids-limit 256 --network none
+  --memory 4g --cpus "${RS2_CPUS:-4}" --pids-limit 256 --network none
   --log-opt max-size=10m --log-opt max-file=3
   -e CARGO_HOME=/cache -e CARGO_TARGET_DIR=/target -e HOME=/tmp
   -e RS2_ORIG=/orig -e RS2_DOSRUN=/dosrun -e RS2_OUT=/out
   -v "$WP/cargo:/cache" -v "$WP/target:/target" -v "$WP/rs2:/out"
   -v "$ORIG:/orig:ro" -v "$DOSRUN:/dosrun:ro" -w /project)
+# 單色收據測試（crates/rs2-trace/tests/mono.rs）的過濾與定位旗標，設了才傳進容器。
+for v in RS2_MONO RS2_MONO_LOCATE; do
+  if [ -n "${!v:-}" ]; then base+=(-e "$v=${!v}"); fi
+done
 
 # HD 素材資料夾（選用）：存在才唯讀掛載，LayerSink 的 HD 驗收用 RS2_HD 讀它。
 HD="$WP/hd/assets"
@@ -64,7 +69,7 @@ play_prepare() {
   test -d "$PLAY_CARGO/registry" || { echo "缺 $PLAY_CARGO/registry（離線 crate 快取）" >&2; exit 1; }
   mkdir -p "$PLAY_TARGET"
   pbase=(docker run --rm --init -u "$(id -u):$(id -g)"
-    --memory 6g --cpus 4 --pids-limit 256 --network none
+    --memory 6g --cpus "${RS2_CPUS:-4}" --pids-limit 256 --network none
     --log-opt max-size=10m --log-opt max-file=3
     -e CARGO_HOME=/cache -e CARGO_TARGET_DIR=/target -e HOME=/tmp
     -v "$PLAY_CARGO:/cache" -v "$PLAY_TARGET:/target")

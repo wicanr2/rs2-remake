@@ -1,0 +1,4 @@
+# CGA 的全流程收據 wt_flow-c，本體見 mono-body-flow.txt。
+set MODEKEY c
+set RNAME wt_flow-c
+include /tools-dos/scenarios/mono-body-flow.txt

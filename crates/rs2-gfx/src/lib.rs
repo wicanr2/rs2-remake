@@ -5,11 +5,15 @@
 mod assets;
 mod font;
 mod layer;
+mod mono;
+mod mono_hd;
 pub mod png;
 pub mod speaker;
 mod sink;
 pub mod vga;
 
 pub use assets::Assets;
+pub use mono::{MONO_EXPECTED, MonoAssets, MonoBank, MonoKind, MonoSink, SCRATCH_SIZE};
+pub use mono_hd::{MONO_HD_H, MONO_HD_W, MonoHdSink};
 pub use layer::{HdAssets, HdLib, HdSet, INTERP_CROSS_OP, INTERP_MAX_PX, LayerSink, RenderOpts, pal};
-pub use sink::{ATTR_REGS, BankDump, VgaSink, disp_row, locate, scratch_row};
+pub use sink::{ATTR_REGS, BankDump, VgaSink, disp_row, ega_rgb16, locate, scratch_row};

@@ -754,6 +754,8 @@ pub fn apply(m: &mut Mem, st: &mut St, assets: &Assets, font: Option<&[u8]>, c: 
         Op::S17F5D => scroll_col_merge(m, st, c),
         Op::S17FA0 | Op::S18031 => scroll_view(m, st, c),
         Op::S180C6 => scroll_left(m, st),
+        // MGA 專用（`sub_1117F`），E 直接 `retn`。
+        Op::S1117F => {}
         Op::S1890D => {
             counter(m, c.text_x, c.text_y, c.cx, font);
             restore(st);

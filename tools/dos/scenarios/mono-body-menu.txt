@@ -1,0 +1,37 @@
+# 單色模式（C、H）的全流程收據 wt_menu-c、wt_menu-h 的本體，比照 wt-menu.txt：標題按 C 進選單，LEVEL 與 CTRL 各走一輪再退回，
+# 最後 LEVEL=HARDEST、CTRL=ROLE 2，Enter 確認回標題，按空白開始，第一關開秘技玩幾秒。涵蓋選單反白的 `S18C6E`（MY 圖取反覆寫）。
+# 方向鍵按住時每個迴圈都累加（sub_1262C 不清按鍵狀態），要單步就只按 3 ms。
+# 呼叫端先 set MODEKEY 與 RNAME。檔名換成單色版：BEG1.BDB、J1.GOB。
+include /tools-dos/scenarios/prefix-to-title-mono.txt
+dumpds entry
+dumpmono entry
+shotmono entry
+fontdump
+waittrace ${RNAME}
+untilopen BEG1.BDB 1 400_000_000
+secs 5.2
+tap c 0.3 0
+secs 1.5
+tap right 0.003 0.3
+tap right 0.003 0.3
+tap right 0.003 0.3
+tap left 0.003 0.3
+tap right 0.003 0.3
+tap down 0.003 0.5
+tap right 0.003 0.5
+tap right 0.003 0.5
+tap left 0.003 0.5
+tap left 0.003 0.5
+tap right 0.003 0.5
+tap enter 0.15 0.3
+secs 3
+tap space 0.3 0
+untilopen J1.GOB 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 6
+waittrace off

@@ -2,6 +2,7 @@
 //! 欄位定義見 `docs/re/10-dynamic-receipts.md` 第 8.3 節，順序與 `cmd/rs2dyn/trace_full.go` 相同。
 //! 全流程對拍（等待點收據）在 [`wait`]。
 
+pub mod mono;
 pub mod wait;
 
 use rs2_core::{Game, GameFiles, a};

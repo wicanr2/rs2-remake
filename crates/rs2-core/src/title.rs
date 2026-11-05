@@ -22,11 +22,12 @@ macro_rules! two_page_loop {
             $s.s18812();
             $s.s1282d();
             $s.$step().await;
-            // call sub_1117F：E 模式為空。
+            $s.s1117f();
             $s.s19a37();
             $s.s18819();
             $s.s1282d();
             $s.$step().await;
+            $s.s1117f();
             $s.r.cx = saved;
             if !$s.t_loop() {
                 break;
@@ -478,13 +479,14 @@ impl Core {
             self.s19d08();
             let v = self.ds.r16(a(0x26864)).wrapping_sub(1);
             self.ds.w16(a(0x26864), v);
-            // call sub_1117F：E 模式為空。
+            self.s1117f();
             self.s19a88();
             self.s19cf9();
             self.r.cx = 0xC8;
             self.s19d08();
             let v = self.ds.r16(a(0x26864)).wrapping_sub(1);
             self.ds.w16(a(0x26864), v);
+            self.s1117f();
             self.r.cx = saved;
             if self.t_key() != 0 {
                 return;
@@ -493,9 +495,11 @@ impl Core {
                 break;
             }
         }
+        self.s1117f();
         self.s19cf9();
         self.r.cx = 0xC8;
         self.s19d08();
+        self.s1117f();
         self.s19a37();
         self.r.cx = 1;
         self.s11097().await;
@@ -508,6 +512,7 @@ impl Core {
         // 步 0
         self.s11c26();
         self.t_beg(0x1B, 0x35, 8);
+        self.s1117f();
         self.r.cx = 5;
         self.s11097().await;
         self.s19a88();
@@ -515,6 +520,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x1A, 0x3B, 9);
         self.t_beg(0x1E, 0x37, 0x15);
+        self.s1117f();
         self.r.cx = 5;
         self.s11097().await;
         self.s19a37();
@@ -522,6 +528,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x19, 0x40, 0x0A);
         self.t_beg(0x1E, 0x37, 0x16);
+        self.s1117f();
         self.r.cx = 5;
         self.s11097().await;
         self.s19a88();
@@ -529,6 +536,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x18, 0x45, 0x0B);
         self.t_beg(0x1E, 0x35, 0x17);
+        self.s1117f();
         self.r.cx = 4;
         self.s11097().await;
         self.s19a37();
@@ -536,6 +544,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x16, 0x4C, 0x0C);
         self.t_beg(0x1E, 0x34, 0x18);
+        self.s1117f();
         self.r.cx = 4;
         self.s11097().await;
         self.s19a88();
@@ -543,6 +552,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x13, 0x52, 0x0D);
         self.t_beg(0x1F, 0x33, 0x19);
+        self.s1117f();
         self.r.cx = 3;
         self.s11097().await;
         self.s19a37();
@@ -550,6 +560,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x10, 0x5A, 0x12);
         self.t_beg(0x1F, 0x39, 0x1A);
+        self.s1117f();
         self.r.cx = 3;
         self.s11097().await;
         self.s19a88();
@@ -557,6 +568,7 @@ impl Core {
         self.s11c26();
         self.t_beg(0x0A, 0x63, 0x13);
         self.t_beg(0x1F, 0x37, 0x1B);
+        self.s1117f();
         self.r.cx = 2;
         self.s11097().await;
         self.s19a37();
@@ -564,29 +576,34 @@ impl Core {
         self.s11c26();
         self.t_beg(3, 0x7A, 0x14);
         self.t_beg(0x1F, 0x37, 0x1C);
+        self.s1117f();
         self.r.cx = 1;
         self.s11097().await;
         self.s19a88();
         // 步 9：行星
         self.s11c26();
         self.t_beg(0x1D, 0x28, 0x1D);
+        self.s1117f();
         self.r.cx = 1;
         self.s11097().await;
         self.s19a37();
         // 步 10
         self.s11c26();
         self.t_beg(0x19, 3, 0x1E);
+        self.s1117f();
         self.r.cx = 1;
         self.s11097().await;
         self.s19a88();
         // 步 11
         self.s11c26();
         self.t_beg(0x13, 0, 0x1F);
+        self.s1117f();
         self.r.cx = 1;
         self.s11097().await;
         self.s19a37();
         // 結尾：只重畫背景，等 4 tick，灰階閃光 20 tick，切回 beg1_a。
         self.s11c26();
+        self.s1117f();
         self.r.cx = 4;
         self.s11097().await;
         self.s12a13();
@@ -620,7 +637,7 @@ impl Core {
             return;
         }
         self.s12858();
-        // call sub_1117F：E 模式為空。
+        self.s1117f();
         self.s19a37();
         self.s18812();
         self.s1282d();
@@ -697,7 +714,7 @@ impl Core {
             return;
         }
         self.s12883();
-        // call sub_1117F：E 模式為空。
+        self.s1117f();
         self.s19a37();
         self.s18812();
         self.s1282d();
@@ -851,7 +868,7 @@ impl Core {
             return;
         }
         self.s127cd();
-        // call sub_1117F：E 模式為空。
+        self.s1117f();
         self.s19a37();
         self.s18812();
         self.s1282d();
@@ -898,7 +915,7 @@ impl Core {
             return;
         }
         self.s128ae();
-        // call sub_1117F：E 模式為空。
+        self.s1117f();
         self.s19a37();
         self.s18812();
         self.s1282d();

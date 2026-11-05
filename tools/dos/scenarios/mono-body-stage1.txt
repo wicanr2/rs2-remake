@@ -1,0 +1,20 @@
+# 單色模式（C、H）的全流程收據 wt_stage1-c、wt_stage1-h 的本體，比照 wt-stage1.txt。
+# 呼叫端先 set MODEKEY 與 RNAME。J2.GO 換成 J2.GOB。
+include /tools-dos/scenarios/prefix-to-j1-mono.txt
+down space
+runsteps 300_000
+up space
+untilpc 0x10CD0 300_000_000
+dumpds entry
+dumpmono entry
+shotmono entry
+fontdump
+waittrace ${RNAME}
+trace s1 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*1130
+untilopen J2.GOB 1 3_000_000_000
+secs 2
+trace off
+waittrace off

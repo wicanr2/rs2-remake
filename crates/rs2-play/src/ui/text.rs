@@ -21,8 +21,11 @@ pub const BTN_GAME: &str = "遊戲設定";
 pub const BTN_FULLSCREEN: &str = "全螢幕";
 pub const BTN_GFX: &str = "原貌／HD";
 pub const BTN_MODE_PREFIX: &str = "顯示模式：";
-/// 目前只有 VGA。之後接 CGA、MGA 時按鈕才會亮。
+/// 四種顯示模式的名稱，接在 `BTN_MODE_PREFIX` 後面。
 pub const MODE_VGA: &str = "VGA";
+pub const MODE_EGA: &str = "EGA";
+pub const MODE_CGA: &str = "CGA";
+pub const MODE_MGA: &str = "MGA";
 pub const BTN_ABOUT: &str = "關於";
 pub const BTN_QUIT: &str = "離開";
 pub const BTN_HIDE: &str = "收起";
@@ -32,6 +35,9 @@ pub const ST_RUNNING: &str = "執行中";
 pub const ST_ORIGINAL: &str = "原版規則";
 pub const ST_RULES: &str = "強化規則";
 pub const ST_GOD: &str = "無敵";
+/// 單色圖庫（CGA、MGA 用的 21 個檔）載入失敗時，狀態列常駐的說明，完整原因在標準錯誤輸出。
+/// 內附點陣沒有「圖庫」「缺檔」的字，所以用現有的字措辭。
+pub const ST_MONO_MISSING: &str = "CGA、MGA 不能選：畫面沒有取到";
 /// 狀態列各段之間的間隔（全形空白）。
 pub const ST_SEP: &str = "　";
 
@@ -240,7 +246,7 @@ pub const DISP_TOOLBAR: &str = "工具列";
 pub const DISP_SHOWN: &str = "顯示";
 pub const DISP_HIDDEN: &str = "隱藏";
 pub const DISP_NOTE: &str = "倍率只改視窗大小，手機版沒有倍率。工具列隱藏後，狀態列也一起隱藏。";
-pub const DISP_KEYS: &str = "快捷鍵：F1 補間，F2 幀計數，F3 原貌／HD，F4 倍率，F5 手感，F10 設定畫面，F11 全螢幕。";
+pub const DISP_KEYS: &str = "快捷鍵：F1 補間，F2 幀計數，F3 原貌／HD，F4 倍率，F5 手感，F6 顯示模式，F10 設定畫面，F11 全螢幕。";
 
 pub fn scale_value(n: u32) -> String {
     format!("{n} 倍")

@@ -1,0 +1,15 @@
+# 單色模式的 prefix-to-title.txt：破解組 intro → 文字選單按 ${MODEKEY}（c 是 CGA，h 是 MGA）→ 密碼畫面 → 停在 sub_11556（標題迴圈）入口。
+# 用法：include 前先 `set MODEKEY c` 或 `set MODEKEY h`。選模式靠文字選單的按鍵，不改 S.EXE（docs/re/14-display-modes.md 第 2 節）。
+# 與 prefix-to-title.txt 的差別：單色圖庫小，載入比 E 快，sub_11556 在第三個 Enter 按下後約 26 萬步就到，早於 prefix-to-title.txt 放開 Enter 的
+# 30 萬步，所以改成按著 Enter 等到 sub_11556 再放開。放開碼在入口傾印之後才送達，會出現在第一筆等待的 sc。
+step 45_000_000
+bios v
+step 70_000_000
+tap ${MODEKEY}
+step 100_000_000
+tap enter
+tap enter
+down enter
+untilvec8
+untilpc 0x11556 100_000_000
+up enter

@@ -1,9 +1,10 @@
-//! 前端開關的狀態與動作。F1 到 F5、F10、F11 的熱鍵、工具列按鈕與設定畫面都走這裡，不依賴 SDL。
+//! 前端開關的狀態與動作。F1 到 F6、F10、F11 的熱鍵、工具列按鈕與設定畫面都走這裡，不依賴 SDL。
 //!
 //! 前端暫停有兩個來源：按了暫停（`paused`），或設定畫面開著（`panel_open`）。前端暫停時 `Pacer` 不再步進，
 //! 不送 Esc 給遊戲；鍵盤的 Esc 照原版送進遊戲，那是原版的暫停。
 
 use crate::input::Hotkey;
+use crate::mode::DisplayMode;
 use crate::session::ViewOpts;
 use crate::settings::Settings;
 use crate::toolbar::{BarState, Button, Toolbar};
@@ -15,6 +16,8 @@ pub enum Action {
     Gfx,
     Scale,
     Feel,
+    /// 顯示模式循環（VGA、EGA、CGA、MGA）。
+    Mode,
     /// 工具列顯示或隱藏。
     Toolbar,
     Fullscreen,
@@ -44,13 +47,14 @@ impl Action {
             Hotkey::Gfx => Action::Gfx,
             Hotkey::Scale => Action::Scale,
             Hotkey::Feel => Action::Feel,
+            Hotkey::Mode => Action::Mode,
             Hotkey::Settings => Action::TogglePanel,
             Hotkey::Fullscreen => Action::Fullscreen,
             Hotkey::Page => return None,
         })
     }
 
-    /// 工具列按鈕對應的動作。灰掉而沒有作用的按鈕（顯示模式）沒有。
+    /// 工具列按鈕對應的動作。
     pub fn from_button(b: Button) -> Option<Action> {
         Some(match b {
             Button::Start => Action::Resume,
@@ -59,7 +63,7 @@ impl Action {
             Button::Game => Action::OpenGame,
             Button::Fullscreen => Action::Fullscreen,
             Button::Gfx => Action::Gfx,
-            Button::Mode => return None,
+            Button::Mode => Action::Mode,
             Button::About => Action::About,
             Button::Quit => Action::Quit,
             Button::Hide => Action::Toolbar,
@@ -132,6 +136,8 @@ impl Effect {
 pub struct Controls {
     pub settings: Settings,
     pub hd_available: bool,
+    /// 單色圖庫（CGA、MGA）載入成功。為假時循環跳過 CGA、MGA。用 `set_mono_available` 設。
+    pub mono_available: bool,
     pub fullscreen: bool,
     /// 手機版的工具列，視窗大小固定。
     pub mobile: bool,
@@ -145,7 +151,17 @@ pub struct Controls {
 
 impl Controls {
     pub fn new(settings: Settings, hd_available: bool) -> Controls {
-        Controls { settings, hd_available, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
+        Controls { settings, hd_available, mono_available: true, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
+    }
+
+    /// 告知單色圖庫能不能用。不能用時，設定裡存的 CGA、MGA 退回 VGA（回傳真，呼叫端要說明原因）。
+    pub fn set_mono_available(&mut self, ok: bool) -> bool {
+        self.mono_available = ok;
+        if !ok && self.settings.mode.is_mono() {
+            self.settings.mode = DisplayMode::Vga;
+            return true;
+        }
+        false
     }
 
     /// 前端暫停：`Pacer` 不步進，輸入不送進遊戲。
@@ -181,6 +197,10 @@ impl Controls {
             }
             Action::Feel => {
                 s.feel = !s.feel;
+                Effect { save: true, ..Effect::default() }
+            }
+            Action::Mode => {
+                s.mode = s.mode.next_available(self.mono_available);
                 Effect { save: true, ..Effect::default() }
             }
             Action::Toolbar => {
@@ -231,7 +251,7 @@ impl Controls {
     }
 
     pub fn view(&self) -> ViewOpts {
-        ViewOpts { tween: self.settings.tween, counter: self.settings.counter, hd: self.settings.hd, feel: self.settings.feel }
+        ViewOpts { tween: self.settings.tween, counter: self.settings.counter, hd: self.settings.hd, feel: self.settings.feel, mode: self.settings.mode }
     }
 
     /// 工具列的狀態。`notice` 由呼叫端填。
@@ -243,6 +263,8 @@ impl Controls {
             rules: self.settings.rules_enhanced(),
             god: self.settings.invincible(),
             mobile: self.mobile,
+            mode: self.settings.mode,
+            mono_available: self.mono_available,
             notice: String::new(),
         }
     }
@@ -332,11 +354,12 @@ mod tests {
         assert_eq!(Action::from_hotkey(H::Gfx), Action::from_button(Button::Gfx));
         assert_eq!(Action::from_hotkey(H::Scale), Some(Action::Scale));
         assert_eq!(Action::from_hotkey(H::Feel), Some(Action::Feel));
+        assert_eq!(Action::from_hotkey(H::Mode), Some(Action::Mode), "F6 切換顯示模式");
+        assert_eq!(Action::from_hotkey(H::Mode), Action::from_button(Button::Mode), "熱鍵與按鈕同一個動作");
         assert_eq!(Action::from_hotkey(H::Settings), Some(Action::TogglePanel), "F10 開設定畫面");
         assert_eq!(Action::from_hotkey(H::Fullscreen), Some(Action::Fullscreen));
         assert_eq!(Action::from_hotkey(H::Fullscreen), Action::from_button(Button::Fullscreen));
         assert_eq!(Action::from_hotkey(H::Page), None, "F8 由設定畫面處理");
-        assert_eq!(Action::from_button(Button::Mode), None, "顯示模式灰掉，沒有動作");
         assert_eq!(Action::from_button(Button::Start), Some(Action::Resume));
         assert_eq!(Action::from_button(Button::Pause), Some(Action::Pause));
         assert_eq!(Action::from_button(Button::Controls), Some(Action::OpenControls));
@@ -365,10 +388,50 @@ mod tests {
         let mut k = c(true);
         k.apply(Action::Counter);
         k.apply(Action::Tween);
-        assert_eq!(k.view(), ViewOpts { tween: false, counter: true, hd: true, feel: true });
+        assert_eq!(k.view(), ViewOpts { tween: false, counter: true, hd: true, feel: true, mode: DisplayMode::Vga });
         let e = k.apply(Action::Feel);
         assert!(e.save && e.resize == Resize::None);
         assert!(!k.view().feel);
+        k.apply(Action::Mode);
+        assert_eq!(k.view().mode, DisplayMode::Ega, "顯示模式隨設定");
+    }
+
+    #[test]
+    fn mode_action_cycles_saves_and_reaches_the_view_and_the_bar() {
+        let mut k = c(true);
+        let mut seen = vec![k.settings.mode];
+        for _ in 0..4 {
+            let e = k.apply(Action::Mode);
+            assert!(e.save && e.resize == Resize::None && !e.quit, "只要存檔，不動視窗");
+            seen.push(k.settings.mode);
+            assert_eq!(k.view().mode, k.settings.mode);
+            assert_eq!(k.bar_state().mode, k.settings.mode);
+        }
+        use DisplayMode::*;
+        assert_eq!(seen, vec![Vga, Ega, Cga, Mga, Vga]);
+        // 按鈕與熱鍵走同一條路。
+        let via_button = Action::from_button(Button::Mode).unwrap();
+        k.apply(via_button);
+        assert_eq!(k.settings.mode, Ega);
+    }
+
+    #[test]
+    fn mode_cycle_skips_mono_when_the_bank_is_unavailable() {
+        let mut k = c(true);
+        assert!(k.mono_available && k.bar_state().mono_available, "預設單色圖庫可用");
+        assert!(!k.set_mono_available(false), "目前是 VGA，不用退回");
+        assert!(!k.bar_state().mono_available);
+        let seen: Vec<DisplayMode> = (0..4).map(|_| { k.apply(Action::Mode); k.settings.mode }).collect();
+        use DisplayMode::*;
+        assert_eq!(seen, vec![Ega, Vga, Ega, Vga], "只在 VGA 與 EGA 之間循環");
+        // 設定裡存的 CGA 在單色圖庫不能用時退回 VGA。
+        let mut m = c(true);
+        m.settings.mode = Mga;
+        assert!(m.set_mono_available(false), "要回報退回了");
+        assert_eq!(m.settings.mode, Vga);
+        let mut ok = c(true);
+        ok.settings.mode = Cga;
+        assert!(!ok.set_mono_available(true) && ok.settings.mode == Cga, "可用時不動");
     }
 
     #[test]

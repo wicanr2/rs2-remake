@@ -204,7 +204,8 @@ fn page_of(cmds: &[DrawCmd]) -> Option<u16> {
                 | Op::S17EEA
                 | Op::S17F26
                 | Op::S17F5D
-                | Op::S180C6 => {}
+                | Op::S180C6
+                | Op::S1117F => {}
                 _ => any = Some(c.page),
             },
             DrawCmd::VramFill { off, .. } if *off < 0x1F40 => any = Some(0),
@@ -388,6 +389,8 @@ impl LayerSink {
                     }
                 }
                 DrawCmd::SetDacOne { index, rgb } => self.pal.set_one(*index, rgb),
+                // EGA 屬性暫存器：LayerSink 只畫 VGA 的 DAC 色，EGA 由呼叫端依 `EgaAttr` 另外處理。
+                DrawCmd::EgaAttr { .. } => {}
                 DrawCmd::SetMapMask { mask } => {
                     idx::set_map_mask(&mut self.idx_st, *mask);
                     if let Some(m) = &mut self.hdm {
@@ -484,7 +487,7 @@ impl LayerSink {
                     }
                     DrawCmd::VramFill { off, words, value } => idx::vram_fill(&mut self.idx_tmp, &st, *off, *words, *value),
                     DrawCmd::SetMapMask { mask } => idx::set_map_mask(&mut st, *mask),
-                    DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } => {}
+                    DrawCmd::SetDac { .. } | DrawCmd::SetDacOne { .. } | DrawCmd::EgaAttr { .. } => {}
                 }
             }
         } else {
@@ -582,6 +585,7 @@ impl LayerSink {
                             p.set_one(*index, rgb);
                         }
                     }
+                    DrawCmd::EgaAttr { .. } => {}
                     DrawCmd::SetMapMask { mask } => hd::set_map_mask(&mut tmp, *mask),
                     DrawCmd::VramFill { off, words, value } => hd::vram_fill(&mut tmp, &p.visible8(), *off, *words, *value),
                     DrawCmd::Blit(c) => {

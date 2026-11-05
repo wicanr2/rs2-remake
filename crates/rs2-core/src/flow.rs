@@ -137,7 +137,7 @@ impl Core {
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
-        // sub_1117F 只有 MGA 分支。
+        self.s1117f();
         self.clear_grid1();
         self.clear_grid2();
         self.ds.w16(0x9CC0, 0x1B);
@@ -171,6 +171,7 @@ impl Core {
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
+        self.s1117f();
         self.clear_grid1();
         self.clear_grid2();
         self.suspend(Req::Sample(0x10FE3)).await;
@@ -350,16 +351,30 @@ impl Core {
     }
 
     pub(crate) fn set_dac(&mut self, start: u8, table: u16) {
+        self.set_dac_attr(start, table, table.wrapping_sub(0x11));
+    }
+
+    /// `SetDac` 加上同一個調色盤函式的 EGA 屬性表（`attr`，17 位元組）。每個調色盤函式對 DAC 的兩次寫入（`start` 為 0 與 30h）
+    /// 只在第一次附上屬性表，原版的 EGA 分支只呼叫一次 INT 10h AX=1002h。屬性表在 DAC 表之前 11h 位元組，只有 `loader`
+    /// （DAC 與 `title_d` 共用 `5A9h`，屬性表在 `56Eh`）例外。
+    pub(crate) fn set_dac_attr(&mut self, start: u8, table: u16, attr: u16) {
         let mut rgb = [0u8; 48];
         for (i, v) in rgb.iter_mut().enumerate() {
             *v = self.ds.r8(table.wrapping_add(i as u16));
         }
         self.draws.push(DrawCmd::SetDac { start, rgb });
+        if start == 0 {
+            let mut regs = [0u8; 17];
+            for (i, v) in regs.iter_mut().enumerate() {
+                *v = self.ds.r8(attr.wrapping_add(i as u16));
+            }
+            self.draws.push(DrawCmd::EgaAttr { regs });
+        }
     }
 
     /// `sub_11112`：`loader` 調色盤。純 EGA 分支不在本切片。
     fn s11112(&mut self) {
-        self.set_dac(0, 0x5A9);
+        self.set_dac_attr(0, 0x5A9, 0x56E);
         self.set_dac(0x30, 0x5A9);
     }
 

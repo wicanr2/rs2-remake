@@ -1,0 +1,63 @@
+# 單色模式（C、H）的全流程收據 wt_flow-c、wt_flow-h 的本體，比照 wt-flow.txt（不含音訊追蹤與 waitbanks）：
+# 標題按鍵進遊戲，第一關開秘技，之後每一關開秘技、玩幾秒，以 Ctrl+C 離開，經 J 過場（按空白）過四關，
+# 第四關 Ctrl+C 進片尾，按鍵看完片尾，按 Q 離開。涵蓋四段 J 過場與片尾，那些畫面在 wm_title、wm_stageN 都沒有。
+# 呼叫端先 set MODEKEY 與 RNAME。檔名換成單色版：BEG1.BDB、J*.GOB、SHT*.BDB。
+include /tools-dos/scenarios/prefix-to-title-mono.txt
+dumpds entry
+dumpmono entry
+shotmono entry
+fontdump
+waittrace ${RNAME}
+untilopen BEG1.BDB 1 400_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GOB 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第一關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J2.GOB 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT2.BDB 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第二關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J3.GOB 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT3.BDB 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第三關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J4.GOB 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT4.BDB 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第四關 Ctrl+C：進片尾 ===
+chord ctrl+c 0.4 0.1
+untilopen SHT5.BDB 1 600_000_000
+secs 4
+tap space 0.3 0
+secs 2
+tap space 0.3 0
+secs 12
+log === 片尾按 Q 離開 ===
+tap q 0.3 0
+secs 6
+waittrace off

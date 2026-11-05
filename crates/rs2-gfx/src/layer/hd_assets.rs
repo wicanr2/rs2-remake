@@ -226,6 +226,11 @@ pub struct HdAssets {
 }
 
 impl HdAssets {
+    /// HD 素材根目錄（`open` 的參數）。單色的 HD 圖在它底下的 `mono/`，由 `MonoHdSink` 讀。
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// 開啟 HD 資料夾。只檢查它是目錄且至少有一個圖庫子目錄（`Lib::ALL` 的名稱），圖片到用時才讀。
     pub fn open(dir: &Path) -> Result<HdAssets, String> {
         if !dir.is_dir() {

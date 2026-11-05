@@ -1,0 +1,15 @@
+# 單色模式的 prefix-to-j1.txt：破解組 intro → 文字選單按 ${MODEKEY} → 密碼畫面（三列各按 Enter）→ BEG1 開場 → 標題 → 按鍵 → J1 過場。
+# 檔名換成單色版：BEG1.BDB、J1.GOB。用法：include 前先 `set MODEKEY c` 或 `set MODEKEY h`。
+step 45_000_000
+bios v
+step 70_000_000
+tap ${MODEKEY}
+step 100_000_000
+tap enter
+tap enter
+tap enter
+untilopen BEG1.BDB 1 500_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GOB 1 500_000_000
+secs 3

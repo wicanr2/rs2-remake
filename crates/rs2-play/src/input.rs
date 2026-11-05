@@ -130,6 +130,8 @@ pub enum Hotkey {
     Scale,
     /// F5：玩家機預測與短按保留，關掉就是原版時序。
     Feel,
+    /// F6：顯示模式循環（VGA、EGA、CGA、MGA）。原版沒有用 F6。
+    Mode,
     /// F8：設定畫面換頁。
     Page,
     /// F10：開關設定畫面。
@@ -145,6 +147,7 @@ pub fn hotkey_of(key: K) -> Option<Hotkey> {
         K::F3 => Hotkey::Gfx,
         K::F4 => Hotkey::Scale,
         K::F5 => Hotkey::Feel,
+        K::F6 => Hotkey::Mode,
         K::F8 => Hotkey::Page,
         K::F10 => Hotkey::Settings,
         K::F11 => Hotkey::Fullscreen,
@@ -636,10 +639,13 @@ mod tests {
         assert_eq!(hotkey_of(K::F3), Some(Hotkey::Gfx));
         assert_eq!(hotkey_of(K::F4), Some(Hotkey::Scale));
         assert_eq!(hotkey_of(K::F5), Some(Hotkey::Feel));
+        assert_eq!(hotkey_of(K::F6), Some(Hotkey::Mode), "F6 切換顯示模式");
         assert_eq!(hotkey_of(K::F8), Some(Hotkey::Page));
         assert_eq!(hotkey_of(K::F10), Some(Hotkey::Settings), "F10 開設定畫面，隱藏工具列改在顯示頁");
         assert_eq!(hotkey_of(K::F11), Some(Hotkey::Fullscreen));
-        assert_eq!(hotkey_of(K::F6), None);
+        for k in [K::F7, K::F9, K::F12] {
+            assert_eq!(hotkey_of(k), None, "{k:?} 不是前端熱鍵");
+        }
         assert_eq!(hotkey_of(K::Escape), None, "鍵盤的 Esc 照原版送進遊戲");
     }
 
@@ -834,6 +840,10 @@ mod tests {
         assert_eq!(m.key_down(K::F10, false, 0), KeyResult::Hotkey(Hotkey::Settings));
         // 放開 F1 之後再按會再觸發一次。
         assert_eq!(m.key_down(K::F1, false, 20), KeyResult::Hotkey(Hotkey::Tween));
+        // F6 也一樣：回報熱鍵，按下與放開都不送進遊戲（0x40 不會出現）。
+        assert_eq!(m.key_down(K::F6, false, 30), KeyResult::Hotkey(Hotkey::Mode));
+        m.key_up(K::F6);
+        assert!(m.take().is_empty(), "F6 的按下與放開碼不能進遊戲");
     }
 
     #[test]

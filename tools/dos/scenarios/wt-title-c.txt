@@ -1,0 +1,4 @@
+# CGA 的全流程收據 wt_title-c，本體見 mono-body-title.txt。
+set MODEKEY c
+set RNAME wt_title-c
+include /tools-dos/scenarios/mono-body-title.txt

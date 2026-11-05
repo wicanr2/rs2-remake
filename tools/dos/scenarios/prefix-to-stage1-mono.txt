@@ -1,0 +1,5 @@
+# 單色模式的 prefix-to-stage1.txt。
+include /tools-dos/scenarios/prefix-to-j1-mono.txt
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8

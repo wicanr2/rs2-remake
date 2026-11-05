@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PURPOSE="$1"; TMO="$2"; PROG="$3"; shift 3
 IMAGE="${DOSGOLEM_GO_IMAGE:-dosgolem-go-ebiten:1.24-r1}"
 ORIG="${RS2_ORIG:-$ROOT/original/rs-2}"
-OUT="$ROOT/workspace/dosrun"
+OUT="${RS2_RUN_OUT:-$ROOT/workspace/dosrun}"  # RS2_RUN_OUT：收據輸出目錄（worktree 內的 workspace/dosrun-modes 等）
 BIN="$ROOT/workspace/dosgolem/workplace/bin/$PROG"
 test -d "$ORIG" || { echo "dd.sh：缺 $ORIG" >&2; exit 1; }
 test -d "$OUT" || { echo "dd.sh：缺 $OUT" >&2; exit 1; }

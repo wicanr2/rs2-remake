@@ -90,7 +90,7 @@ impl Core {
         self.draw_enemy_overlays();
         let v = self.ds.r16(a(0x1CFE2)).wrapping_add(1);
         self.ds.w16(a(0x1CFE2), v);
-        // call sub_1117F：E 模式為空。
+        self.s1117f();
         self.r.cx = 1;
         self.s11097().await;
     }

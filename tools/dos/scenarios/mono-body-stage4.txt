@@ -1,0 +1,15 @@
+# 單色模式（C、H）的全流程收據 wt_stage4-c、wt_stage4-h 的本體，比照 wt-stage4.txt。
+# 呼叫端先 set MODEKEY 與 RNAME。SHT5.GO 換成 SHT5.BDB。第四關沒有自己結束的腳本，所以不等 SHT5.BDB 以外的條件。
+include /tools-dos/scenarios/to-s4-mono.txt
+dumpds entry
+dumpmono entry
+shotmono entry
+fontdump
+waittrace ${RNAME}
+trace s4 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*1800 !SHT5.BDB
+secs 2
+trace off
+waittrace off

@@ -9,9 +9,25 @@ use crate::game::Core;
 const STRIDE_UNTOUCHED: u16 = 0xFFFF;
 
 impl Core {
+    /// `sub_1117F`：只有 MGA（Hercules）有動作。命令只記頁偏移，不動 `word_2687E` 的記號，
+    /// 所以 E 模式的其他命令與資料段完全不受影響。
+    pub(crate) fn s1117f(&mut self) {
+        let mut c = self.blit_cmd(Op::S1117F);
+        c.stride_reg = None;
+        c.obj = None;
+        self.draws.push(DrawCmd::Blit(c));
+    }
+
     fn emit(&mut self, op: Op) {
+        let cmd = self.blit_cmd(op);
+        // 繪製對這個字的寫入在接收端，核心不會更新。留記號，才分得出之後邏輯有沒有再寫。
+        self.ds.w16(a(0x2687E), STRIDE_UNTOUCHED);
+        self.draws.push(DrawCmd::Blit(cmd));
+    }
+
+    fn blit_cmd(&self, op: Op) -> BlitCmd {
         let d = &self.ds;
-        let cmd = BlitCmd {
+        BlitCmd {
             op,
             x: d.r16(a(0x26880)),
             y: d.r16(a(0x26882)),
@@ -30,10 +46,7 @@ impl Core {
             beg_group: self.beg_group,
             stride_reg: (d.r16(a(0x2687E)) != STRIDE_UNTOUCHED).then(|| d.r16(a(0x2687E))),
             obj: self.cur_obj,
-        };
-        // 繪製對這個字的寫入在接收端，核心不會更新。留記號，才分得出之後邏輯有沒有再寫。
-        self.ds.w16(a(0x2687E), STRIDE_UNTOUCHED);
-        self.draws.push(DrawCmd::Blit(cmd));
+        }
     }
 
     /// 寫繪製參數：欄 `word_26880`、像素列 `word_26882`、圖庫索引 `word_26888`。下一個繪製命令帶走它們。

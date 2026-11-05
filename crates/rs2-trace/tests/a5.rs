@@ -181,6 +181,7 @@ fn run_a5(show_counter: bool, drop_every: Option<usize>) -> Outcome {
             DrawCmd::Blit(b) => format!("{:?}", b.op),
             DrawCmd::SetDac { .. } => "SetDac".to_string(),
             DrawCmd::SetDacOne { .. } => "SetDacOne".to_string(),
+            DrawCmd::EgaAttr { .. } => "EgaAttr".to_string(),
             DrawCmd::VramFill { .. } => "VramFill".to_string(),
             DrawCmd::SetMapMask { .. } => "SetMapMask".to_string(),
         };

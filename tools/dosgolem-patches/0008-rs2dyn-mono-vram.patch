@@ -1,0 +1,302 @@
+--- a/cmd/rs2dyn/wait.go
++++ b/cmd/rs2dyn/wait.go
+@@ -242,6 +242,9 @@
+ 	b = hex.AppendEncode(b, h.Sum(nil))
+ 	b = append(b, `","start":`...)
+ 	b = strconv.AppendUint(b, uint64(m.DisplayStart()), 10)
++	if mm := r.monoMode(); mm != 0 {
++		b = r.appendMono(b, mm)
++	}
+ 	b = append(b, '}', '\n')
+ 	t.jw.Write(b)
+ 	t.buf = b
+@@ -266,11 +269,21 @@
+ 		if err := r.dumpDS(name); err != nil {
+ 			return err
+ 		}
+-		if err := r.dumpPlanes(name); err != nil {
+-			return err
+-		}
+-		if err := r.shot(name); err != nil {
+-			return err
++		if r.monoMode() != 0 {
++			// C、H：畫面在 B800h、B000h，不在 A000h 的平面（mono.go）。
++			if err := r.dumpMono(name); err != nil {
++				return err
++			}
++			if err := r.shotMono(name, -1); err != nil {
++				return err
++			}
++		} else {
++			if err := r.dumpPlanes(name); err != nil {
++				return err
++			}
++			if err := r.shot(name); err != nil {
++				return err
++			}
+ 		}
+ 		if err := r.dumpBanks(name); err != nil {
+ 			return err
+--- a/cmd/rs2dyn/script.go
++++ b/cmd/rs2dyn/script.go
+@@ -55,6 +55,8 @@
+ //	waitsync on|off        waittrace 開著時，鍵與 poke 先等到等待迴圈裡才送（預設 on）
+ //	untilwait N [budget]   跑到 waittrace 已寫出 N 筆
+ //	fontdump               F000:FA6E 起 2048 位元組存成 biosfont.bin
++//	dumpmono NAME          C、H 模式：B0000..BFFFF 存成 NAME.mono，背景暫存區 A、B 存成 NAME.msa、NAME.msb，CRTC 等存成 NAME.mono.json
++//	shotmono NAME [page0|page1]  C、H 模式的畫面存成 NAME.png（C 640x200，H 依 CRTC 解碼，本作 640x300）
+ //	skipif COND LABEL      COND（exit 或 open:NAME）成立就略過其後的命令直到 `label LABEL`
+ //	tracepc IDA [max]      執行到該 IDA 位址就記暫存器與幀計數
+ //	watchw NAME IDA LEN [max]  寫入該範圍就記位址、舊新值、寫入者位址與幀計數
+@@ -736,6 +738,29 @@
+ 			return err
+ 		}
+ 		return r.dumpPlanes(f[1])
++	case "dumpmono":
++		// dumpmono NAME：C、H 模式的顯示記憶體與背景暫存區（mono.go）
++		if err := need(1); err != nil {
++			return err
++		}
++		return r.dumpMono(f[1])
++	case "shotmono":
++		// shotmono NAME [page0|page1]：C、H 模式的畫面存成 NAME.png，預設存顯示中的那一頁
++		if err := need(1); err != nil {
++			return err
++		}
++		page := -1
++		if len(f) > 2 {
++			switch f[2] {
++			case "page0":
++				page = 0
++			case "page1":
++				page = 1
++			default:
++				return fmt.Errorf("shotmono 的第二個參數只能是 page0 或 page1")
++			}
++		}
++		return r.shotMono(f[1], page)
+ 	case "dumpds":
+ 		if err := need(1); err != nil {
+ 			return err
+--- a/internal/machine/hercules.go
++++ b/internal/machine/hercules.go
+@@ -109,3 +109,10 @@
+ 	}
+ 	return out
+ }
++
++// HerculesCRTC 回程式寫進 6845 的 18 個暫存器（索引埠 3B4h、資料埠 3B5h）。
++// 給 rs2dyn 的收據用：R1、R6、R9 決定畫面寬高，`HerculesGeometry` 只回乘積。
++func (m *Machine) HerculesCRTC() [18]uint8 { return m.hgc.crtc }
++
++// HerculesModeReg 回模式埠 3B8h 最後寫入的值（bit 7 選顯示頁）。
++func (m *Machine) HerculesModeReg() uint8 { return m.hgc.mode }
+--- /dev/null
++++ b/cmd/rs2dyn/mono.go
+@@ -0,0 +1,206 @@
++package main
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"fmt"
++	"image"
++	"image/color"
++	"image/png"
++	"os"
++	"path/filepath"
++	"strconv"
++)
++
++// 顯示模式 C（CGA 模式 6）與 H（Hercules）的顯示記憶體收據（docs/spec/006-display-modes.md）。
++//
++// 遊戲在 dseg:3B4h（byte_1CF74）記模式字母：'E' 是 VGA／EGA，'C' 是 CGA，'H' 是 Hercules。C、H 的畫面不在 A000h 的平面裡：
++//
++//	C  B800:0000 起。偶數列 n/2 × 80，奇數列加 2000h；第二頁在 B800:4000。整塊 32 KB（B8000..BFFFF）
++//	H  B000:0000 起。偶數列 n/2 × 80，奇數列加 4000h，2000h 那一組由 sub_1117F 複製偶數列；第二頁在 B000:8000。整塊 64 KB（B0000..BFFFF）
++//
++// 單色模式的背景暫存區 A、B 在主記憶體：段值在 word_1CF70、word_1CF72，各配置 0D00h 段落（0D000h 位元組）。
++//
++// waittrace 在 byte_1CF74 是 'C' 或 'H' 時，每筆多記（E 的 vram、dac、start 欄位照舊，內容不再有意義）：
++//
++//	mm     模式字母
++//	mono   顯示記憶體整塊（C 是 B8000..BFFFF，H 是 B0000..BFFFF）的 SHA-256
++//	hpage  只有 H：3B8h 模式埠 bit 7 選的顯示頁起點（0 或 8000h）
++//	msa    背景暫存區 A 整塊（0D000h 位元組）的 SHA-256
++//	msb    背景暫存區 B
++//
++// dumpmono NAME 存 NAME.mono（B0000..BFFFF 64 KB，C 也存，B0000..B7FFF 是未使用區）、NAME.msa、NAME.msb 與 NAME.mono.json
++// （模式、CRTC 暫存器、3B8h、顯示頁）。shotmono NAME [page0|page1] 存 NAME.png：C 是 640x200，
++// H 依 CRTC 的 R1、R6、R9 解碼（本作寫的是 640x300，見下）。
++//
++// Hercules 的解碼：掃描線 s 在字元列 s / (R9+1)、列內第 s % (R9+1) 條，位址 = 頁起點 + 列內序號 × 2000h + 字元列 × (R1 × 2)。
++// 本作寫的 CRTC 是 R1=28h、R6=64h、R9=02h：寬 640，100 個字元列 × 3 條掃描線 = 300 條。
++
++const (
++	idaModeByte = 0x1CF74 // byte_1CF74
++	idaScratchA = 0x1CF70 // word_1CF70
++	idaScratchB = 0x1CF72 // word_1CF72
++	idaDrawPage = 0x26872 // word_26872（IDA 線性位址，dseg:9CB2h）
++
++	cgaMemBase = 0xB8000
++	cgaMemLen  = 0x8000
++	hgcMemBase = 0xB0000
++	hgcMemLen  = 0x10000
++	scratchLen = 0xD000
++)
++
++// monoMode 回 'C' 或 'H'；其他（含映像基底未知）回 0。
++func (r *rt) monoMode() byte {
++	if r.base == 0 {
++		return 0
++	}
++	switch m := r.ib(idaModeByte); m {
++	case 'C', 'H':
++		return m
++	}
++	return 0
++}
++
++// monoRegion 是模式的顯示記憶體範圍。
++func monoRegion(mode byte) (base, n uint32) {
++	if mode == 'H' {
++		return hgcMemBase, hgcMemLen
++	}
++	return cgaMemBase, cgaMemLen
++}
++
++// scratchRegion 回背景暫存區的線性位址；段值為 0（還沒配置）時回 ok=false。
++func (r *rt) scratchRegion(ida uint32) (lin uint32, ok bool) {
++	seg := uint32(r.iw(ida))
++	if seg == 0 || seg<<4+scratchLen > uint32(len(r.m.Mem)) {
++		return 0, false
++	}
++	return seg << 4, true
++}
++
++func sumHex(b []byte) string {
++	s := sha256.Sum256(b)
++	return hex.EncodeToString(s[:])
++}
++
++// appendMono 在等待紀錄的 JSON 物件結尾之前補 C、H 的欄位。
++func (r *rt) appendMono(b []byte, mode byte) []byte {
++	base, n := monoRegion(mode)
++	b = append(b, `,"mm":"`...)
++	b = append(b, mode)
++	b = append(b, `","mono":"`...)
++	b = append(b, sumHex(r.m.Mem[base:base+n])...)
++	b = append(b, '"')
++	if mode == 'H' {
++		b = append(b, `,"hpage":`...)
++		b = strconv.AppendUint(b, uint64(r.m.HerculesPageBase()-hgcMemBase), 10)
++	}
++	for _, f := range []struct {
++		key string
++		ida uint32
++	}{{"msa", idaScratchA}, {"msb", idaScratchB}} {
++		b = append(b, `,"`+f.key+`":"`...)
++		if lin, ok := r.scratchRegion(f.ida); ok {
++			b = append(b, sumHex(r.m.Mem[lin:lin+scratchLen])...)
++		}
++		b = append(b, '"')
++	}
++	return b
++}
++
++// dumpMono 實作 dumpmono。
++func (r *rt) dumpMono(name string) error {
++	mode := r.monoMode()
++	if mode == 0 {
++		return fmt.Errorf("dumpmono %s：byte_1CF74 不是 C 或 H", name)
++	}
++	if err := os.WriteFile(filepath.Join(r.out, name+".mono"), r.m.Mem[hgcMemBase:hgcMemBase+hgcMemLen], 0o644); err != nil {
++		return err
++	}
++	for _, f := range []struct {
++		ext string
++		ida uint32
++	}{{".msa", idaScratchA}, {".msb", idaScratchB}} {
++		lin, ok := r.scratchRegion(f.ida)
++		if !ok {
++			return fmt.Errorf("dumpmono %s：背景暫存區的段值是 0", name)
++		}
++		if err := os.WriteFile(filepath.Join(r.out, name+f.ext), r.m.Mem[lin:lin+scratchLen], 0o644); err != nil {
++			return err
++		}
++	}
++	crtc := r.m.HerculesCRTC()
++	meta := fmt.Sprintf("{\n  \"mm\": \"%c\",\n  \"draw_page\": %d,\n  \"hgc_mode_reg\": %d,\n  \"hgc_page\": %d,\n  \"hgc_crtc\": %v,\n  \"scratch_a_seg\": %d,\n  \"scratch_b_seg\": %d\n}\n",
++		mode, r.iw(idaDrawPage), r.m.HerculesModeReg(), r.m.HerculesPageBase()-hgcMemBase, crtc, r.iw(idaScratchA), r.iw(idaScratchB))
++	if err := os.WriteFile(filepath.Join(r.out, name+".mono.json"), []byte(meta), 0o644); err != nil {
++		return err
++	}
++	r.logf("dumpmono", "%s mode=%c", name, mode)
++	return nil
++}
++
++// monoImage 解出顯示中那一頁。page < 0 時自動選：C 看 word_26872（畫頁是 0 就顯示第二頁），H 看 3B8h。
++func (r *rt) monoImage(mode byte, page int) (*image.RGBA, string) {
++	mem := r.m.Mem
++	var w, h int
++	var addr func(y int) uint32
++	if mode == 'C' {
++		w, h = 640, 200
++		base := uint32(cgaMemBase)
++		switch {
++		case page == 0:
++		case page == 1:
++			base += 0x4000
++		case r.iw(idaDrawPage) == 0:
++			base += 0x4000
++		}
++		addr = func(y int) uint32 { return base + uint32(y/2)*80 + uint32(y%2)*0x2000 }
++	} else {
++		crtc := r.m.HerculesCRTC()
++		cols, rows, scan := int(crtc[1]), int(crtc[6]), int(crtc[9])+1
++		w, h = cols*16, rows*scan
++		base := r.m.HerculesPageBase()
++		switch page {
++		case 0:
++			base = hgcMemBase
++		case 1:
++			base = hgcMemBase + 0x8000
++		}
++		addr = func(y int) uint32 { return base + uint32(y%scan)*0x2000 + uint32(y/scan)*uint32(cols*2) }
++	}
++	img := image.NewRGBA(image.Rect(0, 0, w, h))
++	raw := make([]byte, 0, w*h)
++	for y := 0; y < h; y++ {
++		a := addr(y)
++		for x := 0; x < w; x++ {
++			on := mem[(a+uint32(x>>3))&0xFFFFF]&(0x80>>uint(x&7)) != 0
++			c := byte(0)
++			if on {
++				c = 255
++			}
++			img.Set(x, y, color.RGBA{c, c, c, 255})
++			raw = append(raw, c)
++		}
++	}
++	return img, sumHex(raw)
++}
++
++// shotMono 實作 shotmono。
++func (r *rt) shotMono(name string, page int) error {
++	mode := r.monoMode()
++	if mode == 0 {
++		return fmt.Errorf("shotmono %s：byte_1CF74 不是 C 或 H", name)
++	}
++	img, h := r.monoImage(mode, page)
++	f, err := os.Create(filepath.Join(r.out, name+".png"))
++	if err != nil {
++		return err
++	}
++	if err := png.Encode(f, img); err != nil {
++		f.Close()
++		return err
++	}
++	f.Close()
++	r.logf("shotmono", "%s mode=%c %dx%d pixels_sha256=%s", name, mode, img.Bounds().Dx(), img.Bounds().Dy(), h[:12])
++	return nil
++}

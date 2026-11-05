@@ -1,0 +1,12 @@
+# 單色模式（C、H）的全流程收據 wt_title-c、wt_title-h 的本體，比照 wt-title.txt。
+# 呼叫端先 set MODEKEY（c 或 h）與 RNAME（waittrace 名稱，同輸出目錄名）。
+# shot 不支援 CGA 模式 6 與 Hercules，改用 dumpmono（B0000..BFFFF 與背景暫存區）、shotmono（見 tools/dosgolem-patches/0008）。
+include /tools-dos/scenarios/prefix-to-title-mono.txt
+dumpds entry
+dumpmono entry
+shotmono entry
+fontdump
+waittrace ${RNAME}
+untilopen BEG1.BDB 2 3_000_000_000
+secs 8
+waittrace off

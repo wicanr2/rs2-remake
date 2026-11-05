@@ -3,6 +3,7 @@
 #   tools/dos/rerun_all.sh build          建置 workspace/dosgolem 的 rs2dyn（要先套 tools/dosgolem-patches）
 #   tools/dos/rerun_all.sh g1|g2|g3|g4|g5|g6|g7|g8|g9  每組最多 4 個容器並行（每個 1 核、2 GB），組內前景等待
 #   tools/dos/rerun_all.sh g11  音訊收據與第二關卡死條件（hang_s2 預期逾時，exit=1）
+#   tools/dos/rerun_all.sh g12  單色模式收據 wm_*（規格 006），最多 2 個容器並行（每個 2 核、2 GB），輸出 workspace/dosrun-modes
 #   tools/dos/rerun_all.sh g10  全流程對拍收據 wt_*（規格 002），最多 3 個容器並行（每個 2 核、2 GB），輸出 workspace/dosrun/wt_*
 # 腳本、配置（A/B/C，見 run_scenario.sh）與逾時依下表。
 set -euo pipefail
@@ -39,5 +40,8 @@ case "${1:-}" in
       fz2-mix-1 fz2-sweep-2 fz2-spread-3 fz3-mix-1 fz3-laser-2 fz3-roam-3 fz4-mix-1 fz4-seeker-2 fz4-sweep-3 ;;
   g11) # 音訊收據（規格 003）與第二關卡死條件
     "$R" au-title au_title A 800 & "$R" au-flow au_flow A 800 & "$R" hang-s2 hang_s2 A 590 & "$R" hang-s2-ctrl hang_s2_ctrl A 590 & wait ;;
-  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5|g6|g7|g8|g9|g10|g11" >&2; exit 1 ;;
+  g12) # 單色顯示模式（C、H）的全流程對拍收據（規格 006）：wm_*，一次最多 2 個容器（每個 2 核），輸出 workspace/dosrun-modes（RS2_RUN_OUT 可改）
+    "$ROOT/tools/dos/wm_run.sh" -j 2 title-c title-h stage1-c stage1-h stage2-c stage2-h stage3-c stage3-h stage4-c stage4-h \
+      flow-c flow-h menu-c menu-h ;;
+  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5|g6|g7|g8|g9|g10|g11|g12" >&2; exit 1 ;;
 esac

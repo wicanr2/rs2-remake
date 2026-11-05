@@ -874,6 +874,8 @@ pub fn apply(mem: &mut HdMem, hd: &mut HdAssets, assets: &Assets, pal: &Pal, c: 
         Op::S17EBA | Op::S17EEA | Op::S17F26 | Op::S17F5D => hd_scroll_pair(mem, c),
         Op::S17FA0 | Op::S18031 => hd_scroll_view(mem, c),
         Op::S180C6 => hd_scroll_left(mem),
+        // MGA 專用（`sub_1117F`），E 直接 `retn`。
+        Op::S1117F => {}
         Op::S1890D => counter(&mut mem.pages, &pal.visible8(), c.text_x, c.text_y, c.cx, true),
     }
     if restores_map_mask(c.op) {

@@ -1,0 +1,6 @@
+# 單色模式的 to-s3.txt：停在第三關入口 sub_13A51。需先 set MODEKEY。
+include /tools-dos/scenarios/to-s2-mono.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 3
+set ENTRY 0x13A51
+include /tools-dos/scenarios/next-entry-mono.txt

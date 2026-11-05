@@ -14,10 +14,10 @@ use crate::toolbar::{BarState, desktop_height, metrics};
 use crate::touch::TouchMapper;
 use crate::ui::panel::{Cx, Page, Panel, PanelOut};
 use crate::ui::{self, text};
-use crate::view::{Overlay, Presenter, ShotInfo, UiLayer, window_size};
+use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size};
 use rs2_audio::Engine;
 use rs2_core::{Fixes, Start};
-use rs2_gfx::{Assets, HdAssets};
+use rs2_gfx::{Assets, HdAssets, MonoAssets};
 use rs2_trace::{Inputs, load_inputs, parse_sc};
 use sdl2::controller::{Axis, GameController};
 use sdl2::event::{Event, WindowEvent};
@@ -27,6 +27,7 @@ use sdl2::mouse::MouseButton;
 use sdl2::render::WindowCanvas;
 use sdl2::video::FullscreenType;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -35,6 +36,8 @@ struct Ctx {
     args: Args,
     inputs: Inputs,
     assets: Assets,
+    /// CGA、MGA 用的單色圖庫。載入失敗是 `None`：這兩種模式不能選，VGA 與 EGA 不受影響。
+    mono: Option<Arc<MonoAssets>>,
     settings: Settings,
     cfg_dir: Option<PathBuf>,
     replay: Vec<Vec<u8>>,
@@ -134,6 +137,20 @@ fn prepare(args: Args) -> Result<Ctx, String> {
     let inputs = load_inputs(&found.orig)?;
     let assets = Assets::load(&found.orig)?;
     eprintln!("[init] 原版檔雜湊驗證通過（{}）", found.orig.display());
+    // 單色圖庫（CGA、MGA）另外載入：缺檔或雜湊不符時只有這兩種模式不能用，不拖累 VGA 與 EGA。
+    let mono = match MonoAssets::load(&found.orig) {
+        Ok(m) => {
+            if !m.unverified.is_empty() {
+                eprintln!("[單色] 警告：{} 個圖庫沒有預期雜湊：{:?}", m.unverified.len(), m.unverified);
+            }
+            eprintln!("[單色] 單色圖庫雜湊驗證通過（CGA、MGA 可用）");
+            Some(Arc::new(m))
+        }
+        Err(e) => {
+            eprintln!("[單色] 單色圖庫載入失敗：{e}；CGA、MGA 不能選，VGA 與 EGA 不受影響");
+            None
+        }
+    };
     let replay = match &args.replay {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| format!("讀不到收據 {}：{e}", p.display()))?;
@@ -166,8 +183,20 @@ fn prepare(args: Args) -> Result<Ctx, String> {
     if let Some(f) = args.feel {
         st.feel = f;
     }
+    if let Some(m) = args.mode {
+        st.mode = m;
+    }
     let hd_dir = found.hd;
-    Ok(Ctx { args, inputs, assets, settings: st, cfg_dir, replay, hd_dir })
+    Ok(Ctx { args, inputs, assets, mono, settings: st, cfg_dir, replay, hd_dir })
+}
+
+/// 前端開關狀態。告知單色圖庫能不能用：不能用時，設定或 `--mode` 要求的 CGA、MGA 退回 VGA。
+fn new_controls(cx: &Ctx) -> Controls {
+    let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
+    if ctl.set_mono_available(cx.mono.is_some()) {
+        eprintln!("[單色] 要求的顯示模式 {} 需要單色圖庫，改用 vga", cx.settings.mode.code());
+    }
+    ctl
 }
 
 /// 進入點。回傳程式結束碼。
@@ -181,7 +210,7 @@ pub fn run(args: Args) -> Result<i32, String> {
 
 fn build_session(cx: &Ctx, hd: Option<HdAssets>, view: ViewOpts) -> Session {
     let fixes = if cx.args.original_bugs { Fixes::NONE } else { Fixes::ALL };
-    Session::new(&cx.inputs, cx.assets.clone(), hd, begin_of(&cx.args), fixes, view)
+    Session::new(&cx.inputs, cx.assets.clone(), cx.mono.clone(), hd, begin_of(&cx.args), fixes, view)
 }
 
 /// 無敵（規格 005）：開著時每步呼叫，從沒開過就不呼叫，所以全部選項為預設時模擬與原版逐位元組相同。
@@ -289,6 +318,7 @@ fn toggle_action(t: ToggleName) -> Action {
         ToggleName::Counter => Action::Counter,
         ToggleName::Hd => Action::Gfx,
         ToggleName::Feel => Action::Feel,
+        ToggleName::Mode => Action::Mode,
     }
 }
 
@@ -302,7 +332,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     let sdl = sdl2::init().ok();
     let video = sdl.as_ref().and_then(|s| s.video().ok());
     let mut canvas: Option<WindowCanvas> = None;
-    let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
+    let mut ctl = new_controls(&cx);
     if let Some(v) = &video {
         let (w, h) = window_size(ctl.settings.scale, ctl.settings.toolbar);
         let built = v.window("RS-2 remake (headless)", w, h).hidden().build().map_err(|e| e.to_string()).and_then(|win| {
@@ -326,7 +356,14 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     let hd = finish_hd(cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone())))?;
     let mut session = build_session(&cx, hd, ctl.view());
     log_missing(&mut session);
-    eprintln!("[headless] 起點 {:?}，{steps} 步，補間 {}，幀計數 {}，HD {}", cx.args.start, ctl.settings.tween, ctl.settings.counter, session.hd_effective());
+    eprintln!(
+        "[headless] 起點 {:?}，{steps} 步，補間 {}，幀計數 {}，HD {}，顯示模式 {}",
+        cx.args.start,
+        ctl.settings.tween,
+        ctl.settings.counter,
+        session.hd_effective(),
+        session.mode().code()
+    );
 
     let mut hashes: Vec<String> = Vec::new();
     let mut shots = cx.args.shots.clone();
@@ -368,13 +405,14 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         // 每步各畫一次 alpha 0.5 與 1.0（補間關閉時 alpha 沒有作用，但仍走同一段程式）。
         for alpha in [0.5f32, 1.0] {
             let t1 = Instant::now();
+            let fit = session.fit();
             let (frame, fw, fh) = session.render(alpha);
             stats.render(t1.elapsed().as_micros() as u64);
             if let (Some(p), Some(c)) = (pres.as_mut(), canvas.as_mut()) {
                 let shot_idx = if alpha == 1.0 { shots.iter().position(|(s, _)| *s == n) } else { None };
                 let shot_path = shot_idx.map(|i| shots[i].1.clone());
                 let t2 = Instant::now();
-                let info = p.draw(c, frame, fw, fh, &ctl.toolbar(), &ctl.bar_state(), None, None, shot_path.as_deref())?;
+                let info = p.draw(c, frame, fw, fh, fit, &ctl.toolbar(), &ctl.bar_state(), None, None, shot_path.as_deref())?;
                 stats.present(t2.elapsed().as_micros() as u64);
                 if let (Some(i), Some(info)) = (shot_idx, info) {
                     let (s, path) = shots.remove(i);
@@ -395,6 +433,9 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     }
     let (a1, a2) = session.anomalies();
     eprintln!("[headless] 繪製異常計數 VgaSink {a1}、LayerSink {a2}，調色盤 {:?}", session.palette_name());
+    if let Some((c, h)) = session.mono_anomalies() {
+        eprintln!("[headless] 單色接收端異常計數 CGA {c}、MGA {h}");
+    }
     stats.report();
     write_hashes(&cx.args.hash_out, &hashes)?;
     let mut rc = 0;
@@ -701,7 +742,7 @@ pub fn run_installing(install: impl FnOnce(&mut dyn FnMut(f32)) -> Result<Args, 
             if pct != shown {
                 shown = pct;
                 pump.pump_events();
-                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, &toolbar, &state, None, None, None) {
+                if let Err(e) = pres.draw(&mut canvas, &install_frame(f), 320, 200, Fit::SD, &toolbar, &state, None, None, None) {
                     eprintln!("[install] 畫不了進度：{e}");
                 }
             }
@@ -721,7 +762,7 @@ fn window_loop<'a>(
     mut pres: Presenter<'a>,
 ) -> Result<i32, String> {
     let timer = sdl.timer()?;
-    let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
+    let mut ctl = new_controls(&cx);
     ctl.mobile = cx.args.touch;
     ctl.dp = cx.args.dp.unwrap_or_else(|| dp_of(video));
     if ctl.mobile && cx.args.open_panels.is_empty() {
@@ -732,7 +773,7 @@ fn window_loop<'a>(
     // HD 預載在背景跑，視窗先顯示載入畫面。
     let hd_handle = cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone()));
     if hd_handle.is_some() {
-        pres.draw(&mut canvas, &loading_frame(), 320, 200, &ctl.toolbar(), &ctl.bar_state(), None, None, None)?;
+        pres.draw(&mut canvas, &loading_frame(), 320, 200, Fit::SD, &ctl.toolbar(), &ctl.bar_state(), None, None, None)?;
     }
     let hd = finish_hd(hd_handle)?;
     let mut session = build_session(&cx, hd, ctl.view());
@@ -1186,6 +1227,7 @@ fn window_loop<'a>(
             let tb = front.ctl.toolbar();
             let bar_h = tb.height(ww);
             let t1 = Instant::now();
+            let fit = session.fit();
             let (frame, fw, fh) = session.render(alpha);
             stats.render(t1.elapsed().as_micros() as u64);
             let shot_path = pending_shot.as_ref().map(|(_, p)| p.clone());
@@ -1215,7 +1257,7 @@ fn window_loop<'a>(
                 }
             }
             let bar_state = front.bar_state();
-            let info = pres.draw(&mut canvas, frame, fw, fh, &tb, &bar_state, overlay, layer, shot_path.as_deref())?;
+            let info = pres.draw(&mut canvas, frame, fw, fh, fit, &tb, &bar_state, overlay, layer, shot_path.as_deref())?;
             stats.present(t2.elapsed().as_micros() as u64);
             if let (Some((s, path)), Some(info)) = (pending_shot.take(), info) {
                 shot_ok &= report_shot(&path, info, s);

@@ -1,0 +1,4 @@
+# CGA 的全流程收據 wt_stage1-c，本體見 mono-body-stage1.txt。
+set MODEKEY c
+set RNAME wt_stage1-c
+include /tools-dos/scenarios/mono-body-stage1.txt

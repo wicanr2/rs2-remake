@@ -4,6 +4,7 @@
 //! |---|---|
 //! | `tween`、`counter`、`hd`、`toolbar`、`feel` | `on` 或 `off` |
 //! | `scale` | 1 到 8 |
+//! | `mode` | `vga`、`ega`、`cga` 或 `mga`（顯示模式，F6）。讀不到或不認得就是 `vga` |
 //! | `opt.<id>` | 遊戲選項（`options::OPTIONS`）。開關是 `on`、`off`，戰場大小是 `100`、`120`、`150` |
 //! | `key.p1.up` 等 | 鍵盤對應，值是 `ui::text::KEYS` 的存檔名稱，空值是未綁定。欄位 `up down left right upleft upright downleft downright fire turn split` |
 //! | `pad.fire` 等 | 手把按鍵，值是兩個按鈕 `A,RT`，`-` 是空。功能 `fire turn split pause confirm menu` |
@@ -11,6 +12,7 @@
 //! 舊版的檔（只有前六個鍵）照樣讀得進來，新欄位用預設。手把指派不存：裝置編號每次啟動都會變。
 
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
+use crate::mode::DisplayMode;
 use crate::options::{self, Options, FEEL_INDEX, INVINCIBLE_INDEX, OPTIONS};
 use crate::resources::{Env, Os, non_empty};
 use crate::ui::text;
@@ -36,6 +38,8 @@ pub struct Settings {
     pub toolbar: bool,
     /// 玩家機預測與短按保留（F5）。關掉就是原版時序，模擬不受影響。
     pub feel: bool,
+    /// 顯示模式（F6）：VGA、EGA、CGA、MGA。切換只換畫面，不影響模擬。
+    pub mode: DisplayMode,
     /// 兩人的鍵盤對應。
     pub keys: KeyMap,
     /// 手把按鍵。
@@ -53,6 +57,7 @@ impl Default for Settings {
             scale: DEFAULT_SCALE,
             toolbar: true,
             feel: true,
+            mode: DisplayMode::Vga,
             keys: KeyMap::default(),
             pad: PadMap::default(),
             opts: Options::default(),
@@ -103,13 +108,14 @@ impl Settings {
 
     pub fn to_text(&self) -> String {
         let mut s = format!(
-            "# RS-2 remake 設定\ntween={}\ncounter={}\nhd={}\nscale={}\ntoolbar={}\nfeel={}\n",
+            "# RS-2 remake 設定\ntween={}\ncounter={}\nhd={}\nscale={}\ntoolbar={}\nfeel={}\nmode={}\n",
             b(self.tween),
             b(self.counter),
             b(self.hd),
             self.scale,
             b(self.toolbar),
-            b(self.feel)
+            b(self.feel),
+            self.mode.code()
         );
         s.push_str("# 遊戲選項（標開發中的選項，值先存起來，這一版還沒有實作）\n");
         for (i, o) in OPTIONS.iter().enumerate() {
@@ -154,6 +160,10 @@ impl Settings {
                 "scale" => match v.parse::<u32>() {
                     Ok(x) if (1..=8).contains(&x) => s.scale = x,
                     _ => warn.push(format!("第 {n} 行 scale 的值 {v:?} 不在 1 到 8，略過")),
+                },
+                "mode" => match DisplayMode::from_code(v) {
+                    Some(m) => s.mode = m,
+                    None => warn.push(format!("第 {n} 行 mode 的值 {v:?} 不是 vga、ega、cga 或 mga，用 vga")),
                 },
                 _ if k.starts_with("opt.") => match options::index_of(&k[4..]) {
                     Some(idx) => match OPTIONS[idx].parse_value(v) {
@@ -309,6 +319,39 @@ mod tests {
             assert_eq!(t.contains(&want), i != FEEL_INDEX, "{}", o.id);
         }
         assert!(t.contains("key.p1.up=\n"), "未綁定寫成空值");
+    }
+
+    #[test]
+    fn display_mode_roundtrips_through_text_and_file() {
+        for mode in DisplayMode::ALL {
+            let s = Settings { mode, ..Settings::default() };
+            assert!(s.to_text().contains(&format!("mode={}\n", mode.code())));
+            let (back, warn) = Settings::parse(&s.to_text());
+            assert_eq!(back.mode, mode);
+            assert!(warn.is_empty(), "{warn:?}");
+            let d = tmpdir(&format!("mode-{}", mode.code()));
+            s.save(&d).unwrap();
+            let (loaded, w) = Settings::load(&d);
+            assert_eq!(loaded.mode, mode, "原子寫入後讀回");
+            assert!(w.is_empty() && !d.join("settings.txt.tmp").exists());
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        assert_eq!(Settings::default().mode, DisplayMode::Vga, "預設是 VGA");
+    }
+
+    #[test]
+    fn unknown_or_missing_mode_falls_back_to_vga_with_a_warning() {
+        for bad in ["mode=hercules", "mode=", "mode=VGA2", "mode=1"] {
+            let (s, w) = Settings::parse(&format!("counter=on\n{bad}\n"));
+            assert_eq!(s.mode, DisplayMode::Vga, "{bad}");
+            assert!(s.counter, "{bad}：其他欄位照收");
+            assert!(w.iter().any(|m| m.contains("mode")), "{bad} 要有警告：{w:?}");
+        }
+        // 不分大小寫；舊檔沒有 mode 這一行，沒有警告。
+        assert_eq!(Settings::parse("mode=CGA\n").0.mode, DisplayMode::Cga);
+        let (s, w) = Settings::parse("tween=off\n");
+        assert_eq!(s.mode, DisplayMode::Vga);
+        assert!(w.is_empty());
     }
 
     #[test]

@@ -310,7 +310,7 @@ impl Core {
         self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
-        // sub_1117F 只有 MGA 分支。
+        self.s1117f();
         self.r.cx = 2;
         self.s11097().await;
         self.s2_add(0x1CFE2, 1);
@@ -340,7 +340,7 @@ impl Core {
         self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
-        // sub_1117F 只有 MGA 分支。
+        self.s1117f();
         self.r.cx = 2;
         self.s11097().await;
         self.s2_add(0x1CFE2, 1);

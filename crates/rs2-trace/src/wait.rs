@@ -41,6 +41,12 @@ pub struct WaitRow {
     pub start: u32,
     /// 這筆等待時的指令數（選用欄位），把音訊事件對到第幾次等待。
     pub step: Option<u64>,
+    /// 單色模式（C、H）的欄位（`tools/dosgolem-patches/0008`），E 的收據沒有。`mono` 是顯示記憶體整塊的 SHA-256，
+    /// `msa`、`msb` 是背景暫存區 A、B，`hpage` 是 H 的顯示頁起點（0 或 8000h）。
+    pub mono: Option<String>,
+    pub msa: Option<String>,
+    pub msb: Option<String>,
+    pub hpage: Option<u32>,
 }
 
 /// 欄位值的起點：`"key":` 之後略過空白（收據的 jsonl 沒有空白，entry.json 是縮排過的 JSON）。
@@ -81,6 +87,10 @@ pub fn parse_row(line: &str) -> Result<WaitRow, String> {
         dac: field_str(line, "dac").ok_or_else(|| bad("dac"))?.to_string(),
         start: field_u64(line, "start").ok_or_else(|| bad("start"))? as u32,
         step: field_u64(line, "step"),
+        mono: field_str(line, "mono").map(str::to_string),
+        msa: field_str(line, "msa").map(str::to_string),
+        msb: field_str(line, "msb").map(str::to_string),
+        hpage: field_u64(line, "hpage").map(|v| v as u32),
     })
 }
 

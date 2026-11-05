@@ -624,7 +624,7 @@ mod tests {
         // 同一個欄位綁自己的鍵不算衝突。
         assert_eq!(m.bind(0, Act::Fire, K::RShift), Ok(()));
         // 不能綁的鍵。
-        for k in [K::F1, K::F10, K::Escape, K::Tab, K::LCtrl, K::RCtrl, K::LAlt, K::Delete, K::CapsLock] {
+        for k in [K::F1, K::F6, K::F10, K::Escape, K::Tab, K::LCtrl, K::RCtrl, K::LAlt, K::Delete, K::CapsLock] {
             assert_eq!(m.bind(1, Act::Up, k), Err(BindError::NotBindable), "{k:?}");
         }
         assert_eq!(m, before);

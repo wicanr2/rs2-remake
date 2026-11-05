@@ -29,10 +29,12 @@ impl Core {
         u16::from_le_bytes([lo, hi])
     }
 
-    /// `sub_1BF71` 的解壓部分：`sub_1C757` 把 `SHT.SCN` 的 RLE 串流解到 `word_1CF6E` 段。
+    /// `sub_1BF71` 的解壓部分：`sub_1C757` 把 `SHT.SCN`（E）或 `SHT.SCR`（單色，`1BFAAh` 把副檔名換成 `R`）
+    /// 的 RLE 串流解到 `word_1CF6E` 段。選哪一份由前端的顯示模式決定，見 `Game::set_terrain_scr`。
     fn load_map(&mut self) {
         let f = self.files.clone();
-        self.map_seg = if f.scn.len() >= 2 { rs2_formats::unrle(&f.scn, 0) } else { Vec::new() };
+        let src = if self.port.borrow().terrain_scr { &f.scr } else { &f.scn };
+        self.map_seg = if src.len() >= 2 { rs2_formats::unrle(src, 0) } else { Vec::new() };
     }
 
     /// `mul word_25BC8` 與 `add word_25BC6`：`ax` = `258h` x 地圖列 + 地圖左緣欄，`dx` 是乘積高字組。
@@ -141,7 +143,7 @@ impl Core {
         self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
-        // sub_1117F 只有 MGA 分支。
+        self.s1117f();
         self.r.cx = 2;
         self.s11097().await;
         self.s3_addw(0x1CFE2, 1);
@@ -177,6 +179,7 @@ impl Core {
         self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
+        self.s1117f();
         self.r.cx = 2;
         self.s11097().await;
         self.s3_addw(0x1CFE2, 1);
