@@ -24,15 +24,18 @@ shot() {
   echo "-- $name 結束碼 $?"
 }
 
-shot hero 40 "" --start demo --shot-at 420:/out/hero.png
-shot cga 40 "" --start demo --mode cga --shot-at 420:/out/cga.png
-shot mga 40 "" --start demo --mode mga --shot-at 420:/out/mga.png
-shot orig 40 "" --start demo --no-hd --shot-at 420:/out/orig.png
-shot settings 40 "" --start demo --shot-at 300:/out/settings-game.png --open-panel 遊戲
-shot pad 40 "" --start demo --fake-pads --shot-at 300:/out/settings-pad.png --open-panel 手把
-shot wide 60 "opt.field_size=150;opt.invincible=on" --start newgame \
-  --shot-at 250:/out/wide150-0250.png --shot-at 400:/out/wide150-0400.png --shot-at 550:/out/wide150-0550.png
-shot wide120 60 "opt.field_size=120;opt.invincible=on" --start newgame --shot-at 400:/out/wide120-0400.png
+# 實際速度約每秒 9 步，--max-secs 要留夠。
+shot hero 45 "" --start demo --shot-at 200:/out/hero-0200.png --shot-at 300:/out/hero-0300.png
+shot cga 45 "" --start demo --mode cga --shot-at 300:/out/cga.png
+shot mga 45 "" --start demo --mode mga --shot-at 300:/out/mga.png
+shot orig 45 "" --start demo --no-hd --shot-at 300:/out/orig.png
+shot settings 40 "" --start demo --shot-at 200:/out/settings-game.png --open-panel 遊戲
+shot pad 40 "" --start demo --fake-pads --shot-at 200:/out/settings-pad.png --open-panel 手把
+for w in 100 120 150; do
+  shot "wide$w" 70 "opt.field_size=$w;opt.invincible=on" --start newgame \
+    --shot-at "250:/out/wide$w-0250.png" --shot-at "380:/out/wide$w-0380.png" --shot-at "400:/out/wide$w-0400.png" \
+    --shot-at "420:/out/wide$w-0420.png" --shot-at "520:/out/wide$w-0520.png"
+done
 
 for f in /out/*.png; do
   [ -s "$f" ] && echo "$(basename "$f") $(identify -format '%wx%h' "$f")" || echo "缺 $f"

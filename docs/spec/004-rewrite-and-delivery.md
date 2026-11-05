@@ -1,6 +1,6 @@
 # 004 完整版：重寫、顯示模式與四平台交付
 
-狀態：DRAFT（2026-11-05）
+狀態：CONFORMED（2026-11-06）。重寫、顯示模式與四平台交付都完成並驗過，刻意保留的差異見「現況」，各平台的驗證結果見「交付」。
 
 ## 目標
 
@@ -101,6 +101,18 @@
 | Windows x86_64 | Zip | `dosgolem-rust-cross`（mingw、`/opt/sdl2/windows`） | Wine 跑實際產物 |
 | macOS | universal `.app` 的 Zip | `dosgolem-rust-cross`（osxcross、SDK 15.5） | `lipo`、Mach-O 靜態檢查。沒有 Mac，不能宣稱實機驗過 |
 | Android | APK | NDK 27.2（`rich2-go-android`），另裝 Rust 的 Android 目標，SDL 的 `android-project` 在 `sdl2-sys` 內 | `rich2-android-emulator` 跑實際產物 |
+
+v.0.9.0-20261106 的驗證結果（`dist-all/v.0.9.0-20261106/verify/` 與 `workspace/pkg/android/smoke/`）：
+
+| 平台 | 結果 |
+|---|---|
+| 全部 | 靜態驗收 72 項通過：每個包的檔案清單、SHA-256、授權檔、符號連結與 MANIFEST 相同，沒有破解組檔案。資料子集與完整 HD 的畫面比對 8 項通過 |
+| Linux | 乾淨的 Ubuntu 24.04 容器跑 AppImage，28 項通過：標題、示範（HD 與原版圖）、CGA、MGA 單色圖庫、唯讀 AppDir、缺資料時的錯誤訊息、包內 SDL2 的相依 |
+| Windows | Wine 9.0 跑 exe，22 項通過 |
+| macOS | 只有靜態驗收：zip CRC、檔案清單與雜湊，執行檔與 SDL2.framework 的架構（arm64、x86_64）、相依、rpath、最低系統版本與 arm64 的 ad-hoc 簽章。沒有在 Mac 上跑過 |
+| Android | 模擬器煙霧測試通過：安裝、標題、觸控移動玩家機、暫停、工具列、關於頁、切到背景再回來、第二次啟動不再解資料，ANR 0 筆。沒有在實機上跑過 |
+
+README 的發行包畫面由 `tools/package/readme_shots.sh` 從發行的 AppImage 截取。
 
 - 依 `rulebook/82`，驗的是打包後的產物，不是開發機的二進位檔。
 - 每個包都帶 `LICENSE`。APK 看不到檔案，要在遊戲內的關於頁顯示（`rulebook/85`）。

@@ -354,3 +354,12 @@ Android 煙霧測試第二次啟動的失敗：
 沒驗證：手感與難度、第二關沿柱子的列只比到畫面欄、第三關幀 21 的列在 150% 從畫面右半中途出現沒人看過、寬戰場第三關池滿放棄比 100% 多 2 至 3 次未處理。
 
 執行邊界：代理在主機跑過兩次 `python3 --version`、一次 `python3 -` heredoc，用過一次 `sed -i` 與兩次 `cat >>` 改測試檔，之後都改用 Edit。給代理的 `worktree_data.sh` 用法寫錯（它取 `pwd`，不吃參數），代理自行改成先進 worktree 再執行。主代理在主機誤打一次對 `/dev/null` 的 `sed -i`，失敗、沒有改到檔案。
+
+### 發行包 v.0.9.0-20261106 與 README 截圖（2026-11-06）
+
+- `build_all.sh` 17 步 387 秒：單元測試 366 項（Linux）與 Windows 交叉測試通過；靜態驗收 72 項、資料子集 8 項、Linux 28 項、Windows 22 項，失敗 0。
+- Android APK（arm64-v8a、x86_64）煙霧測試通過，ANR 0 筆。`03-after-start.png`、`04-stage1.png` 是舊版腳本留下的，這次沒有重拍。
+- 發行包的 `README.txt` 補 F6、F10、砲座分離鍵、手把對照、強化選項與 Android。
+- README 的視窗截圖改由 `tools/package/readme_shots.sh` 從發行的 AppImage 截取，另加戰場大小 100% 與 150%、設定畫面、CGA 單色 HD、Android。第一次跑時步數設太多（實際每秒約 9 步），40 秒只到 365 步，已調整。
+- 第一關第 400 步前後下方的純藍色帶與膠囊旁的黑框，100% 也有，原版圖模式（和原版顯示記憶體逐位元組對拍過的繪製端）也有，所以判定是原版畫面，不是寬戰場造成（強推論，這一步沒有直接的原版收據）。
+- 已合併的 12 個 worktree 與分支移除，進度筆記與截圖先複製到 `workspace/archive/worktrees/`。三個 `agent-*` worktree 是工具自動建立的，留著沒動。

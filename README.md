@@ -2,9 +2,9 @@
 
 大宇資訊（Softstar）1990 年 DOS 橫向捲軸射擊遊戲《RS-2》的逆向分析、素材解析工具與 Rust 重製。目的是保存台灣早期遊戲的製作成果與技術細節。
 
-![第一關的實際執行畫面](docs/images/game/window-stage1.png)
+![Linux 發行包的實際視窗，第一關](docs/images/game/window-stage1.png)
 
-重製程式的實際視窗，第一關示範模式，HD 圖，補間開啟。上方是工具列。
+Linux 發行包（AppImage）的實際視窗，第一關示範模式，HD 圖。上方是工具列與狀態列。
 
 | | |
 |---|---|
@@ -13,7 +13,7 @@
 | ![第三關，HD](docs/images/game/stage3-eyes-hd.png) | ![第四關頭目，HD](docs/images/game/stage4-fish-hd.png) |
 | 第三關 | 第四關頭目 |
 
-原版與 HD 的對照見[素材：原版與 HD](#素材原版與-hd)。
+原版與 HD 的對照見[素材：原版與 HD](#素材原版與-hd)，發行包的其他畫面見[發行包](#發行包)。
 
 ## 原版素材
 
@@ -210,6 +210,19 @@ ANDROID_SRC=$PWD tools/package/android_apk.sh v.0.9.0-YYYYMMDD arm64-v8a x86_64
 ```
 
 成品放在 `dist-all/`，內含原版資料與 HD 圖，只供自己保存，不上傳。步驟與驗證見[規格 004](docs/spec/004-rewrite-and-delivery.md)。
+
+下面的畫面都取自 v.0.9.0-20261106 的發行包：桌面版由 `tools/package/readme_shots.sh` 在容器裡執行 AppImage 截取，Android 版取自模擬器的煙霧測試（`tools/package/android_smoke.sh`）。
+
+| | |
+|---|---|
+| ![戰場大小 100%](docs/images/game/field-100.png) | ![戰場大小 150%](docs/images/game/field-150.png) |
+| 戰場大小 100%，第一關同一步 | 戰場大小 150%，前方多看到 20 欄 |
+| ![遊戲設定頁](docs/images/game/window-settings.png) | ![CGA 單色 HD](docs/images/game/mono-cga-hd.png) |
+| 設定畫面的遊戲頁 | CGA 模式，單色 HD |
+
+![Android 版第一關](docs/images/game/android-stage1.png)
+
+Android 版在模擬器上執行第一關，左下是方向鍵，右下是開火與砲座轉向。
 
 ## 重要發現
 
