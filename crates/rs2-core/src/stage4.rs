@@ -6,6 +6,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::entity::Timetable;
 use crate::game::{Core, Req};
 
 impl Core {
@@ -99,21 +100,21 @@ impl Core {
     /// `sub_13EAB`：普通段的一幀。`13ED5h` 的 `cmp word_26872, 0` 與 `jz short $+2` 沒有效果。
     pub(crate) async fn s13eab(&mut self) {
         self.ds.w16(a(0x2685C), 0);
-        self.s17da6();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage4);
+        self.update_enemies();
         self.s14458();
         self.s14f92();
         self.s13f7a();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
         self.s13f6e();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
@@ -126,21 +127,21 @@ impl Core {
     /// `sub_13EF9`：頭目段的一幀，背景換成 `sub_1403E`（全黑）。
     pub(crate) async fn s13ef9(&mut self) {
         self.ds.w16(a(0x2685C), 0);
-        self.s17da6();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage4);
+        self.update_enemies();
         self.s14458();
         self.s14f92();
         self.s1403e();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
         self.s13f6e();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
@@ -150,7 +151,8 @@ impl Core {
         self.suspend(Req::Sample(0x13F42)).await;
     }
 
-    /// `sub_13F47`：幀 > 426h 且 15 個實體槽（`ds:2294h`）全空時設 `byte_1CFAD` = `F`（過關）。
+    /// `sub_13F47`：幀 > 426h 且 15 個敵人槽全空時設 `byte_1CFAD` = `F`（過關）。
+    /// 敵人池指標表經 `entity_link` 讀（`bx` 是原版的位元組偏移，槽號 × 2）。
     pub(crate) fn s13f47(&mut self) {
         if self.ds.r16(a(0x1CFE2)) <= 0x426 {
             return;
@@ -158,7 +160,7 @@ impl Core {
         self.r.bx = 0;
         self.r.cx = 0x0F;
         loop {
-            self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2294));
+            self.r.ax = self.entity_link((self.r.bx >> 1) as u8);
             if self.r.ax != 0 {
                 return;
             }
@@ -297,11 +299,5 @@ impl Core {
             self.r.ax = self.ds.r16(a(dst));
             self.s2_free();
         }
-    }
-
-    /// `sub_17DA6`：第四關的實體時間表 `dseg:7922h`。
-    pub(crate) fn s17da6(&mut self) {
-        self.r.si = 0x7922;
-        self.s15d1c();
     }
 }

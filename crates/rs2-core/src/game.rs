@@ -3,9 +3,11 @@
 use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
+use crate::entity::Enemies;
 use crate::fx::Effects;
 use crate::pbullet::PlayerBullets;
 use crate::regs::Regs;
+use crate::scenery::Scenery;
 use std::cell::RefCell;
 use std::future::Future;
 use std::pin::Pin;
@@ -178,6 +180,23 @@ pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
     (0x28AF, 0x28D0, "word_1F46F 記錄位址與 28B1h 起 16 個字組的工作區（word_1F471 至 word_1F48F）。sub_16779 把記錄複製進工作區並寫 1F46F，\
                       之後才由 sub_167A3 一族讀寫，sub_1678E 複製回 1F46F 指的記錄；sub_165CF 一族寫樣板位址進 1F46F，只有 sub_16578 讀。\
                       重製改成 update_player_bullets 的區域 PlayerBullet 與 spawn_player_bullet 的 Shot 參數"),
+    // ---- 敵人領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
+    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-entity.md）。
+    // 池指標表 2294h、記錄區 22B4h、每槽繪製值 21ECh 至 228Bh、最近繪製值 228Ch、景物池 198Ch 至 19DBh 是狀態，走 Mirror，不在這裡。
+    // 死亡旗標 word_1EDAA（21EAh）看似工作變數，其實不能豁免：它的位址是 G3、G4 列起點表的越界列，格網位址函式與玩家領域
+    // （尚未搬走）會從資料段直接讀，所以留在資料段，由 `Core::set_enemy_death_flag`（mirror.rs）寫。
+    (0x042A, 0x042B, "word_1CFEA 亂數索引的傳遞字：sub_10E33 寫 0（10E4Eh、10E8Dh），sub_1617A 先寫（1617Dh）後讀（16183h），\
+                      sub_110A4 讀寫（110A4h、110B0h）。重製改成 rolls_to_fire 的區域變數"),
+    (0x1AF6, 0x1AF7, "word_1E6B6 閃白旗標：sub_15F8D 寫（15F8Dh、15FB6h），sub_15E44 讀（15E60h），sub_164F3 寫（1650Ch）後讀（1652Eh），\
+                      每次使用前都在同一個敵人的處理裡寫過。重製改成 Step::flashing 與 Slot::flash"),
+    (0x1B06, 0x1B09, "word_1E6C6 圖框、byte_1E6C8 移動碼、byte_1E6C9 槽號。1E6C6：sub_15F4C 寫（15F63h、15F6Bh）並讀（15F7Bh），sub_16167 讀（16173h）。\
+                      1E6C8：sub_15E68（15E84h、15EB4h）與 sub_15ECD（15EE4h、15F2Dh）寫，只有 sub_15F4C 讀（15F52h）。\
+                      1E6C9：sub_15D8C 歸零並每槽加 1（15D92h、15DB7h），只有 sub_16233 讀（16278h）。\
+                      重製改成 select_frame 的回傳值、step_enemy 的 code 與 stamp_footprint_g1 的 slot 參數"),
+    (0x25B4, 0x25E5, "word_1F174 記錄位址與 25B6h 起 24 個字組的工作區（word_1F176 至 word_1F1A4）。sub_15E1A 與 sub_15ECD 的變身（15F06h）\
+                      用 rep movsw 寫滿 24 字組，之後才由 sub_15E68 一族與 sub_15DBE 讀寫，sub_15E2F 複製回 1F174 指的記錄；\
+                      sub_15D1C 寫 1F174 的樣板位址，只有 sub_15D41 讀；sub_164F3、16541 另把渲染陣列的 kind 寫進 w18（1F19A），之後沒有人讀。\
+                      重製改成 update_enemies 的區域 Enemy 與 spawn_enemy 的樣板參數"),
 ];
 
 /// `off` 是否落在 [`DS_EXEMPT`]。
@@ -278,6 +297,10 @@ pub struct Core {
     pub(crate) eb: EnemyBullets,
     /// 玩家子彈池。
     pub(crate) pb: PlayerBullets,
+    /// 敵人池。
+    pub(crate) en: Enemies,
+    /// 第一關的視差景物。
+    pub(crate) sc: Scenery,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -320,6 +343,8 @@ impl Core {
             fx: Effects::default(),
             eb: EnemyBullets::default(),
             pb: PlayerBullets::default(),
+            en: Enemies::default(),
+            sc: Scenery::default(),
             s11375_patched: false,
             display_start: None,
             mix: MixFile::A,

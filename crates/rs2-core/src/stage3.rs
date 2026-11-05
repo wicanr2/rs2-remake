@@ -10,6 +10,7 @@
 
 use crate::draw::{Op, Pool};
 use crate::dseg::a;
+use crate::entity::Timetable;
 use crate::game::{Core, Req};
 
 impl Core {
@@ -125,19 +126,19 @@ impl Core {
         }
         self.s13b64();
         self.ds.w16(a(0x2685C), 0);
-        self.s17d9a();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage3);
+        self.update_enemies();
         self.s14458();
         self.s14f92();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
@@ -159,21 +160,21 @@ impl Core {
     /// `sub_13B75`：頭目段的一幀。計數到 46Ch 換合成圖並把關卡字母改成 `c`，超過 474h 釘回 474h。
     pub(crate) async fn s13b75(&mut self) {
         self.ds.w16(a(0x2685C), 0);
-        self.s17d9a();
+        self.spawn_scheduled(Timetable::Stage3);
         self.s15924();
-        self.s15d8c();
+        self.update_enemies();
         self.s14458();
         self.s14f92();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         // 13B9Fh 的 cmp word_26872, 0 與 jz $+2 沒有效果。
         self.s1100a();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         self.r.cx = 2;
@@ -287,12 +288,6 @@ impl Core {
         self.set_obj(Pool::Boss, 0);
         self.s19d08();
         self.clear_obj();
-    }
-
-    /// `sub_17D9A`：第三關時間表（`dseg:68E0h`）。
-    pub(crate) fn s17d9a(&mut self) {
-        self.r.si = 0x68E0;
-        self.s15d1c();
     }
 
     /// `sub_17DF9`：把地圖左側 42 欄 x 19 列圖塊畫進暫存區 A，並把圖塊索引寫進快取（`dseg:900Eh` 起，連續，每列 42 字組）。

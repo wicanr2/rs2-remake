@@ -15,6 +15,7 @@ mod loader;
 mod mirror;
 mod pbullet;
 mod player;
+mod scenery;
 mod stage1_bg;
 mod stage2;
 mod stage3;

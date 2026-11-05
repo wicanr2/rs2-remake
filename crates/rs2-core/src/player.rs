@@ -762,8 +762,9 @@ impl Core {
         self.r.bx = saved;
     }
 
-    /// `sub_14C18`：砲座碰到的實體（`byte_1DA8A` 為槽號加 1）：w16 的低位元組加 1，高位元組設 1。
+    /// `sub_14C18`：砲座碰到的敵人（`byte_1DA8A` 為槽號加 1）：w16 的低位元組加 1，高位元組設 1。
     /// 裝甲格 FEh 沒有檢查，會取到指標 0 而把字組寫到 `dseg:0020h`（`11` 第 5.3 節）。
+    /// 敵人池指標表與傷害字組經 `entity_link`、`add_entity_damage` 存取（`entity.rs`）。
     pub(crate) fn s14c18(&mut self) {
         self.r.set_al(self.ds.r8(a(0x1DA8A)));
         if self.r.al() == 0xFF {
@@ -776,17 +777,14 @@ impl Core {
         self.r.set_ah(0);
         self.r.bx = self.r.ax;
         self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2294));
+        self.r.ax = self.entity_link(self.r.al());
         // armor_cell_index：裝甲格 FEh 與已釋放的槽不寫傷害。
         if self.fixes.armor_cell_index && (self.r.bx == 0x1FA || self.r.ax == 0) {
             return;
         }
-        self.r.ax = self.r.ax.wrapping_add(0x20);
-        self.r.si = self.r.ax;
-        self.r.ax = self.ds.r16(self.r.si);
-        self.r.set_ah(1);
-        self.r.set_al(self.r.al().wrapping_add(1));
-        self.ds.w16(self.r.si, self.r.ax);
+        let link = self.r.ax;
+        self.r.si = link.wrapping_add(0x20);
+        self.r.ax = self.add_entity_damage(link, 1);
     }
 
     /// `sub_14C3D`：G1 的列位址（玩家 1 砲座）。`di` = `1B32h` + 列表 + `word_1DA9C`，`dx` = 列基底 + 45h。
@@ -1645,7 +1643,7 @@ impl Core {
         self.r.bx = saved;
     }
 
-    /// `sub_15746`：玩家 2 砲座碰到的實體（`byte_1DAEC`）加 1 傷害，同 `sub_14C18`（含 FEh 的表外寫入）。
+    /// `sub_15746`：玩家 2 砲座碰到的敵人（`byte_1DAEC`）加 1 傷害，同 `sub_14C18`（含 FEh 的表外寫入）。
     pub(crate) fn s15746(&mut self) {
         self.r.set_al(self.ds.r8(a(0x1DAEC)));
         if self.r.al() == 0xFF {
@@ -1658,17 +1656,14 @@ impl Core {
         self.r.set_ah(0);
         self.r.bx = self.r.ax;
         self.r.bx <<= 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x2294));
+        self.r.ax = self.entity_link(self.r.al());
         // armor_cell_index：裝甲格 FEh 與已釋放的槽不寫傷害。
         if self.fixes.armor_cell_index && (self.r.bx == 0x1FA || self.r.ax == 0) {
             return;
         }
-        self.r.ax = self.r.ax.wrapping_add(0x20);
-        self.r.si = self.r.ax;
-        self.r.ax = self.ds.r16(self.r.si);
-        self.r.set_ah(1);
-        self.r.set_al(self.r.al().wrapping_add(1));
-        self.ds.w16(self.r.si, self.r.ax);
+        let link = self.r.ax;
+        self.r.si = link.wrapping_add(0x20);
+        self.r.ax = self.add_entity_damage(link, 1);
     }
 
     /// `sub_1576B`：G1 的列位址（玩家 2 砲座，`word_1DAFE`）。

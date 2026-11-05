@@ -20,9 +20,11 @@
 
 use crate::dseg::{Dseg, a};
 use crate::ebullet::{Bullet, Capsule, EnemyBullets, POOL_SIZE as EB_POOL_SIZE, Slot, Template};
+use crate::entity::{Enemies, Enemy, POOL_SIZE as EN_POOL_SIZE, Slot as EnSlot, Sprite, Timetable};
 use crate::fx::{Effect, Effects, POOL_SIZE, Script};
 use crate::game::Core;
 use crate::pbullet::{Facing, POOL_SIZE as PB_POOL_SIZE, PlayerBullet, PlayerBullets, Shot, Slot as PbSlot};
+use crate::scenery::{POOL_SIZE as SC_POOL_SIZE, Prop, Scenery};
 
 /// 一個領域的狀態與資料段之間的對應。
 pub(crate) trait Mirror {
@@ -38,6 +40,8 @@ impl Core {
         self.fx.load(&self.ds);
         self.eb.load(&self.ds);
         self.pb.load(&self.ds);
+        self.en.load(&self.ds);
+        self.sc.load(&self.ds);
     }
 
     /// 所有已搬走的領域寫回 `self.ds`。
@@ -45,6 +49,8 @@ impl Core {
         self.fx.store(&mut self.ds);
         self.eb.store(&mut self.ds);
         self.pb.store(&mut self.ds);
+        self.en.store(&mut self.ds);
+        self.sc.store(&mut self.ds);
     }
 }
 
@@ -294,6 +300,211 @@ impl Mirror for PlayerBullets {
     }
 }
 
+// ---- 敵人池 ----
+
+/// 池指標表（`2294h`）：15 槽加一個只會被清零、沒有人讀的備用字組，共 16 個字組。
+/// 0 是空槽，使用中是該槽記錄的位址。
+const EN_LINKS: u16 = 0x2294;
+const EN_SPARE_LINK: u16 = EN_LINKS + 2 * EN_POOL_SIZE as u16;
+/// 記錄區：15 筆連續的 24 字組記錄（`22B4h` 起，每筆 30h 位元組）。
+const EN_RECORDS: u16 = 0x22B4;
+const EN_RECORD_BYTES: u16 = 0x30;
+/// 每槽的繪製值：五個平行陣列，各 16 個字組（20h 位元組），只用前 15 項。緊接在 `word_1EDAA`（`21EAh`）之後，
+/// 它不在這裡，見 [`ENEMY_DEATH_FLAG`]。
+const EN_SPRITE_IMAGE: u16 = 0x21EC;
+const EN_SPRITE_X: u16 = 0x220C;
+const EN_SPRITE_Y: u16 = 0x222C;
+const EN_SPRITE_KIND: u16 = 0x224C;
+const EN_FLASH: u16 = 0x226C;
+/// 最近一個做完整幀的敵人留下的繪製值，4 個字組，`word_1EE4C` 起。
+const EN_LAST_SPRITE: u16 = a(0x1EE4C);
+
+const _: () = assert!(EN_POOL_SIZE == 15, "池大小與原版指標表的長度一致");
+const _: () = assert!(EN_RECORDS == EN_SPARE_LINK + 2, "記錄區緊接在指標表之後");
+const _: () = assert!(EN_SPRITE_IMAGE == ENEMY_DEATH_FLAG + 2, "繪製陣列緊接在死亡旗標之後");
+const _: () = assert!(EN_SPRITE_X == EN_SPRITE_IMAGE + 0x20 && EN_SPRITE_Y == EN_SPRITE_X + 0x20, "繪製陣列各 16 個字組");
+const _: () = assert!(EN_SPRITE_KIND == EN_SPRITE_Y + 0x20 && EN_FLASH == EN_SPRITE_KIND + 0x20, "繪製陣列各 16 個字組");
+const _: () = assert!(EN_LAST_SPRITE == EN_FLASH + 0x20 && EN_LINKS == EN_LAST_SPRITE + 8, "繪製值緊接在閃爍陣列之後，指標表緊接在它之後");
+
+/// 傷害字組（`damage`，w16）在記錄裡的位移。
+pub(crate) const ENEMY_DAMAGE_OFFSET: u16 = 0x20;
+
+/// 第 `slot` 槽記錄的位址，也就是使用中的槽寫進池指標表的值。
+pub(crate) const fn enemy_record_link(slot: usize) -> u16 {
+    EN_RECORDS + EN_RECORD_BYTES * slot as u16
+}
+
+/// 位址 `link` 是不是某一槽記錄的起點，是的話回傳槽號。
+pub(crate) fn enemy_record_slot(link: u16) -> Option<usize> {
+    let offset = link.checked_sub(EN_RECORDS)?;
+    let slot = usize::from(offset / EN_RECORD_BYTES);
+    (offset % EN_RECORD_BYTES == 0 && slot < EN_POOL_SIZE).then_some(slot)
+}
+
+/// 記錄的欄位順序與位移（`Enemy` 的欄位依序對應 `w0` 至 `w23`），工作區 `25B6h` 與樣板表同一版面：
+///
+/// | 位移 | 欄位 | 位移 | 欄位 | 位移 | 欄位 |
+/// |---|---|---|---|---|---|
+/// | +00h | `hp` | +10h | `mode` | +20h | `damage` |
+/// | +02h | `frames` | +12h | `col` | +22h | `explosion` |
+/// | +04h | `blit_x` | +14h | `row` | +24h | `kind` |
+/// | +06h | `blit_y` | +16h | `dcol` | +26h | `carrier` |
+/// | +08h | `blit_dx` | +18h | `drow` | +28h | `anim_limits` |
+/// | +0Ah | `blit_dy` | +1Ah | `script` | +2Ah | `anim` |
+/// | +0Ch | `fire_threshold` | +1Ch | `shape` | +2Ch | `rand_index` |
+/// | +0Eh | `bullet` | +1Eh | `spare` | +2Eh | `spill` |
+impl Enemy {
+    pub(crate) fn from_words(w: [u16; 24]) -> Enemy {
+        Enemy {
+            hp: w[0],
+            frames: w[1],
+            blit_x: w[2],
+            blit_y: w[3],
+            blit_dx: w[4],
+            blit_dy: w[5],
+            fire_threshold: w[6],
+            bullet: w[7],
+            mode: w[8],
+            col: w[9],
+            row: w[10],
+            dcol: w[11],
+            drow: w[12],
+            script: w[13],
+            shape: w[14],
+            spare: w[15],
+            damage: w[16],
+            explosion: w[17],
+            kind: w[18],
+            carrier: w[19],
+            anim_limits: w[20],
+            anim: w[21],
+            rand_index: w[22],
+            spill: w[23],
+        }
+    }
+
+    pub(crate) fn to_words(&self) -> [u16; 24] {
+        [
+            self.hp,
+            self.frames,
+            self.blit_x,
+            self.blit_y,
+            self.blit_dx,
+            self.blit_dy,
+            self.fire_threshold,
+            self.bullet,
+            self.mode,
+            self.col,
+            self.row,
+            self.dcol,
+            self.drow,
+            self.script,
+            self.shape,
+            self.spare,
+            self.damage,
+            self.explosion,
+            self.kind,
+            self.carrier,
+            self.anim_limits,
+            self.anim,
+            self.rand_index,
+            self.spill,
+        ]
+    }
+
+    fn read(ds: &Dseg, at: u16) -> Enemy {
+        Enemy::from_words(std::array::from_fn(|k| ds.r16(at.wrapping_add(2 * k as u16))))
+    }
+}
+
+impl Mirror for Enemies {
+    fn load(&mut self, ds: &Dseg) {
+        for (i, slot) in self.slots.iter_mut().enumerate() {
+            let o = 2 * i as u16;
+            *slot = EnSlot {
+                link: ds.r16(EN_LINKS + o),
+                enemy: Enemy::read(ds, enemy_record_link(i)),
+                sprite: Sprite {
+                    image: ds.r16(EN_SPRITE_IMAGE + o),
+                    x: ds.r16(EN_SPRITE_X + o),
+                    y: ds.r16(EN_SPRITE_Y + o),
+                    kind: ds.r16(EN_SPRITE_KIND + o),
+                },
+                flash: ds.r16(EN_FLASH + o),
+            };
+        }
+        self.spare_link = ds.r16(EN_SPARE_LINK);
+        self.last_sprite = Sprite {
+            image: ds.r16(EN_LAST_SPRITE),
+            x: ds.r16(EN_LAST_SPRITE + 2),
+            y: ds.r16(EN_LAST_SPRITE + 4),
+            kind: ds.r16(EN_LAST_SPRITE + 6),
+        };
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            let o = 2 * i as u16;
+            ds.w16(EN_LINKS + o, slot.link);
+            for (k, w) in slot.enemy.to_words().into_iter().enumerate() {
+                ds.w16(enemy_record_link(i) + 2 * k as u16, w);
+            }
+            ds.w16(EN_SPRITE_IMAGE + o, slot.sprite.image);
+            ds.w16(EN_SPRITE_X + o, slot.sprite.x);
+            ds.w16(EN_SPRITE_Y + o, slot.sprite.y);
+            ds.w16(EN_SPRITE_KIND + o, slot.sprite.kind);
+            ds.w16(EN_FLASH + o, slot.flash);
+        }
+        ds.w16(EN_SPARE_LINK, self.spare_link);
+        ds.w16(EN_LAST_SPRITE, self.last_sprite.image);
+        ds.w16(EN_LAST_SPRITE + 2, self.last_sprite.x);
+        ds.w16(EN_LAST_SPRITE + 4, self.last_sprite.y);
+        ds.w16(EN_LAST_SPRITE + 6, self.last_sprite.kind);
+    }
+}
+
+// ---- 景物池 ----
+
+/// 景物池的四個平行陣列，各 10 個字組：每幀往左的欄數（`198Ch`）、x（`19A0h`）、y（`19B4h`）、圖庫索引（`19C8h`）。
+/// 圖庫索引同時是狀態，0 是空槽。四個陣列連續，之後緊接群組表。
+const SC_DX: u16 = 0x198C;
+const SC_X: u16 = 0x19A0;
+const SC_Y: u16 = 0x19B4;
+const SC_IMAGE: u16 = 0x19C8;
+/// 群組表（`19DCh`）：每列 `(幀, 景物記錄位址)`，幀為 0 結束。
+const SC_GROUPS: u16 = 0x19DC;
+const SC_GROUP_BYTES: u16 = 4;
+
+const _: () = assert!(SC_POOL_SIZE == 10, "池大小與原版四個陣列的長度一致");
+const _: () = assert!(SC_X == SC_DX + 2 * SC_POOL_SIZE as u16 && SC_Y == SC_X + 2 * SC_POOL_SIZE as u16, "四個陣列連續");
+const _: () = assert!(SC_IMAGE == SC_Y + 2 * SC_POOL_SIZE as u16 && SC_GROUPS == SC_IMAGE + 2 * SC_POOL_SIZE as u16, "群組表緊接在陣列之後");
+
+impl Prop {
+    /// 景物記錄（群組表指向的 4 個字組）的欄位順序：`(圖庫索引, x, y, 每幀往左的欄數)`。
+    pub(crate) fn from_words(w: [u16; 4]) -> Prop {
+        Prop { image: w[0], x: w[1], y: w[2], dx: w[3] }
+    }
+}
+
+impl Mirror for Scenery {
+    fn load(&mut self, ds: &Dseg) {
+        for (i, prop) in self.props.iter_mut().enumerate() {
+            let o = 2 * i as u16;
+            *prop = Prop { image: ds.r16(SC_IMAGE + o), x: ds.r16(SC_X + o), y: ds.r16(SC_Y + o), dx: ds.r16(SC_DX + o) };
+        }
+    }
+
+    fn store(&self, ds: &mut Dseg) {
+        for (i, prop) in self.props.iter().enumerate() {
+            let o = 2 * i as u16;
+            ds.w16(SC_IMAGE + o, prop.image);
+            ds.w16(SC_X + o, prop.x);
+            ds.w16(SC_Y + o, prop.y);
+            ds.w16(SC_DX + o, prop.dx);
+        }
+    }
+}
+
 // ---- 尚未搬走的共用資料段 ----
 //
 // 搬完的領域還要讀寫其他領域擁有的 `Dseg` 變數（唯讀表格、玩家狀態、格網），一律經下面的具名存取函式。
@@ -373,10 +584,49 @@ impl Shot {
     }
 }
 
+impl Timetable {
+    /// 時間表在資料段的位移。唯讀表格，表格階段改成解析 `S.EXE` 得到的結構。
+    /// 原版每關一個只有 `mov si, 表; call sub_15D1C` 的包裝函式：`sub_17D82`、`sub_17D8E`、`sub_17D9A`、`sub_17DA6`、`sub_17DB2`。
+    pub(crate) const fn table_offset(self) -> u16 {
+        match self {
+            Timetable::Stage1 => 0x41BE,
+            Timetable::Stage2 => 0x54FE,
+            Timetable::Stage3 => 0x68E0,
+            Timetable::Stage4 => 0x7922,
+            Timetable::Ending => 0x8D1C,
+        }
+    }
+}
+
+/// 敵人開火的固定亂數表（`42Ch`）：75 個字組，值域 0 至 15。
+const FIRE_ROLLS: u16 = 0x042C;
+
 impl Core {
     /// 讀一筆敵彈樣板（15 個字組）。
     pub(crate) fn bullet_template(&self, template: Template) -> Bullet {
         Bullet::read(&self.ds, template.table_offset())
+    }
+
+    /// 讀一筆敵人樣板（24 個字組）。樣板本身 23 個字組，相鄰樣板緊鄰排列，所以第 24 個字組（`spill`）
+    /// 是下一個樣板的 `hp`（文件第 2.1 節）。
+    pub(crate) fn enemy_template(&self, at: u16) -> Enemy {
+        Enemy::read(&self.ds, at)
+    }
+
+    /// 景物群組表第 `row` 列：(幀, 景物記錄位址)。幀為 0 是表尾。
+    pub(crate) fn scenery_group(&self, row: u16) -> (u16, u16) {
+        let at = SC_GROUPS.wrapping_add(row.wrapping_mul(SC_GROUP_BYTES));
+        (self.table_word(at), self.table_word(at.wrapping_add(2)))
+    }
+
+    /// 讀一筆景物記錄（4 個字組）。
+    pub(crate) fn scenery_record(&self, at: u16) -> Prop {
+        Prop::from_words(std::array::from_fn(|k| self.table_word(at.wrapping_add(2 * k as u16))))
+    }
+
+    /// 開火亂數表第 `index` 項（`index` < 75）。
+    pub(crate) fn fire_roll_at(&self, index: u16) -> u16 {
+        self.table_word(FIRE_ROLLS.wrapping_add(index.wrapping_mul(2)))
     }
 
     /// 讀一筆玩家彈樣板（16 個字組）。
@@ -457,51 +707,92 @@ impl Core {
     }
 }
 
-/// 實體池指標表（`2294h`）：15 個槽，每槽一個字組。G1 的格值是槽號加 1，沒有範圍檢查，
-/// 所以索引可以讀到表之後的資料（裝甲格 FEh 的索引 FDh 讀到 `248Eh`）。
-const ENTITY_LINKS: u16 = 0x2294;
-/// 實體記錄裡的傷害字組（w16，記錄 +20h）：低位元組是累計傷害，高位元組為 1 表示本幀被打中。
-const ENTITY_DAMAGE: u16 = 0x20;
 /// `byte_1CFDB`：目前的關卡字母，`C` 是第三關。
 const STAGE_LETTER: u16 = a(0x1CFDB);
 const STAGE_THREE: u8 = b'C';
+/// `word_1CFE2`：關卡的幀計數。
+const STAGE_FRAME: u16 = a(0x1CFE2);
+/// `byte_1CFAD`：過關旗標，`N` 進行中，`F` 已過關（主迴圈改播連爆）。
+const STAGE_CLEAR_FLAG: u16 = a(0x1CFAD);
+const STAGE_CLEARED: u8 = b'F';
+/// 難度加成：`word_1E6B2` 加在敵人的耐久上，`word_1E6B4` 加在開火亂數上（文件第 9.1 節）。
+const DIFFICULTY_HP: u16 = a(0x1E6B2);
+const DIFFICULTY_FIRE: u16 = a(0x1E6B4);
+/// `word_2685C`：繪製的暫存區選擇，0 是 A，8000h 是 B。
+const SCRATCH_SELECT: u16 = a(0x2685C);
+/// 暫存區 B 的選擇值。
+pub(crate) const SCRATCH_B: u16 = 0x8000;
 
 impl Core {
-    /// 實體池指標表第 `index` 項（槽號，G1 格值減 1）。0 表示該槽已釋放。
-    pub(crate) fn entity_link(&self, index: u8) -> u16 {
-        self.ds.r16(ENTITY_LINKS.wrapping_add(2 * u16::from(index)))
-    }
-
-    /// 對指標為 `link` 的實體累計 `damage` 點傷害（玩家子彈命中，原版 `16946h`）：
-    /// 低位元組 8 位元相加，高位元組設 1。`link` 為 0（已釋放的槽）時，寫到 `dseg:0020h`。
-    pub(crate) fn add_entity_damage(&mut self, link: u16, damage: u8) {
-        let at = link.wrapping_add(ENTITY_DAMAGE);
-        let low = (self.ds.r16(at) as u8).wrapping_add(damage);
-        self.ds.w16(at, 0x0100 | u16::from(low));
-    }
-
     /// 目前是不是第三關（有 G4 地形格）。
     pub(crate) fn on_terrain_stage(&self) -> bool {
         self.ds.r8(STAGE_LETTER) == STAGE_THREE
     }
 
-    /// 測試用：擺一個實體，實體池指標表第 `index` 項指向 `link`，傷害字組設成 `damage`。
-    #[cfg(test)]
-    pub(crate) fn set_entity(&mut self, index: u8, link: u16, damage: u16) {
-        self.ds.w16(ENTITY_LINKS + 2 * u16::from(index), link);
-        self.ds.w16(link.wrapping_add(ENTITY_DAMAGE), damage);
+    /// 關卡的幀計數（原版 `word_1CFE2`）。
+    pub(crate) fn stage_frame(&self) -> u16 {
+        self.ds.r16(STAGE_FRAME)
     }
 
-    /// 測試用：指標為 `link` 的實體的傷害字組。`link` 為 0 時是 `dseg:0020h`。
-    #[cfg(test)]
-    pub(crate) fn entity_damage(&self, link: u16) -> u16 {
-        self.ds.r16(link.wrapping_add(ENTITY_DAMAGE))
+    /// 設過關旗標（原版 `byte_1CFAD` = `F`）。
+    pub(crate) fn mark_stage_cleared(&mut self) {
+        self.ds.w8(STAGE_CLEAR_FLAG, STAGE_CLEARED);
+    }
+
+    /// 難度對敵人耐久的加成（原版 `word_1E6B2`，0 或 1）。
+    pub(crate) fn hp_bonus(&self) -> u16 {
+        self.ds.r16(DIFFICULTY_HP)
+    }
+
+    /// 難度對開火亂數的加成（原版 `word_1E6B4`，0、2 或 3）。
+    pub(crate) fn fire_bonus(&self) -> u16 {
+        self.ds.r16(DIFFICULTY_FIRE)
+    }
+
+    /// 繪製的暫存區選擇（原版 `word_2685C`），之後的繪製命令都帶這個值，直到有人再設。
+    pub(crate) fn select_scratch(&mut self, select: u16) {
+        self.ds.w16(SCRATCH_SELECT, select);
+    }
+
+    /// 表外的資料段字組：不屬於任何已搬走的領域，也不在唯讀表格內。實體傷害寫到指標 0 加 20h 的
+    /// 原版行為（`dseg:0020h`，啟動時文字畫面的色彩屬性）用它。
+    pub(crate) fn stray_word(&self, at: u16) -> u16 {
+        self.ds.r16(at)
+    }
+
+    pub(crate) fn set_stray_word(&mut self, at: u16, v: u16) {
+        self.ds.w16(at, v);
     }
 
     /// 測試用：設關卡字母。
     #[cfg(test)]
     pub(crate) fn set_stage_letter(&mut self, letter: u8) {
         self.ds.w8(STAGE_LETTER, letter);
+    }
+
+    /// 測試用：設關卡幀計數。
+    #[cfg(test)]
+    pub(crate) fn set_stage_frame(&mut self, frame: u16) {
+        self.ds.w16(STAGE_FRAME, frame);
+    }
+
+    /// 測試用：設難度加成。
+    #[cfg(test)]
+    pub(crate) fn set_difficulty(&mut self, hp: u16, fire: u16) {
+        self.ds.w16(DIFFICULTY_HP, hp);
+        self.ds.w16(DIFFICULTY_FIRE, fire);
+    }
+
+    /// 測試用：過關旗標是不是已設。
+    #[cfg(test)]
+    pub(crate) fn stage_cleared(&self) -> bool {
+        self.ds.r8(STAGE_CLEAR_FLAG) == STAGE_CLEARED
+    }
+
+    /// 測試用：目前的暫存區選擇。
+    #[cfg(test)]
+    pub(crate) fn scratch_select(&self) -> u16 {
+        self.ds.r16(SCRATCH_SELECT)
     }
 }
 
@@ -513,6 +804,10 @@ pub(crate) const GRID1_START: u16 = 0x1B32;
 pub(crate) const GRID1_END: u16 = 0x1E2A;
 /// G1 與 G2 的列距：40 欄，每格一位元組。
 pub(crate) const GRID1_ROW_BYTES: u16 = 0x28;
+/// 戰場的欄數，G1、G2、G3、G4 都是 40 欄。敵人的足跡超出這個範圍的格不寫。
+pub(crate) const GRID_COLS: u16 = 0x28;
+/// `sub_162B1` 清掉的位元組數：20 列。
+const GRID1_BYTES: u16 = 0x320;
 /// 一列最後可測的格相對列起點的位移加 1：列尾（欄 39）嚴格在它之前。
 const GRID1_ROW_SPAN: u16 = 0x27;
 /// 玩家彈取 G1 列起點時，列（無號）大於等於這個值一律改取 [`GRID1_FAR_ROW`]。
@@ -547,6 +842,20 @@ impl Core {
     pub(crate) fn grid1_probe(&self, row_start: u16, addr: u16) -> Option<u8> {
         let inside = addr < GRID1_END && addr > GRID1_START && addr < grid1_row_end(row_start) && addr > row_start;
         inside.then(|| self.ds.r8(addr))
+    }
+
+    /// 清空 G1（原版 `sub_162B1`，每幀末）：從 `1B32h` 起 190h 個字組，比有人寫入的 19 列多一列。
+    pub(crate) fn clear_grid1(&mut self) {
+        self.ds.fill16(GRID1_START, GRID1_BYTES / 2, 0);
+    }
+
+    /// 敵人把形狀的一格值寫進 G1（原版 `sub_16233`）：覆蓋，不是 `or`，所以槽號大的敵人蓋過槽號小的。
+    /// 欄（無號）大於 27h 的格略過，不會溢進相鄰的列；列起點取自列基底表（[`Core::grid1_row_start`]）。
+    pub(crate) fn grid1_put(&mut self, row: u16, col: u16, v: u8) {
+        if col < GRID_COLS {
+            let at = self.grid1_row_start(row).wrapping_add(col);
+            self.ds.w8(at, v);
+        }
     }
 
     /// G4 地形格的位址（原版 `sub_16A2C`）：`列` 大於等於 14h 改取 14h，位址 = G4 起點 + 列起點表 + 2 × 欄 + 1。
@@ -618,12 +927,26 @@ const GRID3_END: u16 = 0x9C3C;
 /// 一列 40 格，每格 2 位元組，所以列距 50h，列內可寫的範圍是 `[第一格, 第一格 + 4Eh]`。
 pub(crate) const GRID3_ROW_BYTES: u16 = 0x50;
 const GRID3_ROW_LAST_CELL: u16 = 0x4E;
-/// 列起點表（`21C2h`）：每列一個字組。列 0 至 13h 從 0001h 起每列加 50h，列 14h 是越界列（0059h）。G3 與 G4 共用。
+/// 列起點表（`21C2h`）：每列一個字組。列 0 至 13h 從 0001h 起每列加 50h。G3 與 G4 共用。
+/// 第 21 項（列 14h，越界列）的位址 `21EAh` 就是敵人的死亡旗標 `word_1EDAA`（[`ENEMY_DEATH_FLAG`]），
+/// 映像裡的初值是 0059h，但敵人每更新一個就把它寫成 `N`（004Eh）或 `Y`（0059h），所以越界列的起點隨敵人的狀態變。
 const GRID_ROW_TABLE: u16 = 0x21C2;
 /// 列號（無號）大於等於這個值一律當作這一列。
 const GRID_LAST_ROW: u16 = 0x14;
 
+const _: () = assert!(GRID_ROW_TABLE + 2 * GRID_LAST_ROW == ENEMY_DEATH_FLAG, "列起點表的越界列就是敵人的死亡旗標");
+
+/// 敵人的死亡旗標，`word_1EDAA`（`21EAh`）。敵人領域每更新一個敵人就寫一次，`N` 或 `Y`。
+/// 它同時是上面列起點表的越界列，格網位址函式與玩家領域（尚未搬走）都從資料段直接讀，所以留在資料段，不進 `Enemies`。
+const ENEMY_DEATH_FLAG: u16 = a(0x1EDAA);
+
 impl Core {
+    /// 記下最近一個更新的敵人本幀要不要釋放（原版 `word_1EDAA`）：`Y` 釋放，`N` 不釋放。
+    /// 列起點表的越界列（G3、G4 的列 14h 以上）讀的就是這個字組。
+    pub(crate) fn set_enemy_death_flag(&mut self, dying: bool) {
+        self.ds.w16(ENEMY_DEATH_FLAG, if dying { u16::from(b'Y') } else { u16::from(b'N') });
+    }
+
     /// 以 `or` 寫進 G3 的一格，限定在 `first`（該列第一格的位址）起的這一列內。
     /// 敵彈用這個：超出該列右緣的格略過，不溢進下一列。
     pub(crate) fn grid3_or_in_row(&mut self, first: u16, addr: u16, v: u8) {
@@ -682,6 +1005,17 @@ mod tests {
         assert_eq!(c.grid3_cell_addr(0x14, 3), c.grid3_cell_addr(0x1234, 3));
         assert_eq!(c.grid3_cell_addr(0xFFFF, 3), c.grid3_cell_addr(0x14, 3), "負的列號也是越界列");
         assert_ne!(c.grid3_cell_addr(0x13, 3), c.grid3_cell_addr(0x14, 3), "列 13h 是最後一個一般列");
+    }
+
+    #[test]
+    fn the_out_of_range_row_start_is_the_enemy_death_flag() {
+        // 列起點表第 21 項的位址就是 word_1EDAA：越界列的起點隨敵人狀態在 `N` 與 `Y` 之間變，G3 與 G4 都一樣。
+        let mut c = core();
+        for (dying, flag) in [(false, 0x4E), (true, 0x59)] {
+            c.set_enemy_death_flag(dying);
+            assert_eq!(c.grid3_cell_addr(0x14, 0), GRID3_START + flag + 1);
+            assert_eq!(c.grid4_cell_addr(0x20, 0), GRID4_START + flag + 1);
+        }
     }
 
     #[test]
@@ -909,18 +1243,158 @@ mod tests {
     }
 
     #[test]
-    fn entity_accessors_follow_the_pointer_table_without_a_range_check() {
+    fn enemies_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut en = Enemies::default();
+        en.load(&ds);
+        let mut same = ds.clone();
+        en.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        en.store(&mut blank);
+        let mut back = Enemies::default();
+        back.load(&blank);
+        assert_eq!((back.slots, back.spare_link, back.last_sprite), (en.slots, en.spare_link, en.last_sprite));
+        assert_ne!(en.slots, Enemies::default().slots, "測試資料不該全 0");
+    }
+
+    #[test]
+    fn enemy_fields_land_at_the_documented_offsets() {
+        let mut en = Enemies::default();
+        for (i, slot) in en.slots.iter_mut().enumerate() {
+            let w: [u16; 24] = std::array::from_fn(|k| 0x100 * (i as u16 + 1) + k as u16 + 1);
+            slot.link = 0x7000 + i as u16;
+            slot.enemy = Enemy::from_words(w);
+            slot.sprite = Sprite { image: 0x8000 + i as u16, x: 0x8100 + i as u16, y: 0x8200 + i as u16, kind: 0x8300 + i as u16 };
+            slot.flash = 0x8400 + i as u16;
+        }
+        en.spare_link = 0x6666;
+        en.last_sprite = Sprite { image: 0x9001, x: 0x9002, y: 0x9003, kind: 0x9004 };
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        en.store(&mut ds);
+        for i in 0..EN_POOL_SIZE as u16 {
+            let o = 2 * i;
+            assert_eq!(ds.r16(0x2294 + o), 0x7000 + i, "槽 {i} 的指標在 2294h + 2i");
+            let rec = 0x22B4 + 0x30 * i;
+            for k in 0..24u16 {
+                assert_eq!(ds.r16(rec + 2 * k), 0x100 * (i + 1) + k + 1, "槽 {i} 的 w{k} 在記錄 +{:02X}h", 2 * k);
+            }
+            assert_eq!(
+                [ds.r16(0x21EC + o), ds.r16(0x220C + o), ds.r16(0x222C + o), ds.r16(0x224C + o), ds.r16(0x226C + o)],
+                [0x8000 + i, 0x8100 + i, 0x8200 + i, 0x8300 + i, 0x8400 + i],
+                "槽 {i} 的圖、x、y、畫法、閃白在五個陣列的第 i 項"
+            );
+        }
+        assert_eq!(ds.r16(0x2294 + 0x1E), 0x6666, "備用字組在 22B2h");
+        assert_eq!([ds.r16(0x228C), ds.r16(0x228E), ds.r16(0x2290), ds.r16(0x2292)], [0x9001, 0x9002, 0x9003, 0x9004]);
+        // 具名欄位依序對應 w0 至 w23；傷害字組是 w16，位移 20h。
+        let e = en.slots[0].enemy;
+        assert_eq!(
+            [e.hp, e.frames, e.blit_x, e.blit_y, e.blit_dx, e.blit_dy, e.fire_threshold, e.bullet],
+            [0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x108]
+        );
+        assert_eq!([e.mode, e.col, e.row, e.dcol, e.drow, e.script, e.shape, e.spare], [0x109, 0x10A, 0x10B, 0x10C, 0x10D, 0x10E, 0x10F, 0x110]);
+        assert_eq!(
+            [e.damage, e.explosion, e.kind, e.carrier, e.anim_limits, e.anim, e.rand_index, e.spill],
+            [0x111, 0x112, 0x113, 0x114, 0x115, 0x116, 0x117, 0x118]
+        );
+        assert_eq!(ds.r16(0x22B4 + ENEMY_DAMAGE_OFFSET), 0x111);
+        assert_eq!(Enemy::from_words(e.to_words()), e);
+        // 池指標表、備用字組、繪製陣列、記錄區互不重疊，也不碰緊鄰的資料。
+        assert_eq!(ds.r16(0x22B4 + 0x2D0), 0, "記錄區之後的字組不動");
+        assert_eq!(ds.r16(0x21EA), 0, "繪製陣列之前的死亡旗標 word_1EDAA 不在 Enemies 裡");
+        assert_eq!((enemy_record_link(3), enemy_record_slot(0x22B4 + 3 * 0x30)), (0x22B4 + 3 * 0x30, Some(3)));
+        assert_eq!([enemy_record_slot(0x22B3), enemy_record_slot(0x22B5), enemy_record_slot(0x22B4 + 15 * 0x30), enemy_record_slot(0)], [None; 4]);
+    }
+
+    #[test]
+    fn scenery_mirror_is_the_inverse_of_load_for_any_dump() {
+        let ds = Dseg::from_image(&pseudo_random_image());
+        let mut sc = Scenery::default();
+        sc.load(&ds);
+        let mut same = ds.clone();
+        sc.store(&mut same);
+        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
+        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        sc.store(&mut blank);
+        let mut back = Scenery::default();
+        back.load(&blank);
+        assert_eq!(back.props, sc.props);
+        assert_ne!(sc.props, Scenery::default().props, "測試資料不該全 0");
+    }
+
+    #[test]
+    fn scenery_fields_land_at_the_documented_offsets() {
+        let mut sc = Scenery::default();
+        for (i, p) in sc.props.iter_mut().enumerate() {
+            let i = i as u16;
+            *p = Prop { image: 0x100 + i, x: 0x200 + i, y: 0x300 + i, dx: 0x400 + i };
+        }
+        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
+        sc.store(&mut ds);
+        for i in 0..SC_POOL_SIZE as u16 {
+            let o = 2 * i;
+            assert_eq!(
+                [ds.r16(0x198C + o), ds.r16(0x19A0 + o), ds.r16(0x19B4 + o), ds.r16(0x19C8 + o)],
+                [0x400 + i, 0x200 + i, 0x300 + i, 0x100 + i],
+                "槽 {i}：dx、x、y、圖庫索引在四個陣列的第 i 項"
+            );
+        }
+        assert_eq!(ds.r16(0x19DC), 0, "群組表不動");
+        assert_eq!(ds.r16(0x198A), 0, "陣列之前不動");
+    }
+
+    #[test]
+    fn scenery_groups_and_records_are_read_from_the_tables() {
         let mut c = core();
-        c.ds.w16(0x2294 + 2 * 3, 0x22F0);
-        assert_eq!(c.entity_link(3), 0x22F0);
-        c.ds.w16(0x248E, 0x1111);
-        assert_eq!(c.entity_link(0xFD), 0x1111, "索引 FDh 讀到表之後的 248Eh");
-        c.ds.w16(0x22F0 + 0x20, 0x0203);
-        c.add_entity_damage(0x22F0, 3);
-        assert_eq!(c.ds.r16(0x22F0 + 0x20), 0x0106, "低位元組相加，高位元組設 1");
-        c.ds.w16(0x0020, 0x00FF);
-        c.add_entity_damage(0, 2);
-        assert_eq!(c.ds.r16(0x0020), 0x0101, "指標 0 寫到 dseg:0020h，低位元組環繞");
+        c.ds.w16(0x19DC + 4 * 2, 385);
+        c.ds.w16(0x19DC + 4 * 2 + 2, 0x7000);
+        for (k, v) in [0x0E, 40, 20, 4].into_iter().enumerate() {
+            c.ds.w16(0x7000 + 2 * k as u16, v);
+        }
+        assert_eq!(c.scenery_group(2), (385, 0x7000));
+        assert_eq!(c.scenery_group(0), (0, 0));
+        assert_eq!(c.scenery_record(0x7000), Prop { image: 0x0E, x: 40, y: 20, dx: 4 }, "記錄是 (圖庫索引, x, y, dx)");
+    }
+
+    #[test]
+    fn enemy_template_reads_24_words_including_the_next_templates_first_word() {
+        let mut c = core();
+        for k in 0..24u16 {
+            c.ds.w16(0x7000 + 2 * k, 0x700 + k);
+        }
+        let e = c.enemy_template(0x7000);
+        assert_eq!(e.to_words(), std::array::from_fn(|k| 0x700 + k as u16));
+        assert_eq!(e.spill, 0x700 + 23, "第 24 個字組是緊鄰的下一個樣板的 w0");
+    }
+
+    #[test]
+    fn timetable_and_fire_roll_tables_are_read_from_the_data_segment() {
+        let mut c = core();
+        c.ds.w16(0x042C + 2 * 74, 9);
+        assert_eq!(c.fire_roll_at(74), 9);
+        assert_eq!(c.fire_roll_at(0), 0);
+    }
+
+    #[test]
+    fn clear_grid1_zeroes_20_rows_and_grid1_put_stays_in_its_row() {
+        let mut c = core();
+        c.fill_row_tables();
+        for a in GRID1_START..GRID1_START + 0x320 {
+            c.ds.w8(a, 0x55);
+        }
+        c.ds.w8(GRID1_START + 0x320, 0x66);
+        c.ds.w8(GRID1_START - 1, 0x77);
+        c.clear_grid1();
+        assert!((GRID1_START..GRID1_START + 0x320).all(|a| c.ds.r8(a) == 0));
+        assert_eq!((c.ds.r8(GRID1_START + 0x320), c.ds.r8(GRID1_START - 1)), (0x66, 0x77), "前後各一格不清");
+        c.grid1_put(3, 0, 1);
+        c.grid1_put(3, 39, 2);
+        c.grid1_put(3, 40, 3);
+        c.grid1_put(3, 0xFFFF, 4);
+        let row = c.grid1_row_start(3);
+        assert_eq!([c.ds.r8(row), c.ds.r8(row + 39), c.ds.r8(row + 40), c.ds.r8(row - 1)], [1, 2, 0, 0], "欄 40 起與負欄不寫");
     }
 
     #[test]

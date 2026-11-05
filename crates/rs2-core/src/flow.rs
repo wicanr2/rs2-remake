@@ -2,6 +2,7 @@
 
 use crate::draw::{DrawCmd, ShtGroup};
 use crate::dseg::a;
+use crate::entity::Timetable;
 use crate::game::{Core, Exit, Req};
 
 impl Core {
@@ -119,25 +120,25 @@ impl Core {
 
     /// `sub_10F41`：普通段的一幀。
     async fn s10f41(&mut self) {
-        self.s17d82();
-        self.s15c3c();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage1);
+        self.spawn_scenery();
+        self.update_enemies();
         self.s14458();
         self.s16302();
-        self.s15c92();
-        self.s164bb();
+        self.draw_scenery();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s14f92();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
         // sub_1117F 只有 MGA 分支。
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.ds.w16(0x9CC0, 0x1B);
         self.ds.w16(0x9CC2, 0xAC);
@@ -153,14 +154,14 @@ impl Core {
 
     /// `sub_10F9F`：頭目段的一幀。
     async fn s10f9f(&mut self) {
-        self.s17d82();
-        self.s15c3c();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage1);
+        self.spawn_scenery();
+        self.update_enemies();
         self.s14458();
         self.s15906();
-        self.s164bb();
-        self.s164d7();
-        self.s15c92();
+        self.draw_enemies();
+        self.draw_enemy_overlays();
+        self.draw_scenery();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
@@ -170,7 +171,7 @@ impl Core {
         self.s1100a();
         let c = self.ds.r16(0x0422).wrapping_add(1);
         self.ds.w16(0x0422, c);
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.suspend(Req::Sample(0x10FE3)).await;
         self.r.cx = 2;
@@ -287,7 +288,7 @@ impl Core {
         self.ds.w16(0x1B02, 0x10E);
         self.ds.w16(0x042A, 0);
         self.r.ax = 0;
-        self.ds.fill16(0x2294, 0x10, 0);
+        self.en.release_all();
         self.eb.release_all();
         self.pb.release_all();
         self.r.cx = 0;
@@ -381,17 +382,6 @@ impl Core {
         self.r.cx = self.ds.r16(0x0422);
         self.clear_obj();
         self.s1890d();
-    }
-
-    /// `sub_110A4`：固定亂數表，全域索引 `42Ah`。回傳 `ax`，改動 `bx`。
-    pub(crate) fn s110a4(&mut self) {
-        let mut ax = self.ds.r16(0x042A).wrapping_add(1);
-        if ax >= 0x4B {
-            ax = 0;
-        }
-        self.ds.w16(0x042A, ax);
-        self.r.bx = ax << 1;
-        self.r.ax = self.ds.r16(self.r.bx.wrapping_add(0x042C));
     }
 
     /// `sub_1130D`：玩家 2 的血條。

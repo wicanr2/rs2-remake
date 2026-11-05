@@ -4,7 +4,7 @@
 use crate::dseg::a;
 use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
-use crate::mirror::pb_record_link;
+use crate::mirror::{enemy_record_link, pb_record_link};
 use crate::pbullet::{Facing, PlayerBullet};
 
 fn game(fixes: Fixes) -> Core {
@@ -125,12 +125,10 @@ fn armor_cell_on_leaves_dseg_0020() {
     // 已釋放的槽（指標 0）也不寫。
     g.strike(&bullet, 0x03);
     assert_eq!(g.ds.r16(0x0020), 0x0165);
-    // 活著的實體照常受傷。
-    let ent = 0x22B4u16;
-    g.ds.w16(0x2294 + 2, ent);
-    g.ds.w16(ent + 0x20, 0);
+    // 活著的敵人照常受傷。
+    g.en.slots[1].link = enemy_record_link(1);
     g.strike(&bullet, 0x02);
-    assert_eq!(g.ds.r16(ent + 0x20), 0x0101);
+    assert_eq!(g.en.slots[1].enemy.damage, 0x0101);
 }
 
 #[test]

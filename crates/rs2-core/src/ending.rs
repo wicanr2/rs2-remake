@@ -5,6 +5,7 @@
 //! `1CF5Ch` 至 `1CF6Eh` 的段落，都在 `A0_EXEMPT`）、`sub_1117F`（E 模式為空）、CGA、MGA、純 EGA 分支。
 
 use crate::dseg::a;
+use crate::entity::Timetable;
 use crate::game::Core;
 
 impl Core {
@@ -82,11 +83,11 @@ impl Core {
 
     /// `sub_1429E`：片尾的一幀。時間表生成 END 字樣，重畫背景，更新實體與子彈，幀計數加 1，等 1 tick。
     pub(crate) async fn s1429e(&mut self) {
-        self.s17db2();
+        self.spawn_scheduled(Timetable::Ending);
         self.s14273();
-        self.s15d8c();
-        self.s164bb();
-        self.s164d7();
+        self.update_enemies();
+        self.draw_enemies();
+        self.draw_enemy_overlays();
         let v = self.ds.r16(a(0x1CFE2)).wrapping_add(1);
         self.ds.w16(a(0x1CFE2), v);
         // call sub_1117F：E 模式為空。
@@ -126,12 +127,6 @@ impl Core {
         self.r.set_al(0x12);
         self.r.cx = 0x10;
         self.set_dac(self.r.bx as u8, self.r.dx);
-    }
-
-    /// `sub_17DB2`：片尾的實體時間表 `dseg:8D1Ch`（3 列，幀 1、10、1）。
-    pub(crate) fn s17db2(&mut self) {
-        self.r.si = 0x8D1C;
-        self.s15d1c();
     }
 }
 

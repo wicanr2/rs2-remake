@@ -10,6 +10,7 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
+use crate::entity::Timetable;
 use crate::game::{Core, Req};
 
 impl Core {
@@ -287,8 +288,8 @@ impl Core {
     /// `sub_132EB`：第一段（幀計數 <= 104h）的一幀，背景是 5 層視差。
     pub(crate) async fn s132eb(&mut self) {
         self.ds.w16(a(0x2685C), 0);
-        self.s17d8e();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage2);
+        self.update_enemies();
         self.s14458();
         self.s14f92();
         self.s1355b();
@@ -296,17 +297,17 @@ impl Core {
         self.s135eb();
         self.s1365f();
         self.s13711();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         self.s1100a();
         self.s1375f();
         self.s13443();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
@@ -320,23 +321,23 @@ impl Core {
     /// `sub_13344`：第二段（幀計數 > 104h）的一幀，背景換成頭目合成腳本。
     pub(crate) async fn s13344(&mut self) {
         self.ds.w16(a(0x2685C), 0);
-        self.s17d8e();
-        self.s15d8c();
+        self.spawn_scheduled(Timetable::Stage2);
+        self.update_enemies();
         self.s14458();
         self.s14f92();
         self.s137c6();
-        self.s164bb();
+        self.draw_enemies();
         self.update_enemy_bullets();
         self.update_player_bullets();
         self.s14704();
         self.s15232();
-        self.s164d7();
+        self.draw_enemy_overlays();
         self.update_effects();
         // 1336E 的 cmp word_26872, 0 與 jz short $+2 沒有效果。
         self.s1100a();
         self.s1375f();
         self.s13443();
-        self.s162b1();
+        self.clear_grid1();
         self.clear_grid2();
         self.s10ecb().await;
         // sub_1117F 只有 MGA 分支。
@@ -929,11 +930,5 @@ impl Core {
         self.set_obj(Pool::Boss, 2);
         self.s19d08();
         self.clear_obj();
-    }
-
-    /// `sub_17D8E`：第二關的實體時間表 `dseg:54FEh`。
-    pub(crate) fn s17d8e(&mut self) {
-        self.r.si = 0x54FE;
-        self.s15d1c();
     }
 }
