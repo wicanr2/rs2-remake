@@ -12,6 +12,7 @@ publish = false
 
 [dependencies]
 sdl2 = "=0.38.0"
+rs2-audio = { path = "../rs2-audio" }
 rs2-core = { path = "../rs2-core" }
 rs2-formats = { path = "../rs2-formats" }
 rs2-gfx = { path = "../rs2-gfx" }

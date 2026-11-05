@@ -1,0 +1,32 @@
+# 全流程對拍收據 wt_mute：標題按鍵進第一關，開秘技開火，按 S 靜音再按 S 恢復，Ctrl+C 過關。
+# 涵蓋 sub_187C3 的兩個分支與靜音時的喇叭路徑。
+include /tools-dos/scenarios/prefix-to-title.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+audiotrace wt_mute
+waittrace wt_mute
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+down rshift
+secs 8
+tap s 0.3 0
+secs 6
+tap s 0.3 0
+secs 6
+up rshift
+chord ctrl+c 0.4 0.1
+untilopen J2.GO 1 600_000_000
+secs 3
+waittrace off
+audiotrace off

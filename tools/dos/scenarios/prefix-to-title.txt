@@ -1,0 +1,15 @@
+# 全流程對拍的共用前綴：破解組 intro → 文字選單 V → 密碼畫面 → 停在 sub_11556（標題迴圈）入口。
+# 第三個 Enter 在 107,663,366 步按下，遊戲 2,000 步後開始載入，sub_11556 在 108.1M 步附近，所以第三個 Enter 只按 30 萬步就放開，
+# 之後才 untilpc。入口的資料段、平面與畫面由呼叫端傾印。
+step 45_000_000
+bios v
+step 70_000_000
+tap v
+step 100_000_000
+tap enter
+tap enter
+down enter
+runsteps 300_000
+up enter
+untilvec8
+untilpc 0x11556 100_000_000

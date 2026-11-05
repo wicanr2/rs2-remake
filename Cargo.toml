@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/rs2-formats", "crates/rs2-core", "crates/rs2-gfx", "crates/rs2-trace"]
+members = ["crates/rs2-formats", "crates/rs2-core", "crates/rs2-gfx", "crates/rs2-trace", "crates/rs2-audio"]
 exclude = ["crates/rs2-play"]
 
 [workspace.package]

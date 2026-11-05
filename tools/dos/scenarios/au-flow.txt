@@ -1,0 +1,54 @@
+# 音訊對拍收據 au_flow：標題按鍵進第一關（B.MIX），開秘技開火一段，Ctrl+C 過關進第二關（B.MIX），
+# 再到第三關、第四關與片尾，涵蓋每個音樂開關點與按 S 靜音。
+include /tools-dos/scenarios/prefix-to-title.txt
+audiotrace au_flow
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+down rshift
+secs 30
+up rshift
+tap s 0.3 0
+secs 5
+tap s 0.3 0
+secs 5
+log === 第一關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J2.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+until16 0x1CFE2 5 800_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 5
+chord ctrl+c 0.4 0.1
+untilopen J3.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+until16 0x1CFE2 5 800_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 5
+chord ctrl+c 0.4 0.1
+untilopen J4.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+until16 0x1CFE2 5 800_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 5
+chord ctrl+c 0.4 0.1
+untilopen SHT5.GO 1 600_000_000
+secs 4
+tap space 0.3 0
+secs 2
+tap space 0.3 0
+secs 12
+tap q 0.3 0
+secs 6
+audiotrace off

@@ -1,0 +1,4 @@
+# 負對照：sub_11097 的機器碼被改過（1109Bh 的 jb 改成 nop），waittrace 要拒絕開始並說出位元組位置。
+include /tools-dos/scenarios/prefix-to-title.txt
+poke 0x1109B 90
+waittrace sig

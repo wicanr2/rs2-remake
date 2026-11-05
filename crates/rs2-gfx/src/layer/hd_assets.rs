@@ -7,6 +7,7 @@
 use super::pal::{Pal, PALETTES};
 use crate::assets::Assets;
 use crate::png;
+use rs2_core::{BegGroup, ShtGroup};
 use rs2_formats::{BankItem, GoFile};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,19 +16,63 @@ use std::sync::Arc;
 /// HD 對邏輯像素的倍率。
 pub const SCALE: usize = 4;
 
+/// HD 資料夾底下的圖庫，目錄名同 `name()`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Lib {
     My,
     Sht1,
+    Sht2,
+    Sht3,
+    Sht4,
+    Sht5,
     Bh1,
+    Bh2,
+    Bh4,
+    /// 第三關 8x10 圖塊。
+    Map,
+    J1,
+    J2,
+    J3,
+    J4,
+    Beg1,
 }
 
 impl Lib {
+    pub const ALL: [Lib; 15] = [
+        Lib::My,
+        Lib::Sht1,
+        Lib::Sht2,
+        Lib::Sht3,
+        Lib::Sht4,
+        Lib::Sht5,
+        Lib::Bh1,
+        Lib::Bh2,
+        Lib::Bh4,
+        Lib::Map,
+        Lib::J1,
+        Lib::J2,
+        Lib::J3,
+        Lib::J4,
+        Lib::Beg1,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Lib::My => "MY",
             Lib::Sht1 => "SHT1",
+            Lib::Sht2 => "SHT2",
+            Lib::Sht3 => "SHT3",
+            Lib::Sht4 => "SHT4",
+            Lib::Sht5 => "SHT5",
             Lib::Bh1 => "BH1",
+            Lib::Bh2 => "BH2",
+            Lib::Bh4 => "BH4",
+            Lib::Map => "MAP",
+            Lib::J1 => "J1",
+            Lib::J2 => "J2",
+            Lib::J3 => "J3",
+            Lib::J4 => "J4",
+            Lib::Beg1 => "BEG1",
         }
     }
 
@@ -35,7 +80,89 @@ impl Lib {
         match self {
             Lib::My => &a.my,
             Lib::Sht1 => &a.sht1,
+            Lib::Sht2 => &a.sht2,
+            Lib::Sht3 => &a.sht3,
+            Lib::Sht4 => &a.sht4,
+            Lib::Sht5 => &a.sht5,
             Lib::Bh1 => &a.bh1,
+            Lib::Bh2 => &a.bh2,
+            Lib::Bh4 => &a.bh4,
+            Lib::Map => &a.map,
+            Lib::J1 => &a.j1,
+            Lib::J2 => &a.j2,
+            Lib::J3 => &a.j3,
+            Lib::J4 => &a.j4,
+            Lib::Beg1 => &a.beg1,
+        }
+    }
+
+    /// `ShtGroup`（`sht_group` 或 `mask_group`）對應的圖庫。
+    pub fn from_sht(g: ShtGroup) -> Lib {
+        match g {
+            ShtGroup::Bh1 => Lib::Bh1,
+            ShtGroup::Bh2 => Lib::Bh2,
+            ShtGroup::Bh4 => Lib::Bh4,
+            ShtGroup::Sht1 => Lib::Sht1,
+            ShtGroup::Sht2 => Lib::Sht2,
+            ShtGroup::Sht3 => Lib::Sht3,
+            ShtGroup::Sht4 => Lib::Sht4,
+            ShtGroup::Sht5 => Lib::Sht5,
+        }
+    }
+
+    pub fn from_beg(g: BegGroup) -> Lib {
+        match g {
+            BegGroup::Beg1 => Lib::Beg1,
+            BegGroup::J1 => Lib::J1,
+            BegGroup::J2 => Lib::J2,
+            BegGroup::J3 => Lib::J3,
+            BegGroup::J4 => Lib::J4,
+        }
+    }
+}
+
+/// 依場景預載的圖庫與調色盤變體。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdSet {
+    /// 標題、開場動畫與選單：`MY`、`BEG1`。
+    Title,
+    /// 第 1 至 4 關：`MY`、該關的 `SHT`、背景（`BH`，第三關是 `MAP`）。
+    Stage(u8),
+    /// 關間過場 `J1` 至 `J4`（參數 1 至 4）。
+    Cutscene(u8),
+    /// 片尾：`MY`、`SHT5`。
+    Ending,
+}
+
+impl HdSet {
+    /// 場景用到的圖庫。不認得的關卡編號回傳空。
+    pub fn libs(self) -> Vec<Lib> {
+        match self {
+            HdSet::Title => vec![Lib::My, Lib::Beg1],
+            HdSet::Stage(1) => vec![Lib::My, Lib::Sht1, Lib::Bh1],
+            HdSet::Stage(2) => vec![Lib::My, Lib::Sht2, Lib::Bh2],
+            HdSet::Stage(3) => vec![Lib::My, Lib::Sht3, Lib::Map],
+            HdSet::Stage(4) => vec![Lib::My, Lib::Sht4, Lib::Bh4],
+            HdSet::Cutscene(n @ 1..=4) => vec![Lib::My, [Lib::J1, Lib::J2, Lib::J3, Lib::J4][n as usize - 1]],
+            HdSet::Ending => vec![Lib::My, Lib::Sht5],
+            _ => Vec::new(),
+        }
+    }
+
+    /// 場景用到的調色盤名稱（`PALETTES`）。第三關的 DAC 表與 `stage2_c` 相同，辨識結果是 `stage2_c`。
+    pub fn palettes(self) -> &'static [&'static str] {
+        match self {
+            HdSet::Title => &["title_d", "title_e", "menu", "beg1_a", "beg1_b"],
+            HdSet::Stage(1) => &["stage1", "stage1_boss"],
+            HdSet::Stage(2) => &["stage2", "stage2_b", "stage2_c"],
+            HdSet::Stage(3) => &["stage2_c"],
+            HdSet::Stage(4) => &["stage4"],
+            HdSet::Cutscene(1) => &["j1"],
+            HdSet::Cutscene(2) => &["j2"],
+            HdSet::Cutscene(3) => &["j3"],
+            HdSet::Cutscene(4) => &["j4"],
+            HdSet::Ending => &["ending_a", "ending_b"],
+            _ => &[],
         }
     }
 }
@@ -68,13 +195,13 @@ pub struct HdAssets {
 }
 
 impl HdAssets {
-    /// 開啟 HD 資料夾。只檢查它是目錄且至少有 `MY`、`SHT1`、`BH1` 其中一個子目錄，圖片到用時才讀。
+    /// 開啟 HD 資料夾。只檢查它是目錄且至少有一個圖庫子目錄（`Lib::ALL` 的名稱），圖片到用時才讀。
     pub fn open(dir: &Path) -> Result<HdAssets, String> {
         if !dir.is_dir() {
             return Err(format!("HD 資料夾不存在或不是目錄：{}", dir.display()));
         }
-        if !["MY", "SHT1", "BH1"].iter().any(|l| dir.join(l).is_dir()) {
-            return Err(format!("{} 底下沒有 MY、SHT1、BH1 任何一個圖庫目錄", dir.display()));
+        if !Lib::ALL.iter().any(|l| dir.join(l.name()).is_dir()) {
+            return Err(format!("{} 底下沒有 MY、SHT1 等任何一個圖庫目錄", dir.display()));
         }
         Ok(HdAssets {
             dir: dir.to_path_buf(),
@@ -168,7 +295,7 @@ impl HdAssets {
         self.fallback_img.get(&fkey).cloned().flatten()
     }
 
-    /// 取遮罩。`lib` 只會是 `My` 或 `Sht1`。
+    /// 取遮罩。`lib` 要有遮罩區段（`MY`、`SHT1` 至 `SHT5`），沒有的庫回傳 `None`。
     pub fn mask(&mut self, lib: Lib, index: u16, assets: &Assets) -> Option<Arc<HdMask>> {
         let go = lib.go(assets);
         let it = go.mask.as_ref()?.get(index as usize)?;
@@ -188,9 +315,6 @@ impl HdAssets {
         self.fallback_mask.get(&key).cloned().flatten()
     }
 }
-
-/// 預載的調色盤變體：第一關本體與頭目戰（`PALETTES` 的名稱）。
-const PRELOAD_PALETTES: [&str; 2] = ["stage1", "stage1_boss"];
 
 /// 預載工作的種類。
 #[derive(Clone, Copy)]
@@ -222,21 +346,31 @@ fn read_png_file(dir: &Path, job: &Job) -> Result<png::Image, String> {
 }
 
 impl HdAssets {
-    /// 預載第一關會用到的 HD 檔：`MY`、`SHT1`、`BH1` 每個圖庫項的基本圖、`stage1` 與 `stage1_boss` 調色盤變體
-    /// （檔案存在才算），以及 `MY`、`SHT1` 的遮罩。解碼結果進快取，之後 `image`、`mask` 直接命中，
-    /// 缺圖與尺寸不符照常記進 `missing`。已在快取裡的不重做。
+    /// 預載第一關會用到的 HD 檔，等於 `preload_set(HdSet::Stage(1))`：`MY`、`SHT1`、`BH1` 每個圖庫項的基本圖、
+    /// `stage1` 與 `stage1_boss` 調色盤變體（檔案存在才算），以及 `MY`、`SHT1` 的遮罩。
+    /// 解碼結果進快取，之後 `image`、`mask` 直接命中，缺圖與尺寸不符照常記進 `missing`。已在快取裡的不重做。
     ///
     /// `threads` 個執行緒平行讀檔解碼（至少 1）。回傳 `(成功解碼的檔數, 解碼後 RGBA 與遮罩的位元組數)`。
     /// 可以在背景執行緒呼叫，完成後再把 `HdAssets` 交給 `LayerSink::new`。
     pub fn preload(&mut self, assets: &Assets, threads: usize) -> (usize, usize) {
-        let pal_idx: Vec<u16> = PRELOAD_PALETTES
+        self.preload_set(assets, HdSet::Stage(1), threads)
+    }
+
+    /// 依場景預載，內容見 `HdSet`。可以對不同場景連續呼叫，已在快取裡的不重做。
+    pub fn preload_set(&mut self, assets: &Assets, set: HdSet, threads: usize) -> (usize, usize) {
+        self.preload_libs(assets, &set.libs(), set.palettes(), threads)
+    }
+
+    /// 預載指定圖庫的基本圖、遮罩與指定調色盤名稱的變體，細節同 `preload`。
+    pub fn preload_libs(&mut self, assets: &Assets, libs: &[Lib], palettes: &[&str], threads: usize) -> (usize, usize) {
+        let pal_idx: Vec<u16> = palettes
             .iter()
             .filter_map(|n| PALETTES.iter().position(|p| p.0 == *n))
             .map(|i| i as u16)
             .collect();
         // 第一階段：列出要做的檔。
         let mut jobs: Vec<Job> = Vec::new();
-        for lib in [Lib::My, Lib::Sht1, Lib::Bh1] {
+        for &lib in libs {
             let go = lib.go(assets);
             for (index, it) in go.planes[0].iter().enumerate() {
                 let index = index as u16;
@@ -416,11 +550,10 @@ mod tests {
         std::fs::write(d.join("MY/masks/0000.png"), solid_png(32, 8, [200, 200, 200, 255])).unwrap();
         std::fs::write(d.join("MY/variants/stage1_boss/0000.png"), solid_png(32, 8, [9, 9, 9, 255])).unwrap();
         let bank = || [vec![item(2, 1, &[0, 0])], vec![item(2, 1, &[0, 0])], vec![item(2, 1, &[0, 0])], vec![item(2, 1, &[0, 0])]];
-        let empty = || [vec![], vec![], vec![], vec![]];
         let assets = Assets {
             my: GoFile { mask: Some(vec![item(2, 1, &[0xFF, 0xFF])]), planes: bank() },
             sht1: GoFile { mask: None, planes: bank() },
-            bh1: GoFile { mask: None, planes: empty() },
+            ..Assets::empty()
         };
         let mut hd = HdAssets::open(&d).unwrap();
         // MY 的基本圖、遮罩、stage1_boss 變體各一個；SHT1 的圖沒有檔，列為缺圖；SHT1 沒有 stage1 變體檔是常態。

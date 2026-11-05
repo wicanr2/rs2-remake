@@ -1,18 +1,19 @@
 //! 主迴圈：視窗模式（SDL 事件、固定步長、補間顯示）與 `--headless-steps`（同一段步進與繪製程式，沒有事件）。
 
 use crate::args::{Args, StartArg, ToggleName};
+use crate::audio::{Output, WavOut};
 use crate::controls::{Action, Controls};
 use crate::input::{InputMapper, KeyResult};
 use crate::pacer::Pacer;
-use crate::session::{Outcome, Session, ViewOpts};
+use crate::session::{Begin, Outcome, Session, ViewOpts};
 use crate::settings::{self, Settings};
 use crate::toolbar::bar_height;
 use crate::view::{Presenter, ShotInfo, window_size};
+use rs2_audio::Engine;
 use rs2_core::{Fixes, Start};
 use rs2_gfx::{Assets, HdAssets};
 use rs2_trace::{Inputs, load_inputs, parse_sc};
 use sdl2::event::{Event, WindowEvent};
-use sdl2::keyboard::Scancode;
 use sdl2::mouse::MouseButton;
 use sdl2::render::WindowCanvas;
 use sdl2::video::FullscreenType;
@@ -94,11 +95,17 @@ fn make_canvas(video: &sdl2::VideoSubsystem, w: u32, h: u32) -> Result<(WindowCa
     }
 }
 
-fn start_of(a: &Args) -> Start {
+fn begin_of(a: &Args) -> Begin {
     match a.start {
-        StartArg::NewGame => Start::NewGame { difficulty: None },
-        StartArg::Demo => Start::Demo,
+        StartArg::Title => Begin::Title,
+        StartArg::NewGame => Begin::Stage1(Start::NewGame { difficulty: None }),
+        StartArg::Demo => Begin::Stage1(Start::Demo),
     }
+}
+
+fn make_engine(inputs: &Inputs) -> Result<Engine, String> {
+    let get = |n: &str| inputs.files.get(n).ok_or_else(|| format!("缺 {n}"));
+    Engine::new(get("A.MIX")?, get("B.MIX")?)
 }
 
 fn prepare(args: Args) -> Result<Ctx, String> {
@@ -153,7 +160,7 @@ pub fn run(args: Args) -> Result<i32, String> {
 
 fn build_session(cx: &Ctx, hd: Option<HdAssets>, view: ViewOpts) -> Session {
     let fixes = if cx.args.original_bugs { Fixes::NONE } else { Fixes::ALL };
-    Session::new(&cx.inputs, cx.assets.clone(), hd, start_of(&cx.args), fixes, view)
+    Session::new(&cx.inputs, cx.assets.clone(), hd, begin_of(&cx.args), fixes, view)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +300,11 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     let mut stats = Stats::default();
     let mut shot_ok = true;
     let t_all = Instant::now();
-    let mut stop_reason = "步數用完";
+    let mut stop_reason = "步數用完".to_string();
+    let mut wav = match &cx.args.wav_out {
+        Some(_) => Some(WavOut::new(make_engine(&cx.inputs)?)),
+        None => None,
+    };
     for _ in 0..steps {
         let done = session.steps();
         // 第 N 步之後的切換：在 steps == N 時、下一步之前套用。
@@ -310,6 +321,12 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         let t0 = Instant::now();
         let outcome = session.step(sc);
         stats.step(t0.elapsed().as_micros() as u64);
+        if let Some(w) = &mut wav {
+            for m in session.take_audio() {
+                w.send(&m);
+            }
+            w.advance(session.ticks());
+        }
         hashes.push(session.dseg_hash());
         let n = session.steps();
         // 每步各畫一次 alpha 0.5 與 1.0（補間關閉時 alpha 沒有作用，但仍走同一段程式）。
@@ -330,19 +347,16 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
             }
         }
         log_missing(&mut session);
-        match outcome {
-            Outcome::Continue | Outcome::Restarted => {}
-            Outcome::Cleared => {
-                stop_reason = "Exit::Clear（過關）";
-                break;
-            }
-            Outcome::Quit => {
-                stop_reason = "Exit::Quit";
-                break;
-            }
+        if let Outcome::Ended(e) = outcome {
+            stop_reason = format!("{e:?}");
+            break;
         }
     }
     eprintln!("[headless] 結束：{stop_reason}，共 {} 步，{:.2} 秒", session.steps(), t_all.elapsed().as_secs_f64());
+    if let (Some(w), Some(p)) = (&wav, &cx.args.wav_out) {
+        w.write(p)?;
+        eprintln!("[headless] 音訊寫到 {}", p.display());
+    }
     let (a1, a2) = session.anomalies();
     eprintln!("[headless] 繪製異常計數 VgaSink {a1}、LayerSink {a2}，調色盤 {:?}", session.palette_name());
     stats.report();
@@ -430,6 +444,17 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
     let hd = finish_hd(hd_handle)?;
     let mut session = build_session(&cx, hd, ctl.view());
     log_missing(&mut session);
+    let output = if cx.args.no_audio {
+        None
+    } else {
+        match sdl.audio().and_then(|sys| Output::open(&sys, make_engine(&cx.inputs)?)) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                eprintln!("[audio] 沒有聲音：{e}");
+                None
+            }
+        }
+    };
 
     let mut pump = sdl.event_pump()?;
     let mut mapper = InputMapper::new();
@@ -456,20 +481,11 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
                 break;
             }
         }
-        let mut restart_requested = false;
         for ev in pump.poll_iter() {
             let t_us = ticks_to_us(timer.performance_counter(), freq);
             match ev {
                 Event::Quit { .. } => break 'main,
                 Event::KeyDown { scancode: Some(sc), repeat, .. } => {
-                    // 過關畫面：Enter 重新開始，這個 Enter 不送進遊戲。其他鍵照常記錄，重新開始後的第一步才送，
-                    // 這樣遊戲的按鍵表（`Dseg` 會沿用）和實體鍵盤的狀態一致，不會殘留按住的鍵。
-                    if session.is_cleared() && matches!(sc, Scancode::Return | Scancode::KpEnter) {
-                        if !repeat {
-                            restart_requested = true;
-                        }
-                        continue;
-                    }
                     if let KeyResult::Hotkey(h) = mapper.key_down(sc, repeat, t_us) {
                         do_action(h.into(), &mut ctl, &mut session, &mut canvas, &cx.cfg_dir);
                         dirty = true;
@@ -494,66 +510,53 @@ fn run_window(cx: Ctx) -> Result<i32, String> {
         }
 
         let now = timer.performance_counter();
-        if session.is_cleared() {
-            // 遊戲停著：不產生自動重複，按鍵與放開照樣累積。
-            if restart_requested {
-                session.restart();
-                pacer.reset(now);
-                dirty = true;
+        mapper.poll(ticks_to_us(now, freq));
+        pacer.update(now);
+        while pacer.take_step() {
+            let idx = session.steps() as usize;
+            let sc: Vec<u8> = match cx.replay.get(idx) {
+                Some(r) => {
+                    mapper.discard_queue();
+                    r.clone()
+                }
+                None => {
+                    if replay_note {
+                        eprintln!("[replay] 收據用完，改回鍵盤輸入（第 {idx} 步起）");
+                        replay_note = false;
+                    }
+                    mapper.take()
+                }
+            };
+            if cx.args.record.is_some() {
+                let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
+                recorded.push(format!("{{\"n\":{idx},\"sc\":[{}]}}", codes.join(",")));
             }
-        } else {
-            mapper.poll(ticks_to_us(now, freq));
-            let n = pacer.advance(now);
-            for _ in 0..n {
-                let idx = session.steps() as usize;
-                let sc: Vec<u8> = match cx.replay.get(idx) {
-                    Some(r) => {
-                        mapper.discard_queue();
-                        r.clone()
-                    }
-                    None => {
-                        if replay_note {
-                            eprintln!("[replay] 收據用完，改回鍵盤輸入（第 {idx} 步起）");
-                            replay_note = false;
-                        }
-                        mapper.take()
-                    }
-                };
-                if cx.args.record.is_some() {
-                    let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
-                    recorded.push(format!("{{\"n\":{idx},\"sc\":[{}]}}", codes.join(",")));
-                }
-                let t0 = Instant::now();
-                let outcome = session.step(&sc);
-                stats.step(t0.elapsed().as_micros() as u64);
-                if cx.args.hash_out.is_some() {
-                    hashes.push(session.dseg_hash());
-                }
-                dirty = true;
-                match outcome {
-                    Outcome::Continue => {}
-                    Outcome::Restarted => {
-                        eprintln!("[game] 全滅或被打斷，重新開始（第 {} 步）", session.steps());
-                    }
-                    Outcome::Cleared => {
-                        eprintln!("[game] 第一關過關（第 {} 步），按 Enter 重新開始", session.steps());
-                        break;
-                    }
-                    Outcome::Quit => {
-                        eprintln!("[game] Ctrl+Q 離開（第 {} 步）", session.steps());
-                        break 'main;
-                    }
+            let t0 = Instant::now();
+            let outcome = session.step(&sc);
+            pacer.set_next(session.ticks());
+            stats.step(t0.elapsed().as_micros() as u64);
+            for m in session.take_audio() {
+                if let Some(o) = &output {
+                    o.send(m);
                 }
             }
-            log_missing(&mut session);
+            if cx.args.hash_out.is_some() {
+                hashes.push(session.dseg_hash());
+            }
+            dirty = true;
+            if let Outcome::Ended(e) = outcome {
+                eprintln!("[game] 遊戲結束 {e:?}（第 {} 步）", session.steps());
+                break 'main;
+            }
         }
+        log_missing(&mut session);
 
         if pending_shot.is_none() {
             if let Some(i) = shots.iter().position(|(n, _)| *n <= session.steps()) {
                 pending_shot = Some(shots.remove(i));
             }
         }
-        let animating = ctl.settings.tween && !session.is_cleared();
+        let animating = ctl.settings.tween;
         if dirty || animating || pending_shot.is_some() {
             // 存圖固定用 alpha 1.0：畫出剛跑完的那一步。
             let alpha = if pending_shot.is_some() { 1.0 } else { pacer.alpha() };

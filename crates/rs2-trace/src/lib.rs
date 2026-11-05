@@ -1,32 +1,43 @@
 //! 無視窗跑重播：輸入檔驗證、與 dosgolem 同格式的逐幀 JSONL、與收據比對。
 //! 欄位定義見 `docs/re/10-dynamic-receipts.md` 第 8.3 節，順序與 `cmd/rs2dyn/trace_full.go` 相同。
+//! 全流程對拍（等待點收據）在 [`wait`]。
 
-use rs2_core::{Game, a};
+pub mod wait;
+
+use rs2_core::{Game, GameFiles, a};
 use rs2_formats::{EXPECTED, UNPACKED_SHA256, check_hash, unpack_s_exe};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 pub struct Inputs {
+    /// 解包後的 `S.EXE` 映像。
     pub image: Vec<u8>,
     pub dm1: Vec<u8>,
+    /// 規格 002 列的全部檔案（`EXPECTED`），含 `S.EXE` 的原始位元組，鍵是檔名。
+    pub files: BTreeMap<String, Vec<u8>>,
 }
 
-/// 讀原版目錄並驗雜湊。任何一個不符就回傳錯誤，錯誤訊息寫出檔名與預期雜湊。
+impl Inputs {
+    /// 交給 `Game::from_snapshot` 的檔案：解包映像、兩份展示錄影、第三關地圖。
+    pub fn game_files(&self) -> GameFiles {
+        let get = |n: &str| self.files.get(n).cloned().unwrap_or_default();
+        GameFiles { image: self.image.clone(), dm1: get("DM1.LCK"), dm2: get("DM2.LCK"), scn: get("SHT.SCN"), scr: get("SHT.SCR") }
+    }
+}
+
+/// 讀原版目錄並驗雜湊。`EXPECTED` 的每個檔案都要在，任何一個不符就回傳錯誤，錯誤訊息寫出檔名與預期雜湊。
 pub fn load_inputs(dir: &Path) -> Result<Inputs, String> {
-    let mut exe = Vec::new();
-    let mut dm1 = Vec::new();
+    let mut files = BTreeMap::new();
     for (name, want) in EXPECTED {
         let data = std::fs::read(dir.join(name)).map_err(|e| format!("讀不到 {name}：{e}"))?;
         check_hash(name, &data, want)?;
-        match name {
-            "S.EXE" => exe = data,
-            "DM1.LCK" => dm1 = data,
-            _ => {}
-        }
+        files.insert(name.to_string(), data);
     }
-    let image = unpack_s_exe(&exe).map_err(|e| e.to_string())?;
+    let image = unpack_s_exe(&files["S.EXE"]).map_err(|e| e.to_string())?;
     check_hash("解包映像", &image, UNPACKED_SHA256)?;
-    Ok(Inputs { image, dm1 })
+    let dm1 = files["DM1.LCK"].clone();
+    Ok(Inputs { image, dm1, files })
 }
 
 fn kv(s: &mut String, k: &str, v: u32) {

@@ -1,0 +1,73 @@
+# 全流程對拍隨機輸入 stage=2 profile=spread seed=3 frames=1133。tools/dos/gen_fuzz.py wt 產生，不要手改。
+# 第 2 關入口開始，先跑 5 筆追蹤不送輸入，之後 poke 與 play now 交錯；poke 由 rs2dyn 記進 wait-wt_fz2-spread-3.pokes。
+include /tools-dos/scenarios/to-s2.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_fz2-spread-3
+trace fz full
+untiltrace 5 400_000_000
+pokew 0x1E6B2 0x1
+pokew 0x1E6B4 0x2
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+pokew 0x273A5 0x59
+pokew 0x1DAA9 0x53
+play now 10*10 00 10*2 30 10*11 30 10*4 30 10*5 15*2 35 15*3 35 15*4 16*3 06 36 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 16 06 16 32 12*5 32 12 02 12*7 32 12*9 02 12 02 12 32 12*9 32 10*3 19*4 1A*3 3A 1A*7 3A 1A*4 0A 1A*4 3A 1A*2 13*2 19*2 09 19 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 19*2 10*3 30 10*6 30 10*2 00*2 10*2 20 10*3 14*8 34 10*2 1A*5 0A*2 34 14*2 04 14*3 34 14*2 04 30 10*7 30 10 16*8 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 16*6 26 16*5 36 16*2 1A*2 3A 0A 1A 12*3 19*5 09 19*2 39 19*3 39 09 19*3 39 19*6 09 19*8 31 11*3 10*3 1A*3 18 38 18*3 08 18*4 08*2 18*3 38 18*8 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 30 10*2 00 10*2 14*2 10*5 30 00*2 10*5 00 10*3 30 00 10*9 00 10*3 18 38 18*2 08 38 18*6 14*3 34 14 13*2 03 13*3 33 13*3 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 13 33 0A 1A*9 0A 1A 2A 0A 1A*4 10*2 30 00 19*8 34 14*6 19*5 39 19*8 39 19*4 09 19 39 09 19*2 39 19*4 29 19*6 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 19 09 19 10*4 30 10 00 10*7 00 11*5 31 01 11*7 31 11*6 21 11*8 01 31 11*4 08 18*5 10*2 30 10 11 01 11*2 31 11 10*2 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 10*6 12 02 12 32 12*3 10*5 30 11*6 01 31 14*10 11*2 31 11*5 01 11*3 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 11*6 31 11*3 01 11 14*4 34 14*3 11*8 19 09 19 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 39 19 09 19 39 19*5 14 04 14*2 04 14*4 24 14*8 35 15*10 10*3 30 10*3 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 20 10 00 10 11*3 01 11*7 31 11*11 01 00 30 10*8 30 1C*8 3C 1C*6 1F*4 3F 16*2 06*2 36 16*4 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 16*2 10*4 30 10*8 00 30 10*4 30 10*7 30 10*3 30 10*4 30 10*4 30 10*3 30 10 1A*2 10*6 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 10 30 10*2 00 10*5 00 10*6 20 10*3 00 10 00 10*6 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 10 00 30 13*4 10*4 30 10 00*2 10*2 30 10*5 30 10*3 20 10*2 00 10*6 30 00 10*7 30 10*4 30 10*10 30 10*4 30 10*11 15*2 35 15*2 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 15*3 10*3 30 10*6 35 15*9 35 15*9 35 15*7 05 15*5 35 15*4 00 10*3 30 10*9 00 10*4 30 10*5 15*6 35 15*3 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 15*4 35 15*9 35 15*3 18*7 28 18*9 10 30 10 00 10 16*3 36 16*3 08 18 08 18 08 18 38 18*3 1A*7 13*4 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x53
+play now 13 33 13*6 03 13*2 03 13 33 13*2 03 13*8 03 13 03 33 13*3 12*2 02 12 11*6 31 11 18*3 28 16*2 06 16*2 06 !J3.GO
+skipif open:J3.GO done
+pokew 0x1DAA9 0x4B
+play now 16*6 19*3 30 10*3 30 10*11 00 30 10*2 00 10*3 09 19*5 09 39 19 09 19 1A*3 0A 1A*2 2A !J3.GO
+skipif open:J3.GO done
+label done
+secs 2
+trace off
+waittrace off

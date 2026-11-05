@@ -1,0 +1,27 @@
+# 第二關幀 260 的卡死條件：到 sub_1316C（131C9h）時 byte_1CFAA 還是 N。
+# 正常遊戲第一次被打中就會把它寫成 Y，這裡直接把它寫回 N。卡住時最後的等待會逾時，幀計數停在 261。
+# 對照組不寫回，用 tools/dos/scenarios/hang-s2-ctrl.txt。
+include /tools-dos/scenarios/prefix-to-title.txt
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+chord ctrl+c 0.4 0.1
+untilopen J2.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT2.GO 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+until16 0x1CFE2 250 800_000_000
+poke 0x1CFAA 4E
+log === 等幀 300 ===
+until16 0x1CFE2 300 300_000_000
+log === 到了幀 300 ===

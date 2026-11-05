@@ -9,6 +9,8 @@
 //! | L4 負對照 | x 加 1、丟命令，L1 的比對要失敗 |
 //! | L5 HD 冒煙 | 輸出 PNG 到 `$RS2_OUT/shots/` 給人判讀，列出缺圖 |
 //! | L6 效能 | `render` 與 `push_frame` 的耗時 |
+//! | L8 全流程等價 | 全部 `wt_*` 收據，原版圖、不補間，與 `VgaSink::render_page(畫頁)` 逐像素相同；L8b 是補間版（alpha 0.5 渲染後 alpha 1.0 仍相同） |
+//! | L9 全流程 HD | 全部 `wt_*` 收據用 HD 圖跑，`missing_hd()` 為空 |
 
 use rs2_core::{BlitCmd, DrawCmd, Dseg, Fixes, Game, Input, ObjId, Op, Pool, Start};
 use rs2_gfx::pal::{PALETTES, fingerprint};
@@ -269,10 +271,7 @@ struct Cand {
 fn dims(a: &Assets, c: &BlitCmd) -> Option<(i32, i32)> {
     let go = match c.op {
         Op::S18CE2 | Op::S18EB6 | Op::S18DCC => &a.my,
-        _ => match c.sht_group {
-            rs2_core::ShtGroup::Bh1 => &a.bh1,
-            rs2_core::ShtGroup::Sht1 => &a.sht1,
-        },
+        _ => a.sht(c.sht_group),
     };
     let it = go.planes[0].get(c.index as usize)?;
     Some((it.stride as i32 * 8, it.height as i32))
@@ -364,6 +363,9 @@ fn prev_template(op: Op) -> BlitCmd {
         text_x: 0,
         text_y: 0,
         sht_group: rs2_core::ShtGroup::Sht1,
+        mask_group: rs2_core::ShtGroup::Sht1,
+        beg_group: rs2_core::BegGroup::Beg1,
+        stride_reg: None,
         obj: None,
     }
 }
@@ -733,4 +735,541 @@ fn l7_hd_files_decode_and_match_original_sizes() {
     println!("L7 不符：{bad:?}");
     assert!(decoded > 300 && with_alpha > 100, "比對筆數過少");
     assert!(bad.is_empty(), "{bad:?}");
+}
+
+// ---------------------------------------------------------------------------
+// L8、L9：全流程（規格 002 B6）
+// ---------------------------------------------------------------------------
+//
+// 餵法與 `wait_replay` 相同：`rs2_trace::wait::replay_observed` 就是 `replay_with` 的同一份程式碼加一個觀察者，
+// 輸入（掃描碼、poke、輪詢排程）、快照入口與逐筆比對都沒有另寫一份。收據必須每筆通過（`Verdict::Pass`），
+// 觀察者看到的命令串才算是「通過 `wait_replay` 的那一批」。
+//
+// 起點：兩個接收端都用收據的入口平面與 DAC（`load_snapshot`）、BIOS 字型（或不設，見各測試）與 `word_2687E` 殘值。
+// 兩個接收端都不設 `set_bank_dump`：片尾的越界圖號兩邊都不畫（各記一次異常，數量要相同）。
+// 環境變數 `RS2_WAIT=子字串` 只跑名稱含它的收據（同 `tools/dos/wait_test.sh`）。
+
+use rs2_core::a as ds_addr;
+use rs2_trace::wait::{Receipt, ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
+use rs2_trace::Inputs;
+use std::collections::BTreeMap;
+
+fn receipt_dirs() -> Vec<PathBuf> {
+    let root = env_path("RS2_DOSRUN");
+    let only = std::env::var("RS2_WAIT").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .unwrap_or_else(|e| panic!("讀不到 {}：{e}", root.display()))
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("wt_") && n.contains(&only)))
+        .collect();
+    dirs.sort();
+    assert!(!dirs.is_empty(), "{} 下沒有 wt_*{only}* 收據", root.display());
+    dirs
+}
+
+fn entry_planes(rc: &Receipt) -> ([&[u8]; 4], [u8; 768]) {
+    let planes = [&rc.planes[0][..], &rc.planes[1][..], &rc.planes[2][..], &rc.planes[3][..]];
+    let dac: [u8; 768] = rc.dac[..].try_into().expect("768 位元組");
+    (planes, dac)
+}
+
+fn entry_stride(rc: &Receipt) -> u16 {
+    let o = ds_addr(0x2687E) as usize;
+    u16::from_le_bytes([rc.entry_ds[o], rc.entry_ds[o + 1]])
+}
+
+fn flow_inputs() -> (Inputs, Assets) {
+    let dir = env_path("RS2_ORIG");
+    (load_inputs(&dir).expect("載入原版"), Assets::load(&dir).expect("載入圖庫"))
+}
+
+/// 全位址空間：`LayerSink` 的索引色記憶體與 `VgaSink` 四個平面不同的像素數，與第一個不同的像素位址（位元組位址 * 8 + 位元）。
+fn mem_diff(vga: &VgaSink, lay: &LayerSink) -> (usize, Option<usize>) {
+    let px = lay.index_memory();
+    assert_eq!(px.len(), 0x10000 * 8);
+    let (mut bad, mut first) = (0usize, None);
+    for a in 0..0x10000usize {
+        let b = [vga.plane(0)[a], vga.plane(1)[a], vga.plane(2)[a], vga.plane(3)[a]];
+        for bit in 0..8usize {
+            let sh = 7 - bit;
+            let color = ((b[0] >> sh) & 1) | (((b[1] >> sh) & 1) << 1) | (((b[2] >> sh) & 1) << 2) | (((b[3] >> sh) & 1) << 3);
+            if px[a * 8 + bit] != color {
+                bad += 1;
+                first.get_or_insert(a * 8 + bit);
+            }
+        }
+    }
+    (bad, first)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Flow {
+    /// 不補間，alpha 1.0。
+    Exact,
+    /// 補間開啟：每步先在 alpha 0、0.25、0.5、0.75 渲染，再比 alpha 1.0。
+    Interp,
+}
+
+/// 一對接收端與它的比對結果。
+struct Pair {
+    label: &'static str,
+    vga: VgaSink,
+    lay: LayerSink,
+    opts: RenderOpts,
+    frames: usize,
+    empty: usize,
+    px: usize,
+    bad_px: usize,
+    first_bad: Option<usize>,
+    renders: usize,
+    mem_bad: usize,
+    mem_first_bad: Option<(usize, usize)>,
+    detail: Vec<String>,
+    /// 疊加模式（沒有 BIOS 字型而且 `show_counter`）：`LayerSink` 的幀計數只在輸出時疊上，不寫進記憶體，
+    /// 這一幀沒有幀計數命令時不顯示，`VgaSink` 則顯示兩頁記憶體裡殘留的舊數字（`layer.rs` 的設計，
+    /// 單元測試 `frame_counter_is_an_overlay_and_never_enters_memory` 固定它）。所以這一對只要求計數矩形以外逐像素相同，
+    /// 矩形內的差異另計（`rect_px`）；索引色記憶體在矩形處必然不同，不比。
+    overlay: bool,
+    rect_px: usize,
+}
+
+/// 幀計數矩形：欄 `COUNTER_X`（12h）起 5 欄、列 `COUNTER_Y`（BFh）起 8 列。
+fn in_counter_rect(i: usize) -> bool {
+    let (x, y) = (i % 320, i / 320);
+    (0x12 * 8..0x12 * 8 + 40).contains(&x) && (0xBF..0xBF + 8).contains(&y)
+}
+
+impl Pair {
+    /// `font`：兩邊都設收據的 BIOS 字型（幀計數照原版永遠畫）。否則兩邊都不設，`counter` 決定幀計數畫不畫
+    /// （`VgaSink::show_counter` 與 `RenderOpts::show_counter` 同值）。
+    fn new(assets: &Assets, rc: &Receipt, label: &'static str, font: bool, counter: bool, flow: Flow) -> Pair {
+        let mut vga = VgaSink::new(assets.clone());
+        let mut lay = LayerSink::new(assets.clone(), None);
+        let (planes, dac) = entry_planes(rc);
+        vga.load_snapshot(planes, &dac);
+        lay.load_snapshot(planes, &dac);
+        if font {
+            vga.set_counter_font(&rc.font);
+            lay.set_counter_font(&rc.font);
+        }
+        vga.show_counter = counter;
+        vga.set_stride_reg(entry_stride(rc));
+        lay.set_stride_reg(entry_stride(rc));
+        let opts = RenderOpts { interpolate: flow == Flow::Interp, hd: false, show_counter: counter };
+        Pair {
+            label,
+            vga,
+            lay,
+            opts,
+            frames: 0,
+            empty: 0,
+            px: 0,
+            bad_px: 0,
+            first_bad: None,
+            renders: 0,
+            mem_bad: 0,
+            mem_first_bad: None,
+            detail: Vec::new(),
+            overlay: !font && counter,
+            rect_px: 0,
+        }
+    }
+
+    /// 一個事件（`n`：0 是初始化命令，之後是第 n 步）。`lay_draws` 是 `LayerSink` 收到的命令，
+    /// 正常等於 `draws`（`VgaSink` 收到的）；負對照才改它。
+    fn event(&mut self, n: usize, draws: &[DrawCmd], lay_draws: &[DrawCmd], flow: Flow, want: &mut [u8]) {
+        for c in draws {
+            self.vga.apply(c);
+        }
+        self.lay.push_frame(lay_draws);
+        if draws.is_empty() {
+            // `push_frame` 忽略空串，畫面維持上一幀，上一次已經比過。
+            self.empty += 1;
+            return;
+        }
+        if flow == Flow::Interp {
+            for al in [0.0, 0.25, 0.5, 0.75] {
+                let (img, w, h) = self.lay.render(al, self.opts);
+                assert_eq!((w, h, img.len()), (320, 200, 320 * 200 * 4));
+                self.renders += 1;
+            }
+        }
+        let page = self.lay.draw_page();
+        self.vga.render_page(page, want);
+        let opts = self.opts;
+        let (img, _, _) = self.lay.render(1.0, opts);
+        self.renders += 1;
+        let bad_at = |want: &[u8]| (0..320 * 200).filter(|&i| img[4 * i..4 * i + 3] != want[3 * i..3 * i + 3] || img[4 * i + 3] != 255).collect::<Vec<usize>>();
+        let all_bad = bad_at(want);
+        let (bad, in_rect): (Vec<usize>, Vec<usize>) = if self.overlay { all_bad.into_iter().partition(|&i| !in_counter_rect(i)) } else { (all_bad, Vec::new()) };
+        self.rect_px += in_rect.len();
+        self.frames += 1;
+        self.px += 320 * 200;
+        if !bad.is_empty() {
+            self.bad_px += bad.len();
+            if self.first_bad.is_none() {
+                self.first_bad = Some(n);
+                let i = bad[0];
+                let mut other = vec![0u8; 320 * 200 * 3];
+                self.vga.render_page(page ^ 0x8000, &mut other);
+                let other_bad = bad_at(&other).len();
+                let mut ops: BTreeMap<String, usize> = BTreeMap::new();
+                for d in draws {
+                    let k = match d {
+                        DrawCmd::Blit(b) => format!("{:?}", b.op),
+                        DrawCmd::SetDac { .. } => "SetDac".to_string(),
+                        DrawCmd::SetDacOne { .. } => "SetDacOne".to_string(),
+                        DrawCmd::VramFill { .. } => "VramFill".to_string(),
+                        DrawCmd::SetMapMask { .. } => "SetMapMask".to_string(),
+                    };
+                    *ops.entry(k).or_default() += 1;
+                }
+                self.detail.push(format!(
+                    "  [{}] 事件 {n}：{} 個像素不同，第一個在 ({}, {})，LayerSink {:?} VgaSink {:?}；畫頁 {page:04X}，換成另一頁與 LayerSink 不同 {other_bad} 像素；命令 {} 個：{:?}",
+                    self.label,
+                    bad.len(),
+                    i % 320,
+                    i / 320,
+                    &img[4 * i..4 * i + 4],
+                    &want[3 * i..3 * i + 3],
+                    draws.len(),
+                    ops
+                ));
+            }
+        }
+        if flow == Flow::Exact && !self.overlay {
+            let (mb, first) = mem_diff(&self.vga, &self.lay);
+            if mb > 0 {
+                self.mem_bad += mb;
+                if self.mem_first_bad.is_none() {
+                    self.mem_first_bad = Some((n, first.unwrap()));
+                }
+            }
+        }
+    }
+}
+
+/// 一份收據的結果。
+struct FlowRep {
+    name: String,
+    verdict: String,
+    pass: bool,
+    rows: usize,
+    total: usize,
+    events: usize,
+    cmds: usize,
+    pairs: Vec<Pair>,
+}
+
+type LayTweak<'a> = &'a dyn Fn(usize, &[DrawCmd]) -> Vec<DrawCmd>;
+
+fn run_flow(flow: Flow, pairs_spec: &[(&'static str, bool, bool)], inputs: &Inputs, assets: &Assets, rc: &Receipt, tweak: Option<LayTweak>) -> FlowRep {
+    let mut pairs: Vec<Pair> = pairs_spec.iter().map(|&(l, f, c)| Pair::new(assets, rc, l, f, c, flow)).collect();
+    let mut want = vec![0u8; 320 * 200 * 3];
+    let (mut events, mut cmds) = (0usize, 0usize);
+    let v = {
+        let mut obs = |ev: ReplayEvent| {
+            let draws = match ev {
+                ReplayEvent::Init(d) | ReplayEvent::Step(d) => d,
+                ReplayEvent::StepAt { .. } => return,
+            };
+            cmds += draws.len();
+            let lay_draws = tweak.map(|t| t(events, draws));
+            for p in pairs.iter_mut() {
+                p.event(events, draws, lay_draws.as_deref().unwrap_or(draws), flow, &mut want);
+            }
+            events += 1;
+        };
+        replay_observed(inputs, assets, rc, &ReplayOpts::default(), &mut obs)
+    };
+    let (verdict, pass) = match &v {
+        Verdict::Pass { rows } => (format!("通過 {rows} 筆"), *rows == rc.rows.len()),
+        other => (format!("{other:?}"), false),
+    };
+    FlowRep { name: rc.name.clone(), verdict, pass, rows: v.compared(), total: rc.rows.len(), events, cmds, pairs }
+}
+
+fn flow_report(title: &str, reps: &[FlowRep]) -> (usize, usize, usize) {
+    let (mut frames, mut px, mut bad) = (0usize, 0usize, 0usize);
+    for r in reps {
+        println!("{title} {}：收據 {}（{}/{} 筆），事件 {}，命令 {}", r.name, r.verdict, r.rows, r.total, r.events, r.cmds);
+        for p in &r.pairs {
+            println!(
+                "{title}   [{}] 比對 {} 幀（空串 {}）、{} 像素、不同 {} 像素{}，首個不同事件 {:?}，render {} 次；{}；異常 Layer {} Vga {}",
+                p.label,
+                p.frames,
+                p.empty,
+                p.px,
+                p.bad_px,
+                if p.overlay { format!("（計數矩形內另有 {} 像素不同，設計如此）", p.rect_px) } else { String::new() },
+                p.first_bad,
+                p.renders,
+                if p.overlay { "全位址空間索引色不比".to_string() } else { format!("全位址空間索引色不同 {} 像素（首個 {:?}）", p.mem_bad, p.mem_first_bad) },
+                p.lay.anomalies(),
+                p.vga.anomalies()
+            );
+            for d in &p.detail {
+                println!("{title}{d}");
+            }
+            frames += p.frames;
+            px += p.px;
+            bad += p.bad_px;
+        }
+    }
+    (frames, px, bad)
+}
+
+fn flow_assert(reps: &[FlowRep], mem: bool) {
+    let mut fails: Vec<String> = Vec::new();
+    for r in reps {
+        if !r.pass {
+            fails.push(format!("{}：收據沒有每筆通過：{}", r.name, r.verdict));
+        }
+        for p in &r.pairs {
+            if p.frames == 0 || p.px == 0 {
+                fails.push(format!("{} [{}]：比對筆數為 0", r.name, p.label));
+            }
+            if p.bad_px > 0 {
+                fails.push(format!("{} [{}]：與 VgaSink 不同 {} 像素，首個不同事件 {:?}", r.name, p.label, p.bad_px, p.first_bad));
+            }
+            if mem && p.mem_bad > 0 {
+                fails.push(format!("{} [{}]：全位址空間索引色與 VgaSink 不同 {} 像素，首個 {:?}", r.name, p.label, p.mem_bad, p.mem_first_bad));
+            }
+            if p.lay.anomalies() != p.vga.anomalies() {
+                fails.push(format!("{} [{}]：異常計數 Layer {} Vga {}", r.name, p.label, p.lay.anomalies(), p.vga.anomalies()));
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{} 項失敗：\n{}", fails.len(), fails.join("\n"));
+}
+
+/// B6：全流程收據，原版圖、不補間，`LayerSink` 與 `VgaSink::render_page(draw_page)` 逐像素相同。
+///
+/// 三對接收端同步比對：
+/// - `font`：設 BIOS 字型，幀計數照原版永遠畫（收據的實況）；
+/// - `nofont`：不設字型、幀計數不畫（`show_counter: false`）；
+/// - `counter`：不設字型、幀計數畫（`show_counter: true`，`LayerSink` 在輸出時疊上）。
+/// 另比整個 64 KB 位址空間（含暫存區與沒顯示的頁）的索引色與 `VgaSink` 四個平面，每個有命令的事件一次。
+#[test]
+#[ignore]
+fn l8_full_flow_equivalence() {
+    let (inputs, assets) = flow_inputs();
+    let t0 = Instant::now();
+    let mut reps = Vec::new();
+    for dir in receipt_dirs() {
+        let rc = load_receipt(&dir).expect("載入收據");
+        let t = Instant::now();
+        let r = run_flow(Flow::Exact, &[("font", true, false), ("nofont", false, false), ("counter", false, true)], &inputs, &assets, &rc, None);
+        println!("L8 {} 耗時 {:.1} 秒", r.name, t.elapsed().as_secs_f32());
+        reps.push(r);
+    }
+    let (frames, px, bad) = flow_report("L8", &reps);
+    println!("L8 合計：收據 {} 份，比對 {frames} 幀、{px} 像素、不同 {bad} 像素；耗時 {:.1} 秒", reps.len(), t0.elapsed().as_secs_f32());
+    assert!(frames > 0 && px > 0, "比對筆數為 0");
+    flow_assert(&reps, true);
+}
+
+/// B6 補間部分：補間開啟，每步先在 alpha 0、0.25、0.5、0.75 渲染，alpha 1.0 仍與 `VgaSink` 逐像素相同（L2 的全流程版）。
+#[test]
+#[ignore]
+fn l8b_full_flow_interpolation_does_not_change_the_next_frame() {
+    let (inputs, assets) = flow_inputs();
+    let t0 = Instant::now();
+    let mut reps = Vec::new();
+    for dir in receipt_dirs() {
+        let rc = load_receipt(&dir).expect("載入收據");
+        let t = Instant::now();
+        let r = run_flow(Flow::Interp, &[("font", true, false), ("counter", false, true)], &inputs, &assets, &rc, None);
+        println!("L8b {} 耗時 {:.1} 秒", r.name, t.elapsed().as_secs_f32());
+        reps.push(r);
+    }
+    let (frames, px, bad) = flow_report("L8b", &reps);
+    let renders: usize = reps.iter().flat_map(|r| r.pairs.iter()).map(|p| p.renders).sum();
+    println!("L8b 合計：收據 {} 份，比對 {frames} 幀、{px} 像素、不同 {bad} 像素，render {renders} 次；耗時 {:.1} 秒", reps.len(), t0.elapsed().as_secs_f32());
+    assert!(frames > 0 && px > 0 && renders >= frames * 5, "比對筆數為 0");
+    flow_assert(&reps, false);
+}
+
+/// HD 缺圖清單的一項：`SHT1/variants/stage1_boss/0033.png（尺寸 ...）` 拆成圖庫、調色盤變體、圖號。
+fn missing_key(m: &str) -> (String, String, String) {
+    let path = m.split('（').next().unwrap_or(m);
+    let parts: Vec<&str> = path.split('/').collect();
+    let lib = parts.first().copied().unwrap_or("?").to_string();
+    let idx = parts.last().copied().unwrap_or("?").trim_end_matches(".png").to_string();
+    let var = match parts.as_slice() {
+        [_, "variants", pal, _] => (*pal).to_string(),
+        [_, "masks", _] => "（遮罩）".to_string(),
+        _ => "（基本圖）".to_string(),
+    };
+    (lib, var, idx)
+}
+
+/// B6 HD 部分：全流程收據用 HD 圖跑，`missing_hd()` 的完整清單。
+///
+/// 每個事件都 `push_frame`（`hd::apply` 在這裡對每個命令查 HD 圖並記缺圖）。`render` 較貴，所以取樣：
+/// 每 `HD_RENDER_EVERY` 個事件、每次調色盤名稱改變、以及每份收據的最後一個事件各 render 一次（alpha 0.5 補間與 alpha 1.0 不補間
+/// 交替），檢查尺寸與非全黑。缺圖的偵測不受取樣影響，因為它只在 `push_frame` 內發生。
+/// 越界圖號（片尾第四關殘留實體的 SHT5 圖號 9）在 `HdAssets::image` 內因原版圖庫沒有該項而回傳 `None`，不查檔，也不算缺圖。
+const HD_RENDER_EVERY: usize = 24;
+
+#[test]
+#[ignore]
+fn l9_full_flow_hd_coverage() {
+    let hd_dir = env_path("RS2_HD");
+    let (inputs, assets) = flow_inputs();
+    let t0 = Instant::now();
+    let mut all_missing: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    let mut total_events = 0usize;
+    let mut total_renders = 0usize;
+    let mut palettes_seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut unnamed_frames = 0usize;
+    let mut fails: Vec<String> = Vec::new();
+    for dir in receipt_dirs() {
+        let rc = load_receipt(&dir).expect("載入收據");
+        let t = Instant::now();
+        let hd = HdAssets::open(&hd_dir).unwrap();
+        let mut lay = LayerSink::new(assets.clone(), Some(hd));
+        let (planes, dac) = entry_planes(&rc);
+        lay.load_snapshot(planes, &dac);
+        lay.set_stride_reg(entry_stride(&rc));
+        let (mut events, mut renders, mut last_pal) = (0usize, 0usize, None::<&'static str>);
+        let mut rc_palettes: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut rc_unnamed = 0usize;
+        let mut unnamed_span: Option<(usize, usize)> = None;
+        let mut bad_render: Vec<String> = Vec::new();
+        let v = {
+            let mut obs = |ev: ReplayEvent<'_>| {
+                let draws = match ev {
+                    ReplayEvent::Init(d) | ReplayEvent::Step(d) => d,
+                    ReplayEvent::StepAt { .. } => return,
+                };
+                lay.push_frame(draws);
+                let pal = lay.palette_name();
+                if !draws.is_empty() {
+                    match pal {
+                        Some(p) => *rc_palettes.entry(p).or_default() += 1,
+                        None => {
+                            rc_unnamed += 1;
+                            unnamed_span = Some(unnamed_span.map_or((events, events), |(a, _)| (a, events)));
+                        }
+                    }
+                }
+                let sample = !draws.is_empty() && (events % HD_RENDER_EVERY == 0 || pal != last_pal);
+                last_pal = pal;
+                if sample {
+                    let interp = (events / HD_RENDER_EVERY) % 2 == 0;
+                    let (img, w, h) = lay.render(if interp { 0.5 } else { 1.0 }, RenderOpts { interpolate: interp, hd: true, show_counter: false });
+                    if (w, h, img.len()) != (1280, 800, 1280 * 800 * 4) {
+                        bad_render.push(format!("事件 {events}：輸出尺寸 {w}x{h}"));
+                    }
+                    renders += 1;
+                }
+                events += 1;
+            };
+            replay_observed(&inputs, &assets, &rc, &ReplayOpts::default(), &mut obs)
+        };
+        // 最後一個事件的畫面。
+        let (img, w, h) = lay.render(1.0, RenderOpts { interpolate: false, hd: true, show_counter: false });
+        renders += 1;
+        let nonblack = img.chunks_exact(4).filter(|p| p[..3] != [0, 0, 0]).count();
+        let missing: Vec<String> = lay.missing_hd().to_vec();
+        println!(
+            "L9 {}：收據 {}，事件 {events}，render {renders} 次（最後一幀 {w}x{h}，非黑 {nonblack} 像素），載入 HD 檔 {} 個，缺圖 {} 項，耗時 {:.1} 秒；調色盤名稱的幀數 {:?}，未辨識 {rc_unnamed}（事件範圍 {unnamed_span:?}）",
+            rc.name,
+            match &v {
+                Verdict::Pass { rows } => format!("通過 {rows} 筆"),
+                other => format!("{other:?}"),
+            },
+            lay.loaded_hd().len(),
+            missing.len(),
+            t.elapsed().as_secs_f32(),
+            rc_palettes
+        );
+        for m in &missing {
+            println!("L9   缺：{m}");
+        }
+        if !matches!(v, Verdict::Pass { rows } if rows == rc.rows.len()) {
+            fails.push(format!("{}：收據沒有每筆通過：{v:?}", rc.name));
+        }
+        fails.extend(bad_render.into_iter().map(|b| format!("{}：{b}", rc.name)));
+        if nonblack == 0 {
+            fails.push(format!("{}：最後一幀 HD 全黑", rc.name));
+        }
+        for m in missing {
+            all_missing.entry(missing_key(&m)).or_default().push(format!("{} {m}", rc.name));
+        }
+        total_events += events;
+        total_renders += renders;
+        for (k, n) in rc_palettes {
+            *palettes_seen.entry(k).or_default() += n;
+        }
+        unnamed_frames += rc_unnamed;
+    }
+    println!("L9 合計：事件 {total_events}，render {total_renders} 次；耗時 {:.1} 秒", t0.elapsed().as_secs_f32());
+    println!("L9 全流程出現的調色盤名稱（幀數）：{palettes_seen:?}；未辨識 {unnamed_frames} 幀");
+    println!("L9 缺圖共 {} 項（圖庫, 調色盤變體, 圖號）：", all_missing.len());
+    for (k, who) in &all_missing {
+        println!("L9   {k:?}  <- {} 份收據：{:?}", who.len(), who.iter().map(|s| s.split(' ').next().unwrap_or("")).collect::<Vec<_>>());
+    }
+    assert!(total_events > 0 && total_renders > 0, "比對筆數為 0");
+    assert!(fails.is_empty(), "{} 項失敗：\n{}", fails.len(), fails.join("\n"));
+    assert!(all_missing.is_empty(), "HD 全流程缺圖 {} 項：{:?}", all_missing.len(), all_missing.keys().collect::<Vec<_>>());
+}
+
+/// 負對照：`LayerSink` 收到被改過的命令（一個 OR 圖形的 x 加 1、每 7 個命令丟 1 個、整個事件丟掉），
+/// 全流程的比對必須失敗；沒改的基準必須零差異。證明比對在全流程路徑上不是空轉。
+#[test]
+#[ignore]
+fn l8c_full_flow_negative_controls_fail() {
+    let (inputs, assets) = flow_inputs();
+    let rc = load_receipt(&env_path("RS2_DOSRUN").join("wt_stage2")).expect("載入收據");
+    let spec = [("font", true, false)];
+    let run = |tweak: Option<LayTweak>| run_flow(Flow::Exact, &spec, &inputs, &assets, &rc, tweak);
+
+    let base = run(None);
+    let b = &base.pairs[0];
+    println!("L8c 基準 {}：比對 {} 幀、不同 {} 像素", base.name, b.frames, b.bad_px);
+    assert!(base.pass && b.frames > 0 && b.bad_px == 0, "基準應零差異：{}", base.verdict);
+
+    // x 加 1（位元組，8 像素）：第 100 個事件之後第一個帶物件的 OR 圖形。
+    let hit = std::cell::Cell::new(None::<usize>);
+    let shift = |n: usize, d: &[DrawCmd]| -> Vec<DrawCmd> {
+        let mut v = d.to_vec();
+        if n >= 100 && hit.get().is_none() {
+            if let Some(DrawCmd::Blit(c)) = v.iter_mut().find(|x| matches!(x, DrawCmd::Blit(c) if c.op == Op::S18F5D && c.obj.is_some())) {
+                c.x = c.x.wrapping_add(1);
+                hit.set(Some(n));
+            }
+        }
+        v
+    };
+    let r = run(Some(&shift));
+    let p = &r.pairs[0];
+    println!("L8c x+1（第 {:?} 個事件）：不同 {} 像素，首個不同事件 {:?}", hit.get(), p.bad_px, p.first_bad);
+    assert!(hit.get().is_some(), "找不到可改的命令");
+    assert!(p.bad_px > 0, "x 加 1 卻沒有差異");
+    assert!(p.first_bad.unwrap() >= hit.get().unwrap(), "差異不應早於被改的那一步");
+
+    // 每 7 個命令丟 1 個。
+    let cnt = std::cell::Cell::new(0usize);
+    let drop7 = |_n: usize, d: &[DrawCmd]| -> Vec<DrawCmd> {
+        d.iter()
+            .filter(|_| {
+                cnt.set(cnt.get() + 1);
+                cnt.get() % 7 != 0
+            })
+            .copied()
+            .collect()
+    };
+    let r = run(Some(&drop7));
+    let p = &r.pairs[0];
+    println!("L8c 每 7 個丟 1 個：不同 {} 像素，首個不同事件 {:?}", p.bad_px, p.first_bad);
+    assert!(p.bad_px > 1000, "丟了命令卻幾乎沒有差異");
+
+    // 整個事件丟掉。
+    let drop_ev = |n: usize, d: &[DrawCmd]| -> Vec<DrawCmd> { if n == 150 { Vec::new() } else { d.to_vec() } };
+    let r = run(Some(&drop_ev));
+    let p = &r.pairs[0];
+    println!("L8c 丟掉第 150 個事件：不同 {} 像素，首個不同事件 {:?}", p.bad_px, p.first_bad);
+    assert!(p.bad_px > 0 && p.first_bad.unwrap() >= 150, "丟掉整個事件卻沒有差異");
 }

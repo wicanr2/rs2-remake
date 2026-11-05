@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "rs2-audio"
+version = "0.1.0"
+
+[[package]]
 name = "rs2-core"
 version = "0.1.0"
 dependencies = [
@@ -17,6 +21,7 @@ version = "0.1.0"
 name = "rs2-gfx"
 version = "0.1.0"
 dependencies = [
+ "rs2-audio",
  "rs2-core",
  "rs2-formats",
 ]
@@ -25,6 +30,7 @@ dependencies = [
 name = "rs2-trace"
 version = "0.1.0"
 dependencies = [
+ "rs2-audio",
  "rs2-core",
  "rs2-formats",
  "rs2-gfx",

@@ -192,6 +192,9 @@ mod tests {
             text_x: 0,
             text_y: 0,
             sht_group: ShtGroup::Sht1,
+            mask_group: ShtGroup::Sht1,
+            beg_group: rs2_core::BegGroup::Beg1,
+            stride_reg: None,
             obj,
         }
     }

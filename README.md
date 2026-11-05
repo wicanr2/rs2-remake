@@ -127,21 +127,26 @@ CGA 與 MGA 的單色版另有 1,526 張，由 HD 彩色圖推導，這裡沒有
 | 檔案格式 | 全部解出，工具重建結果可重現 |
 | 遊戲邏輯 | 靜態讀碼完成，未解項列在 `WORKLIST.md` |
 | 原版實跑 | dosgolem 走通冷啟動、四關與片尾，第一關頭目已實際擊殺 |
-| HD 圖像 | 全部索引都有輸出。單張成品只留本機，`docs/images/` 有對照圖。第一關已接入重製，接縫與部分配色待修 |
-| Rust 重製 | 第一關可玩，模擬與原版逐幀相同，原版圖模式的畫面逐位元組相同。還沒有音樂與音效，第二到第四關未開始 |
+| HD 圖像 | 全部索引都有輸出。單張成品只留本機，`docs/images/` 有對照圖。全流程接入無缺圖，接縫與部分配色待修 |
+| Rust 重製 | 從標題玩到片尾，含開場動畫、示範、選單、雙人、四關、過場、片尾。模擬與畫面和原版逐筆相同（20 份收據 19,284 筆） |
+| 音樂與音效 | 重製自帶 OPL2 合成器。暫存器寫入和原版驅動逐筆相同，喇叭事件也相同。波形只和參考實作比過品質 |
+| 尚未驗證 | 真實桌面的視窗與音效裝置、GPU 繪圖器、全螢幕都沒測過，只在虛擬環境跑過。手感沒有真人驗證 |
+| 尚未開始 | CGA、MGA 顯示模式 |
 
 唯一現況入口是 [CONTEXT.md](CONTEXT.md)。
 
-## 試玩第一關
+## 試玩
 
-需要 Docker、X11 桌面，以及自備的原版。先跑過 `tools/run_all.sh`。
+需要 Docker、X11 桌面，以及自備的原版。先跑過 `tools/run_all.sh`。音效走 PulseAudio 或 ALSA，開不起來時遊戲照跑但沒有聲音。
 
 ```sh
 tools/rust.sh play-build
 tools/rust.sh play              # 有 workspace/hd/assets 就用 HD，加 --no-hd 改原版圖
 ```
 
-方向鍵移動，Home、PgUp、End、PgDn 是斜向。右 Shift 開火，`/` 砲座轉向，Esc 暫停，Ctrl+Q 離開。F1 切補間，F2 切幀計數，F3 切原版圖與 HD，F4 切視窗倍率，F10 隱藏工具列。
+從標題開始，按任意鍵進選單或開始遊戲。方向鍵移動，Home、PgUp、End、PgDn 是斜向。右 Shift 開火，`/` 砲座轉向，Esc 暫停，S 切換音效，Ctrl+Q 離開。
+
+F1 切補間，F2 切幀計數，F3 切原版圖與 HD，F4 切視窗倍率，F10 隱藏工具列。加 `--no-audio` 關聲音，`--original-bugs` 保留原版缺陷（預設修正）。
 
 ## 重要發現
 
@@ -152,7 +157,9 @@ tools/rust.sh play              # 有 workspace/hd/assets 就用 HD，加 --no-h
 | 邏輯更新率是每秒 9.10 次，AdLib 驅動改寫 PIT 但以累加器轉發原頻率 | [10](docs/re/10-dynamic-receipts.md) |
 | 敵人由幀計數時間表生成，移動腳本是位元組碼，亂數是固定表 | [11](docs/re/11-entities-combat.md) |
 | 頭目由合成圖、隱藏碰撞體與可見分件組成 | [12](docs/re/12-stages-presentation.md) |
-| 音樂格式與 OPL2 暫存器逐欄對照，可轉成 VGM（尚未與原版逐筆比對） | [13](docs/re/13-audio-and-misc.md) |
+| 音樂格式與 OPL2 暫存器逐欄對照，驅動的移植和原版的寫入逐筆相同 | [13](docs/re/13-audio-and-misc.md) |
+| 喇叭聲全來自畫爆炸圖的迴圈，除數取自圖的像素資料 | [13](docs/re/13-audio-and-misc.md) |
+| 整局無傷到第二關幀 260 時原版會卡死，第四關 Ctrl+C 進片尾會把表外記憶體當圖畫 | [12](docs/re/12-stages-presentation.md) |
 
 ## 重建分析結果
 

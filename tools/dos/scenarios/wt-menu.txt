@@ -1,0 +1,38 @@
+# 全流程對拍收據 wt_menu：標題按 C 進選單，LEVEL 走過 EASY、NORMAL、HARD、HARDEST 再退回一格，CTRL 走過 ROLE 1、ROLE 2、2 PLAYERS
+# 再退回，最後 LEVEL=HARDEST、CTRL=ROLE 2，Enter 確認回標題，按空白開始，第一關開秘技玩幾秒。
+# 方向鍵按住時每個迴圈都累加（sub_1262C 不清按鍵狀態），要單步就只按 3 ms。
+include /tools-dos/scenarios/prefix-to-title.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+audiotrace wt_menu
+waittrace wt_menu
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap c 0.3 0
+secs 1.5
+tap right 0.003 0.3
+tap right 0.003 0.3
+tap right 0.003 0.3
+tap left 0.003 0.3
+tap right 0.003 0.3
+tap down 0.003 0.5
+tap right 0.003 0.5
+tap right 0.003 0.5
+tap left 0.003 0.5
+tap left 0.003 0.5
+tap right 0.003 0.5
+tap enter 0.15 0.3
+secs 3
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 6
+waittrace off
+audiotrace off

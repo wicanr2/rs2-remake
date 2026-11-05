@@ -1,0 +1,15 @@
+# 全流程對拍收據 wt_stage4：從第 4 關入口開始，開秘技（不減血），每幀開火，位置不動，打到頭目被擊殺（SHT5.GO 開啟＝關卡結束）
+# 或打滿 1800 幀為止（頭目在幀 1075 之後出現）。第四關沒有自己結束的腳本，所以不等 SHT5.GO。
+include /tools-dos/scenarios/to-s4.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_stage4
+trace s4 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*1800 !SHT5.GO
+secs 2
+trace off
+waittrace off

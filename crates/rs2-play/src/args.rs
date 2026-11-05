@@ -5,12 +5,15 @@ use std::path::PathBuf;
 pub const USAGE: &str = "\
 用法：rs2-play --orig <原版目錄> [選項]
 
-  --orig DIR            原版目錄（必要），內含 S.EXE、MY.GO、SHT1.GO、BH1.GO、DM1.LCK，啟動時驗 SHA-256
+  --orig DIR            原版目錄（必要），啟動時驗全部檔案的 SHA-256
   --hd DIR              HD 素材資料夾（選用）；有給時預設用 HD 圖
   --no-hd               忽略 --hd，只用原版圖
-  --start newgame|demo  起點，預設 newgame
+  --start title|newgame|demo
+                        起點，預設 title。newgame、demo 直接進第一關，第一關結束就離開（除錯與回歸用）
   --scale N             視窗倍率（1 至 8），預設讀設定檔，沒有就 3
   --original-bugs       不修正原版缺陷（Fixes::NONE）；預設全部修正
+  --no-audio            不開音效裝置
+  --wav-out FILE        --headless-steps 時把這段遊戲的音訊依遊戲時間寫成 WAV
   --config DIR          設定目錄（settings.txt）；預設 $XDG_CONFIG_HOME/rs2-remake
   --replay FILE         用收據的 sc 欄餵輸入（收據用完後改回鍵盤）
   --headless-steps N    不進視窗迴圈，經同一段步進與繪製程式跑 N 步後結束
@@ -27,6 +30,7 @@ pub const USAGE: &str = "\
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartArg {
+    Title,
     NewGame,
     Demo,
 }
@@ -47,6 +51,8 @@ pub struct Args {
     pub start: StartArg,
     pub scale: Option<u32>,
     pub original_bugs: bool,
+    pub no_audio: bool,
+    pub wav_out: Option<PathBuf>,
     pub config: Option<PathBuf>,
     pub replay: Option<PathBuf>,
     pub headless_steps: Option<u64>,
@@ -82,9 +88,11 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         orig: PathBuf::new(),
         hd: None,
         no_hd: false,
-        start: StartArg::NewGame,
+        start: StartArg::Title,
         scale: None,
         original_bugs: false,
+        no_audio: false,
+        wav_out: None,
         config: None,
         replay: None,
         headless_steps: None,
@@ -114,9 +122,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
             "--no-hd" => a.no_hd = true,
             "--start" => {
                 a.start = match val!("--start")?.as_str() {
+                    "title" => StartArg::Title,
                     "newgame" => StartArg::NewGame,
                     "demo" => StartArg::Demo,
-                    v => return Err(format!("--start 要是 newgame 或 demo，收到 {v}")),
+                    v => return Err(format!("--start 要是 title、newgame 或 demo，收到 {v}")),
                 }
             }
             "--scale" => {
@@ -128,6 +137,8 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 a.scale = Some(n);
             }
             "--original-bugs" => a.original_bugs = true,
+            "--no-audio" => a.no_audio = true,
+            "--wav-out" => a.wav_out = Some(PathBuf::from(val!("--wav-out")?)),
             "--config" => a.config = Some(PathBuf::from(val!("--config")?)),
             "--replay" => a.replay = Some(PathBuf::from(val!("--replay")?)),
             "--headless-steps" => {
@@ -182,7 +193,7 @@ mod tests {
     fn minimal_and_defaults() {
         let a = p("--orig /o").unwrap();
         assert_eq!(a.orig, PathBuf::from("/o"));
-        assert_eq!(a.start, StartArg::NewGame);
+        assert_eq!(a.start, StartArg::Title);
         assert!(!a.original_bugs && !a.no_hd);
         assert!(a.hd.is_none() && a.scale.is_none() && a.replay.is_none());
     }

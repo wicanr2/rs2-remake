@@ -1,0 +1,27 @@
+# 全流程對拍收據 wt_pause：第一關入口 sub_10CD0，開秘技，Esc 暫停（sub_10ECB 的輪詢迴圈，10ED8h）過約 1 秒再按一次 Esc 恢復，
+# 之後每幀開火。暫停裡沒有 sub_11097 的等待，第二個 Esc 靠 sct 排進對的 tick（重製的 Req::Poll{paused} 每步 1 tick）。
+# 第一個 Esc 要按到第二個 Esc 之後才放開：放開碼會把 A8CCh 設成 2，迴圈照樣當成暫停中。
+include /tools-dos/scenarios/prefix-to-j1.txt
+down space
+runsteps 300_000
+up space
+untilpc 0x10CD0 300_000_000
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_pause
+trace s1 full
+untiltrace 20 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*20
+down esc
+untilpc 0x10ED8 50_000_000
+secs 1
+down esc
+runsteps 5_000
+up esc
+play now 10*60
+secs 1
+trace off
+waittrace off

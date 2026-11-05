@@ -133,12 +133,16 @@ case "$cmd" in
     test -x "$PLAY_TARGET/release/rs2-play" || { echo "先跑 tools/rust.sh play-build" >&2; exit 1; }
     mkdir -p "$WP/rs2/play"
     gpu=(); if test -c /dev/dri/renderD128; then gpu=(--device /dev/dri/renderD128 --group-add "$(stat -c %g /dev/dri/renderD128)"); fi
+    # 音效：有 PulseAudio／PipeWire 的 socket 就掛進去，沒有就試 ALSA 裝置，都沒有時遊戲照跑但沒有聲音。
+    snd=(); pulse="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse/native"
+    if test -S "$pulse"; then snd=(-v "$pulse:/tmp/pulse-native" -e PULSE_SERVER=unix:/tmp/pulse-native);
+    elif test -d /dev/snd; then snd=(--device /dev/snd --group-add "$(stat -c %g /dev/snd/timer 2>/dev/null || echo audio)"); fi
     auth=(); xa="${XAUTHORITY:-$HOME/.Xauthority}"; if test -f "$xa"; then auth=(-v "$xa:/tmp/xauth:ro" -e XAUTHORITY=/tmp/xauth); fi
     docker run --rm --init -u "$(id -u):$(id -g)" --name "rs2-play-$$" \
       --memory 6g --cpus 4 --pids-limit 256 --network none --read-only --tmpfs /tmp:rw,exec,size=256m \
       --cap-drop ALL --security-opt no-new-privileges \
       --log-opt max-size=10m --log-opt max-file=3 \
-      -e HOME=/tmp -e DISPLAY -e SDL_VIDEODRIVER=x11 "${gpu[@]}" "${auth[@]}" \
+      -e HOME=/tmp -e DISPLAY -e SDL_VIDEODRIVER=x11 "${gpu[@]}" "${snd[@]}" "${auth[@]}" \
       -v /tmp/.X11-unix:/tmp/.X11-unix:ro -v "$PLAY_TARGET/release:/tool:ro" "${pdata[@]}" \
       -v "$WP/rs2/play:/play" "$SDL_IMAGE" \
       /tool/rs2-play --orig /orig "${phd[@]}" --config /play/config "$@"
@@ -156,6 +160,7 @@ case "$cmd" in
       --cap-drop ALL --security-opt no-new-privileges \
       --log-opt max-size=10m --log-opt max-file=3 \
       -e HOME=/tmp -e SDL_VIDEODRIVER=x11 -e SDL_RENDER_DRIVER=software \
+      -e SDL_AUDIODRIVER=disk -e "SDL_DISKAUDIOFILE=/shots/rs2play_${name}.pcm" \
       -v "$PLAY_TARGET/release:/tool:ro" "${pdata[@]}" -v "$WP/rs2/shots:/shots" "$SDL_IMAGE" \
       sh -c 'mkdir -p -m 1777 /tmp/.X11-unix; Xvfb :99 -screen 0 1600x1000x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & xp=$!; sleep 2; DISPLAY=:99 "$@"; rc=$?; kill $xp 2>/dev/null; exit $rc' \
       sh /tool/rs2-play --orig /orig "${phd[@]}" --config /tmp/cfg --max-secs "$secs" \

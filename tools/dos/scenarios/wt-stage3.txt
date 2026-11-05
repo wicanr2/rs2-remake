@@ -1,0 +1,16 @@
+# 全流程對拍收據 wt_stage3：從第 3 關入口開始，開秘技（不減血），每幀開火，位置不動，打到頭目被擊殺或腳本結束
+# （J4.GO 開啟＝關卡結束）。
+include /tools-dos/scenarios/to-s3.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_stage3
+trace s3 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*1800 !J4.GO
+untilopen J4.GO 1 3_000_000_000
+secs 2
+trace off
+waittrace off

@@ -1,0 +1,7 @@
+# 第四關開局以 Ctrl+C 離開，停在片尾入口 sub_141D0。Ctrl 與 C 還按著，呼叫端在入口傾印之後放開。
+include /tools-dos/scenarios/to-s4.txt
+until16 0x1CFE2 5 400_000_000
+down ctrl
+runsteps 100_000
+down c
+untilpc 0x141D0 300_000_000

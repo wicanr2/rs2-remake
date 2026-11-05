@@ -1,8 +1,13 @@
 //! 核心狀態與入口。規格見 `docs/spec/001-rust-first-stage.md`。
 
-use crate::draw::{DrawCmd, ObjId, Pool, ShtGroup};
+use crate::draw::{AudioCmd, BegGroup, DrawCmd, MixFile, ObjId, Pool, ShtGroup};
 use crate::dseg::{Dseg, a};
 use crate::regs::Regs;
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll, Waker};
 
 /// 原版缺陷的修正開關。遊戲預設全開，對拍全關。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,11 +15,13 @@ pub struct Fixes {
     pub bullet_slot_carry: bool,
     pub armor_cell_index: bool,
     pub seeker_spawn_leak: bool,
+    /// 第二關 `131C9h`：到幀 260 為止一次都沒被打中時，原版永遠卡在 `sub_1316C`。
+    pub no_hit_hang: bool,
 }
 
 impl Fixes {
-    pub const NONE: Fixes = Fixes { bullet_slot_carry: false, armor_cell_index: false, seeker_spawn_leak: false };
-    pub const ALL: Fixes = Fixes { bullet_slot_carry: true, armor_cell_index: true, seeker_spawn_leak: true };
+    pub const NONE: Fixes = Fixes { bullet_slot_carry: false, armor_cell_index: false, seeker_spawn_leak: false, no_hit_hang: false };
+    pub const ALL: Fixes = Fixes { bullet_slot_carry: true, armor_cell_index: true, seeker_spawn_leak: true, no_hit_hang: true };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +29,28 @@ pub enum Start {
     Demo,
     /// `difficulty` 是選單的四段（0～3）。`None` 是不經選單，難度字維持映像值 0、0。
     NewGame { difficulty: Option<u8> },
+}
+
+/// 全遊戲流程的入口，對應原版函式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// `sub_11556`：標題迴圈，正式遊戲從這裡開始。
+    Title,
+    Stage1,
+    Stage2,
+    Stage3,
+    Stage4,
+    Ending,
+}
+
+/// 遊戲讀的原版資料。圖庫在 `rs2-gfx`，這裡只有會進模擬的部分。
+#[derive(Clone, Debug, Default)]
+pub struct GameFiles {
+    pub image: Vec<u8>,
+    pub dm1: Vec<u8>,
+    pub dm2: Vec<u8>,
+    pub scn: Vec<u8>,
+    pub scr: Vec<u8>,
 }
 
 /// 離開關卡的原因，等於原版主迴圈 `dx` 的字母。
@@ -44,9 +73,13 @@ pub struct Input<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct Frame {
     pub draws: Vec<DrawCmd>,
+    /// 這一步的音訊命令。
+    pub audio: Vec<AudioCmd>,
     pub exit: Option<Exit>,
     /// 暫停中，這一步沒有推進模擬。
     pub paused: bool,
+    /// 到下一步之前要等幾個 18.2 Hz 的 tick。
+    pub ticks: u16,
 }
 
 /// 第一幀的 `dseg` 差異豁免範圍（規格 001「初始狀態」），閉區間。
@@ -74,19 +107,143 @@ pub const A0_EXEMPT: &[(u16, u16)] = &[
     (0xE340, 0xFFFF),
 ];
 
+/// 全流程對拍（規格 002）的資料段豁免範圍，閉區間。起始內容是規格 001 的 `A0_EXEMPT`、
+/// 差分模糊測試另外發現的三處、等待計時器。每一項寫明哪些函式讀寫它；新增的項目也要寫理由。
+/// 收據（`wt_*`）與 B1 都沒有出現差異的 A0 項目已刪（`000Eh`、`0586h`～`0592h` 標題動畫計數、按鍵表 `A8E7h`、`A8FAh`、`A904h`），
+/// `0336h`～`034Ah` 收成實際會變的兩段。`RS2_DS_REPORT=1` 跑 `tests/wait.rs` 會列出含豁免的全部差異，可重新檢查。
+pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
+    // ---- A0_EXEMPT（規格 001「初始狀態」）----
+    (0x0018, 0x0020, "文字畫面的游標與屬性；啟動函式專用"),
+    (0x0336, 0x0338, "sub_113B2、sub_1149F 的工作變數；載入專用"),
+    (0x0348, 0x034A, "sub_113B2、sub_1149F 的工作變數；載入專用"),
+    (0x0386, 0x03AF, "sub_10162 的列位址；只有 MGA 分支 sub_1117F 讀"),
+    (0x03D5, 0x03E3, "屬性暫存器工作表；調色盤由 vram／dac 雜湊比對涵蓋"),
+    (0x07E2, 0x07EE, "密碼函式與 INT 8 的 word_1D3A8、word_1D3AE；byte_1D3A2 第二關才讀（130AFh），其餘屬密碼"),
+    (0x0EED, 0x0EFC, "JOYMOUSE 輪詢值；byte_1DAAC = N 時不進按鍵表"),
+    (0x9CB0, 0x9CB3, "圖庫指標與頁；繪製路徑先寫再讀"),
+    (0x9CBC, 0x9CC8, "繪製參數；繪製路徑先寫再讀"),
+    (0x9CE1, 0x9CE5, "數字緩衝；sub_1890D 先寫再讀"),
+    (0xA7DA, 0xA7DC, "音樂驅動與 INT 8 的 word_2739B；音樂不在範圍"),
+    (0xA7F7, 0xA7F8, "word_273B7，見下方計時器"),
+    (0xA852, 0xA858, "舊中斷向量；啟動與離開專用"),
+    (0xA92A, 0xA931, "檔名工作區；載入專用"),
+    (0xA94B, 0xA94C, "檔名工作區；載入專用"),
+    (0xA9AB, 0xA9AB, "檔名工作區；載入專用"),
+    (0xE340, 0xFFFF, "堆疊殘值；映像外，邏輯不讀"),
+    // ---- 差分模糊測試另外發現的（tests/fuzz.rs DS_EXTRA_EXEMPT）----
+    (0x9C9E, 0x9CA3, "word_2685E、26860、26862 blit 暫存；只有 sub_19DA8、19E66、19F3B、19FF9、1A09F、1A144、1A1E6 讀寫"),
+    (0x9CCA, 0x9CCA, "word_2688A 繪製參數；sub_1100A、1117F、162B1 等寫，sub_18993 與 sub_19A0B（blit）讀"),
+    (0x9CD0, 0x9CD0, "byte_26890 數字繪製暫存；sub_1890D、18993、189C1、162B1 寫，sub_18A1F、18A61（數字繪製）讀"),
+    // ---- 全流程對拍發現的（規格 002）----
+    (0xAA2C, 0xAA2C, "檔名緩衝 SHT4.GO（AA25h，7 個字元加結尾）的第 8 個位元組。sub_1AEBC 經 sub_1C738（1C738h 起，加 3 後 mov [bx], dl）\
+                      把它改成 'T' 以開 SHT4.GOT；只有檔案載入（sub_1C82C）讀。重製不碰檔名緩衝（檔案在啟動時已驗過）"),
+    // ---- 等待計時器（規格 002）----
+    (0xA7F7, 0xA7FA, "word_273B7、word_273B9 的 tick 計數。INT 8（1A7CEh、1A7D2h）加 1，只有 sub_11097（11097h、1109Dh）讀寫。\
+                      原版在 1109Dh 取樣時 273B9 還沒歸零（值 >= cx），重製在 WaitDone 已歸零；輪詢迴圈裡 tick 數也不同"),
+];
+
+/// `off` 是否落在 [`DS_EXEMPT`]。
+pub fn ds_exempt(off: u16) -> bool {
+    DS_EXEMPT.iter().any(|&(lo, hi, _)| lo <= off && off <= hi)
+}
+
+/// 正式遊戲的開機資料段：原版在 `sub_11556` 入口（標題迴圈）的狀態，減去啟動選單、密碼與 DOS 記憶體配置的影響。
+/// 原版從 `sub_10CD0` 進來：`10CD0h` 至 `10D11h` 的關卡初始化（`enter_stage`），第一輪 `10D29h` 的 `sub_19A37`，
+/// 然後 `sub_10FEA`：`word_1B02` 減 1（10FEAh 至 10FF2h），`byte_1CFAC` 仍是 `N` 才呼叫 `sub_11556`。
+/// 所以標題入口的資料段是映像加上這些初始化的寫入。標題之前沒有寫過 `byte_1CFDC`、`byte_1CFDD`、`byte_1CFAC`、
+/// `byte_1CFAB`（`Core::new` 為了直接進第一關而設），這四個維持映像值。
+/// 差異只在 [`DS_EXEMPT`]（B1，`rs2-trace` 的 `tests/wait.rs`）。展示錄影 `DM1.LCK` 不在這裡：映像只有程式，
+/// 資料由 `GameFiles` 提供，標題移植在示範開始前自己載入（`sub_1BED5`）。
+pub fn boot_ds(image: &[u8]) -> Dseg {
+    boot_ds_with_dm1(image, &[])
+}
+
+/// [`boot_ds`] 加上 `sub_10CD0` 在 `10CF9h` 用 `sub_1BED5` 載入的 `DM1.LCK`（`dseg:AAE2h` 起 3000 位元組）。
+/// 另外三個值是啟動時最後按的鍵留下的：密碼畫面最後一個 Enter，`byte_27422`（`A862h`）= 0Dh、按鍵表 Enter（`A8E7h`）= 2
+/// 已放開；啟動選單按過的 V（`A8FAh`）= 2。`sub_11556` 在 `1157Dh` 先把 `byte_27422` 清 0 才讀，所以這三個值不影響標題，
+/// 但全流程對拍逐位元組比，補上它們才不必把 `A862h` 這種標題實際會讀的位元組列進 [`DS_EXEMPT`]。
+pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
+    let base = Dseg::from_image(image);
+    let mut core = Core::new(image, dm1, Start::NewGame { difficulty: None }, Fixes::NONE);
+    for o in [0x041Cu16, 0x041D, 0x03EC, 0x03EB] {
+        core.ds.w8(o, base.r8(o));
+    }
+    core.s19a37();
+    let v = core.ds.r16(0x1B02);
+    if v >= 0xD2 {
+        core.ds.w16(0x1B02, v - 1);
+    }
+    core.ds.w8(0xA862, 0x0D);
+    core.ds.w8(0xA8E7, 2);
+    core.ds.w8(0xA8FA, 2);
+    // byte_1D3A2：密碼檢查通過時寫 Y，映像是 N。第二關 130AFh 不是 Y 就停在無限迴圈。
+    core.ds.w8(0x07E2, b'Y');
+    core.ds
+}
+
 const POOLS: usize = 9;
 
-pub struct Game {
+/// 協程交回控制權的原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Req {
+    /// 取樣點，對拍工具在這裡讀狀態，不結束這一步。
+    Sample(u32),
+    /// `sub_11097` 的等待，`ticks` 個 18.2 Hz 的 tick。一步在這裡結束。
+    Wait { ticks: u16 },
+    /// 等待結束、這段期間的掃描碼處理完，相當於原版 `1109Dh`。對拍工具在這裡比對。
+    WaitDone { cx: u16 },
+    /// 原版的輪詢迴圈（等按鍵等），每個 tick 檢查一次。一步在這裡結束。
+    Poll { paused: bool },
+    /// 一輪結束，`settle` 停在這裡。不結束這一步。
+    Checkpoint,
+}
+
+/// 協程與外面交換資料的地方。
+pub(crate) struct Port {
+    req: Option<Req>,
+    input: Vec<u8>,
+    pokes: Vec<(u16, u16, bool)>,
+    ds: Dseg,
+    draws: Vec<DrawCmd>,
+    /// 下一次恢復會走到一輪結尾的檢查（第二頁的等待之後）。
+    pub(crate) at_round_end: bool,
+    s11375_patched: bool,
+    display_start: Option<u16>,
+    audio: Vec<AudioCmd>,
+}
+
+struct YieldOnce(bool);
+
+impl Future for YieldOnce {
+    type Output = ();
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            Poll::Pending
+        }
+    }
+}
+
+/// 模擬狀態。逐函式移植的程式都掛在這裡，只有協程摸得到。
+pub struct Core {
     pub ds: Dseg,
     pub r: Regs,
     pub fixes: Fixes,
-    /// `sub_10CD0` 主迴圈的相位：下一步是第二頁。
-    pub(crate) second_page: bool,
-    /// `sub_10ECB` 的暫停，原版是阻塞迴圈。
-    pub(crate) paused: bool,
     /// `sub_11375` 通過後把自己改成 `retn`。
     pub(crate) s11375_patched: bool,
+    /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
+    pub(crate) display_start: Option<u16>,
+    /// 音樂緩衝區裡的曲目。
+    pub(crate) mix: MixFile,
+    pub(crate) audio: Vec<AudioCmd>,
     pub(crate) sht_group: ShtGroup,
+    pub(crate) mask_group: ShtGroup,
+    pub(crate) beg_group: BegGroup,
+    pub(crate) files: Rc<GameFiles>,
+    /// 第三關地圖 `SHT.SCN` 解壓後的內容，對應原版遠段 `word_1CF6E`。`sub_13A51` 載入，之後唯讀。
+    pub(crate) map_seg: Vec<u8>,
     pub(crate) draws: Vec<DrawCmd>,
     pub(crate) cur_obj: Option<ObjId>,
     pub(crate) gens: [[u32; 40]; POOLS],
@@ -94,25 +251,42 @@ pub struct Game {
     pub(crate) g2_slots: Vec<u8>,
     /// `sub_16578` 配到槽的次數，`seeker_spawn_leak` 用。不屬於原版狀態。
     pub(crate) pb_spawned: u16,
-    pub(crate) finished: Option<Exit>,
+    pub(crate) port: Rc<RefCell<Port>>,
 }
 
-impl Game {
-    pub fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Game {
-        let mut g = Game {
-            ds: Dseg::from_image(image),
+impl Core {
+    pub(crate) fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Core {
+        let ds = Dseg::from_image(image);
+        let port = Port {
+            req: None,
+            input: Vec::new(),
+            pokes: Vec::new(),
+            ds: ds.clone(),
+            draws: Vec::new(),
+            at_round_end: false,
+            s11375_patched: false,
+            display_start: None,
+            audio: Vec::new(),
+        };
+        let mut g = Core {
+            ds,
             r: Regs::default(),
             fixes,
-            second_page: false,
-            paused: false,
             s11375_patched: false,
+            display_start: None,
+            mix: MixFile::A,
+            audio: Vec::new(),
             sht_group: ShtGroup::Bh1,
+            mask_group: ShtGroup::Sht1,
+            beg_group: BegGroup::Beg1,
+            files: Rc::new(GameFiles { dm1: dm1.to_vec(), ..GameFiles::default() }),
+            map_seg: Vec::new(),
             draws: Vec::new(),
             cur_obj: None,
             gens: [[0; 40]; POOLS],
             g2_slots: vec![0; 0x321],
             pb_spawned: 0,
-            finished: None,
+            port: Rc::new(RefCell::new(port)),
         };
         // 兩個入口都載入展示錄影（10CF9h 的 sub_1BED5）。
         for (i, &b) in dm1.iter().enumerate().take(3000) {
@@ -138,19 +312,32 @@ impl Game {
         g
     }
 
-    /// 重新開始：沿用同一份 `Dseg`，只重跑進入關卡的初始化，殘值行為與原版相同。
-    pub fn restart(&mut self, start: Start) {
-        self.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
-        self.ds.w8(0x041D, 1);
-        self.second_page = false;
-        self.paused = false;
-        self.finished = None;
-        self.enter_stage();
-    }
-
-    /// 這一幀之後才要處理的繪製命令（進入關卡時累積的初始化命令也在這裡）。
-    pub fn take_draws(&mut self) -> Vec<DrawCmd> {
-        std::mem::take(&mut self.draws)
+    /// 把控制權交回外面，恢復時處理這段期間送達的掃描碼。
+    pub(crate) async fn suspend(&mut self, req: Req) {
+        {
+            let mut p = self.port.borrow_mut();
+            p.req = Some(req);
+            p.ds.copy_from(&self.ds);
+            p.draws.append(&mut self.draws);
+            p.s11375_patched = self.s11375_patched;
+            p.display_start = self.display_start;
+            p.audio.append(&mut self.audio);
+        }
+        YieldOnce(false).await;
+        let (input, pokes) = {
+            let mut p = self.port.borrow_mut();
+            (std::mem::take(&mut p.input), std::mem::take(&mut p.pokes))
+        };
+        for (o, v, word) in pokes {
+            if word {
+                self.ds.w16(o, v);
+            } else {
+                self.ds.w8(o, v as u8);
+            }
+        }
+        for sc in input {
+            self.int9(sc);
+        }
     }
 
     /// 繪製迴圈裡標記目前的物件，之後的 blit 帶這個編號。
@@ -168,8 +355,186 @@ impl Game {
         let g = &mut self.gens[pool as usize][slot as usize];
         *g = g.wrapping_add(1);
     }
+}
+
+/// 對外的遊戲物件：一個跑在協程裡的 `Core`。
+pub struct Game {
+    /// 上一次交回控制權時的資料段複本。要改值用 `poke8`、`poke16`。
+    pub ds: Dseg,
+    fixes: Fixes,
+    port: Rc<RefCell<Port>>,
+    fut: Pin<Box<dyn Future<Output = Exit>>>,
+    finished: Option<Exit>,
+}
+
+fn stage1(mut core: Core) -> Pin<Box<dyn Future<Output = Exit>>> {
+    Box::pin(async move { core.s10d29().await })
+}
+
+/// 跑一個入口，回傳離開碼。
+async fn run_entry(mut core: Core, entry: Entry) -> Exit {
+    match entry {
+        Entry::Title => core.s11556().await,
+        Entry::Stage1 => core.s10cd0().await,
+        Entry::Stage2 => core.s13205().await,
+        Entry::Stage3 => core.s13a51().await,
+        Entry::Stage4 => core.s13daf().await,
+        Entry::Ending => core.s141d0().await,
+    }
+    match core.r.dx as u8 {
+        b'E' => Exit::End,
+        b'C' => Exit::Clear,
+        _ => Exit::Quit,
+    }
+}
+
+impl Game {
+    /// 從一份資料段快照開始跑。`ds` 是原版在該入口的傾印，或正式遊戲的開機狀態。
+    pub fn from_snapshot(files: GameFiles, ds_snapshot: &[u8], entry: Entry, fixes: Fixes) -> Game {
+        let files = Rc::new(files);
+        let mut core = Core::new(&files.image, &[], Start::NewGame { difficulty: None }, fixes);
+        core.draws.clear();
+        core.ds.load(ds_snapshot);
+        core.files = files;
+        // sub_11375 通過時把 dl（`Y`）寫進 byte_1CFAA，並把自己改成 retn。快照要帶上這個狀態。
+        core.s11375_patched = core.ds.r8(a(0x1CFAA)) != b'N';
+        let ds = core.ds.clone();
+        let port = core.port.clone();
+        port.borrow_mut().ds.copy_from(&ds);
+        Game { ds, fixes, port, fut: Box::pin(run_entry(core, entry)), finished: None }
+    }
+
+    pub fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Game {
+        let mut core = Core::new(image, dm1, start, fixes);
+        let ds = core.ds.clone();
+        let port = core.port.clone();
+        port.borrow_mut().draws.append(&mut core.draws);
+        Game { ds, fixes, port, fut: stage1(core), finished: None }
+    }
+
+    /// 重新開始：沿用同一份 `Dseg`，只重跑進入關卡的初始化，殘值行為與原版相同。
+    pub fn restart(&mut self, start: Start) {
+        let patched = self.port.borrow().s11375_patched;
+        let image_free = self.ds.clone();
+        let mut core = Core::new(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET], &[], start, self.fixes);
+        core.ds = image_free;
+        core.s11375_patched = patched;
+        core.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
+        core.ds.w8(0x041D, 1);
+        core.draws.clear();
+        core.enter_stage();
+        self.ds.copy_from(&core.ds);
+        let port = core.port.clone();
+        port.borrow_mut().draws.append(&mut core.draws);
+        self.port = port;
+        self.fut = stage1(core);
+        self.finished = None;
+    }
+
+    /// 這一步之前累積的繪製命令（進入關卡時的初始化命令也在這裡）。
+    fn take_audio(&mut self) -> Vec<AudioCmd> {
+        std::mem::take(&mut self.port.borrow_mut().audio)
+    }
+
+    pub fn take_draws(&mut self) -> Vec<DrawCmd> {
+        std::mem::take(&mut self.port.borrow_mut().draws)
+    }
+
+    /// 在下一次恢復時寫入資料段，測試用。
+    pub fn poke8(&mut self, offset: u16, value: u8) {
+        self.port.borrow_mut().pokes.push((offset, value as u16, false));
+    }
+
+    pub fn poke16(&mut self, offset: u16, value: u16) {
+        self.port.borrow_mut().pokes.push((offset, value, true));
+    }
+
+    fn poll_once(&mut self) -> Poll<Exit> {
+        let mut cx = Context::from_waker(Waker::noop());
+        let r = self.fut.as_mut().poll(&mut cx);
+        self.ds.copy_from(&self.port.borrow().ds);
+        r
+    }
+
+    /// 跑到下一個等待點。掃描碼在協程恢復時才處理，所以和原版一樣落在上一幀的等待裡。
+    pub fn step(&mut self, input: &Input, on_sample: &mut dyn FnMut(&Game, u32)) -> Frame {
+        self.step_full(input, on_sample, &mut |_g: &Game, _cx: u16| {})
+    }
+
+    /// 同 `step`，另外在每次等待結束（對應原版 `1109Dh`）呼叫 `on_wait`，給全流程對拍用。
+    pub fn step_full(
+        &mut self,
+        input: &Input,
+        on_sample: &mut dyn FnMut(&Game, u32),
+        on_wait: &mut dyn FnMut(&Game, u16),
+    ) -> Frame {
+        if let Some(e) = self.finished {
+            return Frame { draws: Vec::new(), audio: Vec::new(), exit: Some(e), paused: false, ticks: 0 };
+        }
+        self.port.borrow_mut().input.extend_from_slice(input.scancodes);
+        loop {
+            match self.poll_once() {
+                Poll::Ready(e) => {
+                    self.finished = Some(e);
+                    return Frame { draws: self.take_draws(), audio: self.take_audio(), exit: Some(e), paused: false, ticks: 0 };
+                }
+                Poll::Pending => {
+                    let req = self.port.borrow_mut().req.take();
+                    match req {
+                        Some(Req::Sample(pt)) => on_sample(self, pt),
+                        Some(Req::WaitDone { cx }) => on_wait(self, cx),
+                        Some(Req::Checkpoint) => {}
+                        Some(Req::Wait { ticks }) => {
+                            return Frame { draws: self.take_draws(), audio: self.take_audio(), exit: None, paused: false, ticks };
+                        }
+                        Some(Req::Poll { paused }) => {
+                            return Frame { draws: self.take_draws(), audio: self.take_audio(), exit: None, paused, ticks: 1 };
+                        }
+                        None => unreachable!("協程暫停時一定留下原因"),
+                    }
+                }
+            }
+        }
+    }
+
+    /// 原版這時的 CRTC 顯示起點（0 或 8000h）。第一次翻頁之前是 `None`。
+    pub fn display_start(&self) -> Option<u16> {
+        self.port.borrow().display_start
+    }
 
     pub fn state_hash_input(&self) -> &[u8] {
         self.ds.bytes()
+    }
+
+    /// 下一次恢復會走到一輪結尾的檢查（Esc 暫停、熱鍵）。
+    pub fn at_round_end(&self) -> bool {
+        self.port.borrow().at_round_end
+    }
+
+    /// 對拍用：取樣之後的等待如果接著一輪結尾的檢查，就走到那裡，回傳離開碼。第一頁的取樣之後不動。
+    pub fn settle(&mut self) -> Option<Exit> {
+        if self.finished.is_some() {
+            return self.finished;
+        }
+        if !self.port.borrow().at_round_end {
+            return None;
+        }
+        loop {
+            match self.poll_once() {
+                Poll::Ready(e) => {
+                    self.finished = Some(e);
+                    return Some(e);
+                }
+                Poll::Pending => {
+                    let req = self.port.borrow_mut().req.take();
+                    match req {
+                        Some(Req::WaitDone { .. }) => {}
+                        Some(Req::Checkpoint) => return None,
+                        Some(Req::Poll { .. }) => return None,
+                        other => unreachable!("一輪結尾前不該有 {other:?}"),
+                    }
+                }
+            }
+        }
     }
 }

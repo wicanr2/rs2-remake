@@ -60,6 +60,12 @@ impl Vga {
         &self.planes[p]
     }
 
+    /// 整個平面換成 `data`（64 KB），給從快照起跑用。
+    pub fn load_plane(&mut self, p: usize, data: &[u8]) {
+        assert_eq!(data.len(), PLANE_SIZE);
+        self.planes[p].copy_from_slice(data);
+    }
+
     /// 序列器索引 2（3C4h／3C5h）。
     pub fn seq_map_mask(&mut self, v: u8) {
         self.map_mask = v & 0x0F;

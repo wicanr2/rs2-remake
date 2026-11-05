@@ -25,6 +25,9 @@ fn put(x: u16, y: u16, index: u16) -> DrawCmd {
         text_x: 0x12,
         text_y: 0xBF,
         sht_group: ShtGroup::Bh1,
+        mask_group: ShtGroup::Sht1,
+        beg_group: rs2_core::BegGroup::Beg1,
+        stride_reg: None,
         obj: None,
     })
 }

@@ -11,5 +11,8 @@ rs2-formats = { path = "../rs2-formats" }
 rs2-core = { path = "../rs2-core" }
 rs2-gfx = { path = "../rs2-gfx" }
 
+[dev-dependencies]
+rs2-audio = { path = "../rs2-audio" }
+
 [lints]
 workspace = true

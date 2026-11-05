@@ -5,6 +5,7 @@
 
 mod app;
 mod args;
+mod audio;
 mod controls;
 mod font;
 mod input;

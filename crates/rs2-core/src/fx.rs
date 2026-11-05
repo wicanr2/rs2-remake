@@ -6,9 +6,9 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
-use crate::game::Game;
+use crate::game::Core;
 
-impl Game {
+impl Core {
     /// `mov ax, 動畫表 / call sub_17C6C`：`sub_17A3A` 每個分支的共同片段。
     fn fx_start(&mut self, table: u16) {
         self.r.ax = table;

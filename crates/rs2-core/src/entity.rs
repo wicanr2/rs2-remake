@@ -6,9 +6,9 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
-use crate::game::Game;
+use crate::game::Core;
 
-impl Game {
+impl Core {
     /// `rep movsw`（方向旗標清除）：照 `cx`、`si`、`di` 搬字組，並更新三者。
     fn rep_movsw(&mut self) {
         let n = self.r.cx;

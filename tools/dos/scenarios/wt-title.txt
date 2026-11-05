@@ -1,0 +1,12 @@
+# 全流程對拍收據 wt_title：從 sub_11556 入口不按鍵，走開場動畫、DM1、DM2，回到標題（第二次載入 BEG1.BD4）後再多走 8 秒。
+include /tools-dos/scenarios/prefix-to-title.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+audiotrace wt_title
+waittrace wt_title
+untilopen BEG1.BD4 2 3_000_000_000
+secs 8
+waittrace off
+audiotrace off

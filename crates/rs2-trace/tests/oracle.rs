@@ -2,7 +2,7 @@
 //! 比對筆數為 0 視為失敗，免得缺檔時看起來像通過。
 
 use rs2_core::{A0_EXEMPT, Fixes, Game, Input, Start};
-use rs2_formats::{parse_go, sha256_hex};
+use rs2_formats::{EXPECTED, parse_go, sha256_hex};
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu};
 use std::path::PathBuf;
 
@@ -51,13 +51,14 @@ fn a3_hash_reject() {
     let tmp = env_path("RS2_OUT").join("a3-tmp");
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
-    let names = ["S.EXE", "MY.GO", "SHT1.GO", "BH1.GO", "DM1.LCK"];
-    for n in names {
+    // 規格 002「輸入」列的全部檔案（EXPECTED）逐項改一個位元組。
+    let names: Vec<&str> = EXPECTED.iter().map(|(n, _)| *n).collect();
+    for &n in &names {
         std::fs::copy(dir.join(n), tmp.join(n)).unwrap();
         std::fs::set_permissions(tmp.join(n), std::fs::Permissions::from(std::os::unix::fs::PermissionsExt::from_mode(0o644))).unwrap();
     }
     load_inputs(&tmp).expect("複本要能載入");
-    for n in names {
+    for &n in &names {
         let good = std::fs::read(tmp.join(n)).unwrap();
         let mut bad = good.clone();
         let mid = bad.len() / 2;

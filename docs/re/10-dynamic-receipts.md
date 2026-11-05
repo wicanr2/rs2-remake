@@ -585,3 +585,20 @@ nullsub_1               mov cx, 2             call 11097
 
 分支層級仍不可達的：敵彈移動碼 9（只有 `Q` 樣板）、實體腳本碼 0Bh、0Dh 與 F0 跳轉。等級：動態已證實第一關可達路徑逐幀相同；上述未走到的部分只有靜態核對。
 
+## 12. 全流程與音訊收據
+
+`rs2dyn` 另有 `waittrace`（patch 0006）與 `audiotrace`、`waitbanks`（patch 0007）。工具版本 sha256 `77c6d10d0cea9d0481c53cf418ddcc7da2daba362ec0c17782673de812972fbc`。重跑：`tools/dos/rerun_all.sh g10`、`g11`，收據清單由 `tools/dos/hash_wait_receipts.sh` 產生。
+
+| 收據 | 腳本 | 內容 |
+|---|---|---|
+| `wt_title`、`wt_menu`、`wt_p2`、`wt_flow`、`wt_mute` | `wt-*` | 從標題開始的全流程，等待紀錄與音訊同時記 |
+| `wt_stage1` 到 `wt_stage4`、`wt_ending`、`wt_pause` | `wt-*` | 從各關入口的快照開始 |
+| `wt_fz2-*`、`wt_fz3-*`、`wt_fz4-*` | `tools/dos/fuzz/` | 第二到第四關各 3 份隨機輸入 |
+| `au_title`、`au_flow` | `au-*` | 只記音訊，涵蓋多輪循環與每個音樂開關點 |
+| `hang_s2`、`hang_s2_ctrl` | `hang-s2*` | 第二關幀 260 的卡死條件與對照組 |
+
+等待紀錄一次等待一筆：序號、呼叫端、`cx`、幀計數、步數、送達的掃描碼與時間、四個平面與 DAC 的 SHA-256、顯示起點。資料段差異另存 `.dsd`。
+
+音訊收據一行一筆：`O` 是 OPL 寫入，`S` 是喇叭閘門改變，`P` 是 PIT 通道 2 重載，都帶步數與 IRQ 0 累計。步數包含中斷處理常式，所以比對繪圖迴圈的指令數時，要跳過中間有 IRQ 0 的兩筆。
+
+`wt_flow` 的 `wait-wt_flow.bk` 是第 437 筆的圖庫記憶體：前 10 位元組是 `word_1CF5C` 到 `word_1CF64` 五個段值，之後是第一段到最後一段結尾的線性記憶體。

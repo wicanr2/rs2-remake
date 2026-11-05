@@ -1,0 +1,119 @@
+# 全流程對拍：雙人 seed=1 frames=698。tools/dos/gen_fuzz.py duo 產生，不要手改。
+# 選單選 2 PLAYERS（byte_1CFDD = 11h），玩家 1 用方向鍵與右 Shift，玩家 2 用 R T Y／F H／V B N 與左 Shift、Z。血量調低，不開秘技。
+include /tools-dos/scenarios/prefix-to-title.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+audiotrace wt_p2
+waittrace wt_p2
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap c 0.3 0
+secs 1.5
+tap down 0.003 0.5
+tap right 0.003 0.5
+tap right 0.003 0.5
+tap enter 0.15 0.3
+secs 3
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+trace p2 full
+untiltrace 20 400_000_000
+pokew 0x1E6B2 0x1
+pokew 0x1E6B4 0x2
+pokew 0x1CFDE 0x1
+pokew 0x1CFE0 0x7
+down b
+down v
+play now 15 05*2 15 05*2 15 05 19*27 39 19*5
+skipif exit done
+up b
+up v
+down h
+down n
+down z
+up z
+play now 39 19*2 3C 1C*2 3C 1C*4 15 05*2 15 05*2 15 05*2 10*5 00*7 10 00*2 10 00*2 10 14*6
+skipif exit done
+up h
+up n
+down f
+down lshift
+play now 14*26
+skipif exit done
+down h
+play now 14*6 1C*14
+skipif exit done
+up f
+up h
+down n
+down t
+play now 1C*13 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 14 04 18*2 10
+skipif exit done
+up n
+up t
+down v
+up lshift
+play now 00 10 00 10 00 10 20 10 00 11*8 09*11 18*5 1A 0A 1A 0A 1A 0A 1A 0A 04*3
+skipif exit done
+up v
+down h
+play now 04*3 09*10 16 06*2 16 06*2 16 06*2 10*2 15*5 12 02 12 02 12 02*2 12 02*2
+skipif exit done
+up h
+down lshift
+play now 12 02*2 12 02*2 12 02*2 12 02 22 12 02*2 12 02*2 12 02*2 12 02*2 12 02*2 12 02*2 12 02*2 12*7 10 00 10
+skipif exit done
+up lshift
+play now 10 30 10*2 14 04*2 14 04*2 10*9 03*5 19*3 16*8 36 16*8 36 16*11
+skipif exit done
+down r
+down y
+play now 16*11 09*15
+skipif exit done
+up r
+up y
+down lshift
+play now 09*18 16*2 15*2 10*22 30 10*2 14 04*2 14 04*2 14 04*2
+skipif exit done
+play now 14 04*2 34 04*2 14 04*2 14 04 11 01*2 11 01*2 11 01 12 22 32 02 12 02 12 02 12 02 12 02 12 02*2 12 02*2 12 02*2 12
+skipif exit done
+down f
+down r
+play now 02*2 12 02*2 12 02*2 12 02 01*2 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 18 08*2 18 08*2 18 11*7
+skipif exit done
+up f
+play now 11*15 31 11*3 31 11 10*23
+skipif exit done
+down n
+play now 10*11 30 10*2 30 10*2 30 10*8 05*9 09 29 09*2 10 00 04 24
+skipif exit done
+up n
+up r
+up lshift
+play now 04*4 14 24 14 24 14 04 14 04 14 04 14 24 0C*3 2C 0C*2 10 00*2 10 00*2 10 00 14*5 34
+skipif exit done
+down b
+down y
+play now 14 10 00*2 10 00*2 10 00*2 05*8 10*6 00 10 00 10 00 10 00 15 05*2 15 05*2 15 05*2 15 05*2 15 05*2 15 05
+skipif exit done
+label done
+up t
+up b
+up f
+up h
+up r
+up y
+up v
+up n
+up lshift
+up z
+secs 6
+trace off
+waittrace off
+audiotrace off

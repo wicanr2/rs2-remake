@@ -1,0 +1,17 @@
+# 全流程對拍收據 wt_ending：從片尾入口 sub_141D0 開始，看完兩張圖與動畫循環，按 Q 離開。
+include /tools-dos/scenarios/to-ending.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_ending
+up c
+up ctrl
+secs 4
+tap space 0.3 0
+secs 2
+tap space 0.3 0
+secs 12
+tap q 0.3 0
+secs 6
+waittrace off

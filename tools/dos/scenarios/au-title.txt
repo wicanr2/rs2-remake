@@ -1,0 +1,6 @@
+# 音訊對拍收據 au_title：從標題不按鍵，走開場動畫與示範，涵蓋 A.MIX 多輪與示範中的 B.MIX、爆炸音。
+include /tools-dos/scenarios/prefix-to-title.txt
+audiotrace au_title
+untilopen BEG1.BD4 2 3_000_000_000
+secs 8
+audiotrace off

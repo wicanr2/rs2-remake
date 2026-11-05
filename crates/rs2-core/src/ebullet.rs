@@ -9,9 +9,9 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
-use crate::game::Game;
+use crate::game::Core;
 
-impl Game {
+impl Core {
     /// 設 `word_200F3` 為樣板位址再呼叫 `sub_16CEA`（機器碼裡 `mov word_200F3, imm` / `call sub_16CEA` 的固定組合）。
     fn eb_spawn(&mut self, tmpl: u16) {
         self.ds.w16(a(0x200F3), tmpl);
@@ -493,7 +493,7 @@ impl Game {
             return;
         }
         let mut ax = self.r.dx;
-        let t = |g: &Game, i: u32| g.ds.r16(a(0x1F7C2 + 2 * i));
+        let t = |g: &Core, i: u32| g.ds.r16(a(0x1F7C2 + 2 * i));
         if ax == t(self, 0) || ax == t(self, 1) || ax == t(self, 2) || ax == t(self, 3) {
             ax = ax.wrapping_sub(1);
         } else if ax == t(self, 4) || ax == t(self, 5) {

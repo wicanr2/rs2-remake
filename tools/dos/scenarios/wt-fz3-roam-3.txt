@@ -1,0 +1,76 @@
+# 全流程對拍隨機輸入 stage=3 profile=roam seed=3 frames=1604。tools/dos/gen_fuzz.py wt 產生，不要手改。
+# 第 3 關入口開始，先跑 5 筆追蹤不送輸入，之後 poke 與 play now 交錯；poke 由 rs2dyn 記進 wait-wt_fz3-roam-3.pokes。
+include /tools-dos/scenarios/to-s3.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_fz3-roam-3
+trace fz full
+untiltrace 5 400_000_000
+pokew 0x1E6B2 0x1
+pokew 0x1E6B4 0x2
+pokew 0x273A5 0x59
+play now 10 00*2 10 00*2 10 00*2 10 00*2 10 00*2 10 00*2 10 00*2 10 00*2 10 00 20 10 00 20 10 00*2 10 00*2 14 04*2 14 04 15 05 15 05 15 05*13 16*7 36 16*2 !J4.GO
+skipif open:J4.GO done
+play now 16*10 10 00*2 10 00 12 02*2 12 02*2 12 02*2 32 02*2 12 02*2 12 02*2 12 02*2 10*2 1A 2A 0A 1A 2A 0A 1A 0A*2 1A 0A*2 1A 0A 05*2 04*12 !J4.GO
+skipif open:J4.GO done
+play now 09*10 08*2 28 08*12 !J4.GO
+skipif open:J4.GO done
+down pgdn
+play now 08*24 18*11 08*2 18 08*2 18 08*2 18*10 15 05 !J4.GO
+skipif open:J4.GO done
+play now 05 15 05*2 1A*5 3A 0A*38 2A 12*5 1A 0A 1A 0A 1A 0A 1A 2A 1A 0A 3A 2A 1A 0A 1A 0A 1A 0A 1A 0A 1A 0A 1A 0A 1A 0A 1A 0A 1A !J4.GO
+skipif open:J4.GO done
+play now 0A 1A 2A 09*6 16 06 14 04*2 14 04*2 14 04*2 14 04*2 14 04*2 34 04*2 1A 0A 1A 0A 1A 0A 3A 0A 1A !J4.GO
+skipif open:J4.GO done
+down pgup
+play now 0A 01*6 10 00*2 10 00*2 04*5 13*10 11 01*2 11 01*2 11 01*2 11 01*2 11 01*2 11 01*2 11 01 18*5 38 10 00*2 10 00 20 10 !J4.GO
+skipif open:J4.GO done
+play now 00*2 10 00*2 12*4 14 04 14 04 14 10*9 30 10*3 30 10*6 30 10*3 30 10*11 06*2 !J4.GO
+skipif open:J4.GO done
+down home
+play now 06*7 10 00*2 10 00*2 10 00 12 02 12 02 12 02 19 09 19 10*9 12*10 02*2 12 !J4.GO
+skipif open:J4.GO done
+up pgup
+play now 02 00*22 1A 3A 1A*3 !J4.GO
+skipif open:J4.GO done
+up home
+play now 05*9 12*6 32 12*21 32 12*4 32 12*10 14*4 10 00 10 00 10 20 10 00 10 00 10 00 10 00 10 00 10 00 10 00 10 00 08*5 11*4 !J4.GO
+skipif open:J4.GO done
+up pgdn
+play now 11*14 08*9 16 06*2 18*12 38 18*7 !J4.GO
+skipif open:J4.GO done
+down pgdn
+play now 18*12 1A 2A 0A 12*30 32 15*4 25 14*6 01*11 16*12 36 16*15 !J4.GO
+skipif open:J4.GO done
+play now 1F 0F 1F 0F 1F 0F 1F 16 06 16 06 16 06 18 08 11*2 31 11*18 31 11*5 01 11 01 11 01 11 01 11 01 11 01 11 01 11 01 11 01 11 01 11 01 11 !J4.GO
+skipif open:J4.GO done
+play now 01 11 15 05*2 15 25 05 15*5 04*10 29 09*4 19*12 14 04*2 14 04*2 19*10 !J4.GO
+skipif open:J4.GO done
+play now 19 39 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 05 15 30 10*9 00*11 14*11 05*3 12*4 06*6 00*3 !J4.GO
+skipif open:J4.GO done
+play now 00*5 20 00*3 08*35 16 06*2 !J4.GO
+skipif open:J4.GO done
+play now 16 06*2 16 06*2 16 06 12*7 10 00 10 00 10 00 10 00 10*10 00*2 10 00*2 10 16*3 06*2 1A*38 15 05*2 !J4.GO
+skipif open:J4.GO done
+up pgdn
+play now 15 05*2 15 05 12 02*2 12 02*2 12 02*2 12 02*2 12 02*2 12 02 22 10 00*2 10 00*2 10 00*2 10 16 06 10 00 10 00 10 00 10 00 10 11*5 12 02 15*12 11*2 1A*5 18 08*2 18 08*2 38 08*2 18 08 28 10 00 10 00 10 00 10 !J4.GO
+skipif open:J4.GO done
+down pgdn
+play now 00 10 1A 0A 1A 16 06*2 16 06*2 36 06 00*25 11*6 31 11*5 19*4 39 19*5 14*7 11 01*2 !J4.GO
+skipif open:J4.GO done
+play now 11 01*2 11 01*2 31 01 16*11 10*23 00*20 !J4.GO
+skipif open:J4.GO done
+play now 00*2 09*12 15*9 10 00*2 10 00 11*3 19*8 10 00 10 00 10 20 10 00 10 00 10 00 10 00 10 00 10 00 30 20 10 00 30 00 10 00 10 00 10 00 10 00 10 00 10 00 10 00 18*9 0A*9 !J4.GO
+skipif open:J4.GO done
+play now 0A*8 00*9 10*4 16 06 14*10 06*7 26 18 08*2 18 08*2 18 08*2 18 08 19 09*2 19 09*2 19 09*2 19 09*2 18*4 10*6 14*2 !J4.GO
+skipif open:J4.GO done
+play now 14*6 11*3 14 04*2 14 18 38 18*10 14*15 01*7 1C*11 12*5 15*11 !J4.GO
+skipif open:J4.GO done
+play now 15*5 35 15*10 05 15 10*4 1A*2 04*17 36 06*2 16 06*2 16 06*2 !J4.GO
+skipif open:J4.GO done
+label done
+secs 2
+trace off
+waittrace off

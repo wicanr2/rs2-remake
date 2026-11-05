@@ -11,9 +11,9 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
-use crate::game::Game;
+use crate::game::Core;
 
-impl Game {
+impl Core {
     /// `loop`：`cx` 減 1，不為 0 則回傳 true（跳回）。
     fn pl_loop(&mut self) -> bool {
         self.r.cx = self.r.cx.wrapping_sub(1);

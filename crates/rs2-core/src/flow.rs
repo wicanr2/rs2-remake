@@ -2,12 +2,9 @@
 
 use crate::draw::{DrawCmd, ShtGroup};
 use crate::dseg::a;
-use crate::game::{Exit, Frame, Game, Input};
+use crate::game::{Core, Exit, Req};
 
-/// 取樣點回呼：`(狀態, 取樣位址)`。第一關是 `10F98h`、`10FE3h`。
-pub type Sample<'a> = &'a mut dyn FnMut(&Game, u32);
-
-impl Game {
+impl Core {
     /// `10CD0h` 至 `10D11h`：進入第一關。檔案載入由接收端負責，這裡保留順序與 `dseg` 寫入。
     pub(crate) fn enter_stage(&mut self) {
         self.s18812();
@@ -23,47 +20,36 @@ impl Game {
         self.ds.w16(a(0x20B7A), 0);
     }
 
-    /// 一個邏輯幀，等於主迴圈的一半（`10D29h` 至 `10D8Bh`）。
-    pub fn step(&mut self, input: &Input, on_sample: Sample) -> Frame {
-        if let Some(e) = self.finished {
-            return Frame { draws: Vec::new(), exit: Some(e), paused: false };
-        }
-        for &sc in input.scancodes {
-            self.int9(sc);
-        }
-        if self.paused {
-            // sub_10ECB 的等待迴圈：等 A8CCh 離開 2。
-            if self.ds.r8(0xA8CC) == 2 {
-                return Frame { draws: self.take_draws(), exit: None, paused: true };
-            }
-            self.ds.w8(0xA8CC, 0);
-            self.ds.w8(0xA862, 0);
-            self.paused = false;
-            if let Some(e) = self.round_end() {
-                self.finished = Some(e);
-                return Frame { draws: self.take_draws(), exit: Some(e), paused: false };
-            }
-        }
-        let mut exit = None;
-        if !self.second_page {
+    /// `10D29h` 至 `10D8Bh`：第一關主迴圈。回傳離開原因。
+    pub(crate) async fn s10d29(&mut self) -> Exit {
+        loop {
             self.s19a37();
             self.s10fea();
-            self.s10eea(on_sample);
-            self.second_page = true;
-        } else {
+            self.s10eea().await;
             self.s19a88();
-            self.s10eea(on_sample);
-            self.second_page = false;
-            if self.ds.r8(0xA8CC) == 1 {
-                // sub_10ECB：Esc 暫停，下一步起等待。
-                self.ds.w8(0xA8CC, 2);
-                self.paused = true;
-                return Frame { draws: self.take_draws(), exit: None, paused: false };
+            self.port.borrow_mut().at_round_end = true;
+            self.s10eea().await;
+            self.port.borrow_mut().at_round_end = false;
+            self.s10ecb().await;
+            let out = self.round_end();
+            if let Some(e) = out {
+                return e;
             }
-            exit = self.round_end();
+            self.suspend(Req::Checkpoint).await;
         }
-        self.finished = exit;
-        Frame { draws: self.take_draws(), exit, paused: false }
+    }
+
+    /// `sub_10ECB`：Esc 暫停。按下後等到 `A8CCh` 離開 2。
+    pub(crate) async fn s10ecb(&mut self) {
+        if self.ds.r8(0xA8CC) != 1 {
+            return;
+        }
+        self.ds.w8(0xA8CC, 2);
+        while self.ds.r8(0xA8CC) == 2 {
+            self.suspend(Req::Poll { paused: true }).await;
+        }
+        self.ds.w8(0xA8CC, 0);
+        self.ds.w8(0xA862, 0);
     }
 
     /// `10D3Bh` 至 `10D8Bh`：熱鍵、存活、過關連爆。
@@ -94,9 +80,10 @@ impl Game {
         None
     }
 
-    /// `10D59h`：音樂停止不在本切片。
+    /// `10D59h`。
     fn leave(&mut self, e: Exit) -> Exit {
         self.ds.w8(a(0x2739A), b'N');
+        self.s10b12();
         e
     }
 
@@ -109,7 +96,7 @@ impl Game {
     }
 
     /// `sub_10EEA`。
-    fn s10eea(&mut self, on_sample: Sample) {
+    async fn s10eea(&mut self) {
         if self.ds.r8(0x041C) == b'Y' && self.ds.r16(0x0422) == 0x28A {
             self.s10e33();
             self.ds.w16(0x0422, 0);
@@ -121,10 +108,10 @@ impl Game {
             self.s11141();
         }
         if self.ds.r16(0x0422) <= 0x26C {
-            self.s10f41(on_sample);
+            self.s10f41().await;
             return;
         }
-        self.s10f9f(on_sample);
+        self.s10f9f().await;
         if self.ds.r16(0x0422) == 0x26E {
             self.s10c3d();
             return;
@@ -135,7 +122,7 @@ impl Game {
     }
 
     /// `sub_10F41`：普通段的一幀。
-    fn s10f41(&mut self, on_sample: Sample) {
+    async fn s10f41(&mut self) {
         self.s17d82();
         self.s15c3c();
         self.s15d8c();
@@ -163,11 +150,13 @@ impl Game {
         self.s18c0a();
         self.ds.w8(0x9C8F, 4);
         self.s18672();
-        on_sample(self, 0x10F98);
+        self.suspend(Req::Sample(0x10F98)).await;
+        self.r.cx = 2;
+        self.s11097().await;
     }
 
     /// `sub_10F9F`：頭目段的一幀。
-    fn s10f9f(&mut self, on_sample: Sample) {
+    async fn s10f9f(&mut self) {
         self.s17d82();
         self.s15c3c();
         self.s15d8c();
@@ -187,18 +176,82 @@ impl Game {
         self.ds.w16(0x0422, c);
         self.s162b1();
         self.s178bb();
-        on_sample(self, 0x10FE3);
+        self.suspend(Req::Sample(0x10FE3)).await;
+        self.r.cx = 2;
+        self.s11097().await;
+    }
+
+    /// `sub_11097`：等 INT 8 累積到 `cx` 個 tick。模擬不花時間，所以進來時計數是上次歸零後的值。
+    /// INT 9 落在這段等待裡，協程恢復時才處理。
+    pub(crate) async fn s11097(&mut self) {
+        let cx = self.r.cx;
+        let mut ticks = 0;
+        while self.ds.r16(0xA7F9) < cx {
+            self.int8();
+            ticks += 1;
+        }
+        self.ds.w16(0xA7F9, 0);
+        self.suspend(Req::Wait { ticks }).await;
+        self.suspend(Req::WaitDone { cx }).await;
+    }
+
+    /// 原版的忙等迴圈每轉一圈呼叫一次：過一個 tick，交回控制權等按鍵。
+    pub(crate) async fn poll_tick(&mut self) {
+        self.int8();
+        self.suspend(Req::Poll { paused: false }).await;
+    }
+
+    /// `sub_10CD0`：第一關完整入口，含載入。回傳時 `dx` 是離開碼。
+    pub(crate) async fn s10cd0(&mut self) {
+        self.s19a37();
+        self.s18812();
+        self.s19a88();
+        self.s18819();
+        self.s1af3b();
+        self.s10b65();
+        self.s18819();
+        self.s1ae3b();
+        self.s1bed5();
+        self.ds.w8(a(0x1CFDB), b'A');
+        self.s18894();
+        self.s11112();
+        self.s10e33();
+        self.ds.w8(a(0x1CFAD), b'N');
+        self.ds.w16(a(0x20B7A), 0);
+        if self.ds.r8(a(0x1CFAB)) != b'N' {
+            self.s1aa52();
+            self.s10ad4();
+            self.ds.w8(a(0x2739A), b'Y');
+        }
+        let e = self.s10d29().await;
+        self.r.dx = match e {
+            Exit::End => b'E',
+            Exit::Quit => b'Q',
+            Exit::Clear => b'C',
+        } as u16;
+    }
+
+    /// INT 8（`1A7B5h`）對 `dseg` 的效果。反竄改分支在 `byte_273AD` = `Y` 時不執行，JOYMOUSE 輪詢不支援。
+    pub(crate) fn int8(&mut self) {
+        for o in [a(0x273B7), a(0x273B9), a(0x2739B)] {
+            let v = self.ds.r16(o).wrapping_add(1);
+            self.ds.w16(o, v);
+        }
+        let v = self.ds.r16(a(0x1D3A8)).wrapping_add(1);
+        self.ds.w16(a(0x1D3A8), if v >= 0x19 { 0 } else { v });
+        let v = self.ds.r16(a(0x1D3AE)).wrapping_add(1);
+        self.ds.w16(a(0x1D3AE), if v >= 0x1E { 0 } else { v });
     }
 
     /// `sub_10D8D`。
-    fn s10d8d(&mut self) {
+    pub(crate) fn s10d8d(&mut self) {
         if self.ds.r8(a(0x1CFDD)) == 0 {
             self.r.dx = b'E' as u16;
         }
     }
 
-    /// `sub_10D99`：熱鍵。Ctrl+D（`10AD4h`，音樂）與 Ctrl+W、Alt+W（`sub_1BDF7`，傾印畫面）不在本切片。
-    fn s10d99(&mut self) {
+    /// `sub_10D99`：熱鍵。Ctrl+W、Alt+W（`sub_1BDF7`，傾印畫面）不在本切片。
+    pub(crate) fn s10d99(&mut self) {
         // sub_10DF8：只保留清旗標的部分。
         if self.ds.r8(a(0x274C3)) == 1 && self.ds.r8(a(0x2749C)) == 1 {
             self.ds.w8(a(0x2749C), 0);
@@ -215,6 +268,7 @@ impl Game {
                 return;
             }
             if self.ds.r8(a(0x274AB)) == 1 {
+                self.s10ad4();
                 self.r.dx = b'N' as u16;
                 return;
             }
@@ -261,7 +315,7 @@ impl Game {
     fn s10b65(&mut self) {
         self.ds.w16(a(0x2685C), 0);
         self.s18812();
-        let put = |g: &mut Game, x: u16, y: u16, i: u16| {
+        let put = |g: &mut Core, x: u16, y: u16, i: u16| {
             g.ds.w16(a(0x26880), x);
             g.ds.w16(a(0x26882), y);
             g.ds.w16(a(0x26888), i);
@@ -298,7 +352,7 @@ impl Game {
         }
     }
 
-    fn set_dac(&mut self, start: u8, table: u16) {
+    pub(crate) fn set_dac(&mut self, start: u8, table: u16) {
         let mut rgb = [0u8; 48];
         for (i, v) in rgb.iter_mut().enumerate() {
             *v = self.ds.r8(table.wrapping_add(i as u16));
@@ -325,7 +379,7 @@ impl Game {
     }
 
     /// `sub_1100A`：幀計數。
-    fn s1100a(&mut self) {
+    pub(crate) fn s1100a(&mut self) {
         self.ds.w16(0x9CCA, 0x12);
         self.ds.w16(0x9CCE, 0xBF);
         self.r.cx = self.ds.r16(0x0422);

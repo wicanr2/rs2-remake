@@ -5,7 +5,7 @@
 //!
 //! 與原版逐像素的對拍在 `rs2-trace` 的 `tests/layer.rs`。
 
-use rs2_core::{BlitCmd, DrawCmd, ObjId, Op, Pool, ShtGroup};
+use rs2_core::{BegGroup, BlitCmd, DrawCmd, ObjId, Op, Pool, ShtGroup};
 use rs2_formats::{BankItem, GoFile};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink, png};
 
@@ -33,7 +33,7 @@ impl Rng {
     }
 }
 
-const ALL_OPS: [Op; 22] = [
+const ALL_OPS: [Op; 48] = [
     Op::S18C0A,
     Op::S18CE2,
     Op::S18D46,
@@ -56,7 +56,38 @@ const ALL_OPS: [Op; 22] = [
     Op::S1929F,
     Op::S1890D,
     Op::S1152D,
+    Op::S11504,
+    Op::S18894,
+    Op::S18C6E,
+    Op::S19068,
+    Op::S190CC,
+    Op::S19B40,
+    Op::S19C4F,
+    Op::S19E66,
+    Op::S19F3B,
+    Op::S19FF9,
+    Op::S1A144,
+    Op::S1A1E6,
+    Op::S18ACE,
+    // 重複列出比較常見的，讓新命令與舊命令的比重接近。
+    Op::S19ADC,
+    Op::S19BA4,
+    Op::S19DA8,
+    Op::S1A09F,
+    Op::S19C4F,
+    Op::S19E66,
+    Op::S19FF9,
+    Op::S1A144,
+    Op::S18ACE,
+    Op::S19B40,
+    Op::S19068,
+    Op::S18C6E,
+    Op::S1A1E6,
 ];
+
+/// 第三關捲動的單一命令（`S17FA0`、`S18031`、`S180C6`）。`S17EBA` 與 `S17EEA`、`S17F26` 與 `S17F5D`
+/// 成對出現（旋轉殘留不模擬），由 `scroll_group` 產生。
+const SCROLL_SINGLES: [Op; 3] = [Op::S17FA0, Op::S18031, Op::S180C6];
 
 fn base_cmd(op: Op) -> BlitCmd {
     BlitCmd {
@@ -74,6 +105,9 @@ fn base_cmd(op: Op) -> BlitCmd {
         text_x: 0,
         text_y: 0,
         sht_group: ShtGroup::Sht1,
+        mask_group: ShtGroup::Sht1,
+        beg_group: rs2_core::BegGroup::Beg1,
+        stride_reg: None,
         obj: None,
     }
 }
@@ -106,14 +140,63 @@ fn rand_go(r: &mut Rng, n: usize, mask: bool, h_max: u32, s_max: u32) -> GoFile 
     GoFile { mask, planes }
 }
 
+/// MAP 圖塊：8x10（每列 1 位元組、10 列），偶爾混一個別的尺寸，測 `sub_196E5` 不看項尺寸的行為。
+fn rand_map(r: &mut Rng, n: usize) -> GoFile {
+    let mut planes: [Vec<BankItem>; 4] = Default::default();
+    for _ in 0..n {
+        let odd = r.chance(10);
+        for p in planes.iter_mut() {
+            let (h, s) = if odd { (1 + r.below(12) as u16, 1 + r.below(3) as u16) } else { (10, 1) };
+            p.push(item(h, s, (0..h as usize * s as usize).map(|_| r.next() as u8).collect()));
+        }
+    }
+    GoFile { mask: None, planes }
+}
+
+/// 全部圖庫。SHT 系列都有遮罩（`SHT4` 的遮罩原版在另一個檔，載入後放在 `mask`），BH、J、BEG1 沒有。
 fn rand_assets(r: &mut Rng, n: usize) -> Assets {
-    Assets { my: rand_go(r, n, true, 14, 6), sht1: rand_go(r, n, true, 14, 6), bh1: rand_go(r, n, false, 30, 40) }
+    Assets {
+        my: rand_go(r, n, true, 14, 6),
+        sht1: rand_go(r, n, true, 14, 6),
+        sht2: rand_go(r, n, true, 14, 6),
+        sht3: rand_go(r, n, true, 14, 6),
+        sht4: rand_go(r, n, true, 14, 6),
+        sht5: rand_go(r, n, true, 14, 6),
+        bh1: rand_go(r, n, false, 30, 40),
+        bh2: rand_go(r, n, false, 30, 40),
+        bh4: rand_go(r, n, false, 30, 40),
+        map: rand_map(r, n),
+        j1: rand_go(r, n, false, 30, 40),
+        j2: rand_go(r, n, false, 30, 40),
+        j3: rand_go(r, n, false, 30, 40),
+        j4: rand_go(r, n, false, 30, 40),
+        beg1: rand_go(r, n, false, 30, 40),
+        unverified: Vec::new(),
+    }
 }
 
 fn rgb_of(vga: &VgaSink, page: u16) -> Vec<u8> {
     let mut buf = vec![0u8; 320 * 200 * 3];
     vga.render_page(page, &mut buf);
     buf
+}
+
+/// `LayerSink` 的索引色記憶體與 `VgaSink` 四個平面逐像素不同的數目（整個 64 KB 位址空間）。
+fn mem_diff(vga: &VgaSink, lay: &LayerSink) -> usize {
+    let px = lay.index_memory();
+    assert_eq!(px.len(), 0x10000 * 8);
+    let mut bad = 0;
+    for a in 0..0x10000usize {
+        let b = [vga.plane(0)[a], vga.plane(1)[a], vga.plane(2)[a], vga.plane(3)[a]];
+        for bit in 0..8usize {
+            let sh = 7 - bit;
+            let color = ((b[0] >> sh) & 1) | (((b[1] >> sh) & 1) << 1) | (((b[2] >> sh) & 1) << 2) | (((b[3] >> sh) & 1) << 3);
+            if px[a * 8 + bit] != color {
+                bad += 1;
+            }
+        }
+    }
+    bad
 }
 
 /// 回傳 RGBA 與 RGB 逐像素不同的像素數。
@@ -158,8 +241,57 @@ fn rand_cmd(r: &mut Rng, nitems: u32, page: u16) -> BlitCmd {
     c.dx = r.below(16) as u16 | if r.chance(10) { 0x30 } else { 0 };
     c.text_x = if r.chance(50) { 0x12 } else { r.below(36) as u16 };
     c.text_y = if r.chance(50) { 0xBF } else { r.below(190) as u16 };
-    c.sht_group = if r.chance(50) { ShtGroup::Bh1 } else { ShtGroup::Sht1 };
+    c.sht_group = SHT_GROUPS[r.below(SHT_GROUPS.len() as u32) as usize];
+    // 遮罩段只指向有遮罩的庫；偶爾指到 BH（沒有遮罩區段），兩邊都要記為異常。
+    c.mask_group = if r.chance(8) { ShtGroup::Bh1 } else { SHT_GROUPS[3 + r.below(5) as usize] };
+    c.beg_group = BEG_GROUPS[r.below(BEG_GROUPS.len() as u32) as usize];
+    // 核心把邏輯對 word_2687E 的寫入附在下一個命令上（含幀計數命令），兩邊都要套用。
+    c.stride_reg = if r.chance(15) { Some(r.below(0x60) as u16) } else { None };
     c
+}
+
+const SHT_GROUPS: [ShtGroup; 8] =
+    [ShtGroup::Bh1, ShtGroup::Bh2, ShtGroup::Bh4, ShtGroup::Sht1, ShtGroup::Sht2, ShtGroup::Sht3, ShtGroup::Sht4, ShtGroup::Sht5];
+const BEG_GROUPS: [BegGroup; 5] = [BegGroup::Beg1, BegGroup::J1, BegGroup::J2, BegGroup::J3, BegGroup::J4];
+
+/// 非 blit 的命令：單一 DAC、`rep stosw` 填顯示記憶體、map mask。`VramFill` 的起點與長度涵蓋兩頁與兩個暫存區。
+fn rand_extra(r: &mut Rng) -> DrawCmd {
+    match r.below(10) {
+        0..=2 => DrawCmd::SetDacOne { index: [0u8, 1, 8, 15, 56, 63, 0x30, 7][r.below(8) as usize], rgb: [r.below(64) as u8, r.below(64) as u8, r.below(64) as u8] },
+        3..=6 => DrawCmd::SetMapMask { mask: [1u8, 2, 4, 8, 0x0F, 0x0F, 0x0F][r.below(7) as usize] },
+        _ => {
+            let off = match r.below(6) {
+                0 => 0,
+                1 => 0x8000,
+                2 => 0x1F40,
+                3 => 0x9F40,
+                4 => r.below(0x10000) as u16,
+                _ => r.below(0x2000) as u16 + [0u16, 0x8000][r.below(2) as usize],
+            };
+            let words = [0u16, 1, 7, 40, 200, 1000][r.below(6) as usize];
+            let value = [0u16, 0xFFFF, 0x00FF, 0xFF00, 0xA55A][r.below(5) as usize];
+            DrawCmd::VramFill { off, words, value }
+        }
+    }
+}
+
+/// 第三關捲動：`S17EBA` 接 `S17EEA`、`S17F26` 接 `S17F5D`，前面選好單一平面（原版的 `sub_1882E`）。
+fn scroll_group(r: &mut Rng) -> Vec<DrawCmd> {
+    let (first, second) = if r.chance(50) { (Op::S17EBA, Op::S17EEA) } else { (Op::S17F26, Op::S17F5D) };
+    let mut a = base_cmd(first);
+    a.x = if r.chance(70) { 0 } else { r.below(8) as u16 };
+    a.scratch = if r.chance(70) { 0 } else { 0x8000 };
+    let b = BlitCmd { op: second, ..a };
+    let mut v = Vec::new();
+    for mask in [1u8, 2, 4, 8] {
+        if r.chance(60) {
+            v.push(DrawCmd::SetMapMask { mask });
+            v.push(DrawCmd::Blit(a));
+            v.push(DrawCmd::Blit(b));
+        }
+    }
+    v.push(DrawCmd::SetMapMask { mask: 0x0F });
+    v
 }
 
 fn set_dac(r: &mut Rng) -> Vec<DrawCmd> {
@@ -185,6 +317,12 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
     let assets = rand_assets(&mut r, n);
     let mut vga = VgaSink::new(assets.clone());
     let mut lay = LayerSink::new(assets, None);
+    if seed % 2 == 1 {
+        // 奇數種子兩邊都換成同一份 BIOS 字型：幀計數照原版寫進記憶體並永遠畫。
+        let font: Vec<u8> = (0..2048).map(|_| r.next() as u8).collect();
+        vga.set_counter_font(&font);
+        lay.set_counter_font(&font);
+    }
     let mut tracked: Vec<Tracked> = [
         (Op::S18F5D, Pool::Entity),
         (Op::S18F1A, Pool::Entity),
@@ -292,9 +430,30 @@ fn fuzz_run(seed: u64, frames: usize, break_cmd: Option<Break>) -> (usize, usize
         // 清頁命令維持在最前面，頁才一致。
         let at = cmds.iter().position(|d| matches!(d, DrawCmd::Blit(b) if b.op == Op::S19CF9 && b.page == page)).unwrap();
         cmds.swap(0, at);
+        // 非 blit 命令、第三關捲動的單一命令與成對命令，插在清頁之後的隨機位置（成對命令不拆開）。
+        for _ in 0..r.below(4) {
+            let at = 1 + r.below(cmds.len() as u32) as usize;
+            cmds.insert(at.min(cmds.len()), rand_extra(&mut r));
+        }
+        if r.chance(15) {
+            let mut c = base_cmd(SCROLL_SINGLES[r.below(3) as usize]);
+            c.x = r.below(40) as u16;
+            c.page = page;
+            c.scratch = if r.chance(50) { 0 } else { 0x8000 };
+            let at = 1 + r.below(cmds.len() as u32) as usize;
+            cmds.insert(at.min(cmds.len()), DrawCmd::Blit(c));
+        }
+        if r.chance(12) {
+            let at = 1 + r.below(cmds.len() as u32) as usize;
+            let g = scroll_group(&mut r);
+            cmds.splice(at.min(cmds.len())..at.min(cmds.len()), g);
+        }
         feed(&mut vga, &mut lay, cmds, &mut fed);
         let page = lay.draw_page();
         let want = rgb_of(&vga, page);
+        // 整個 64 KB 位址空間（兩頁、兩個暫存區、頁後的空隙）逐像素比對。
+        bad += mem_diff(&vga, &lay);
+        px += 0x10000 * 8;
         // 補間關閉、補間開啟的 alpha 1.0 都要與 VgaSink 相同；中間的 alpha 只求不 panic，且不影響之後的幀。
         for (a, o) in [(1.0f32, EXACT), (0.0, INTERP), (0.25, INTERP), (0.5, INTERP), (0.75, INTERP), (1.0, INTERP), (1.0, EXACT)] {
             let (img, w, h) = lay.render(a, o);
@@ -356,10 +515,6 @@ fn solid_go(h: u16, stride: u16) -> GoFile {
     }
 }
 
-fn empty_go() -> GoFile {
-    GoFile { mask: None, planes: Default::default() }
-}
-
 fn sprite_cmd(x: u16, y: u16, page: u16, obj: Option<ObjId>) -> DrawCmd {
     let mut c = base_cmd(Op::S18F5D);
     c.x = x;
@@ -392,7 +547,7 @@ fn white_bbox(img: &[u8], w: usize, h: usize) -> Option<(usize, usize, usize, us
 }
 
 fn sprite_sink() -> LayerSink {
-    let mut s = LayerSink::new(Assets { my: empty_go(), sht1: solid_go(4, 1), bh1: empty_go() }, None);
+    let mut s = LayerSink::new(Assets { sht1: solid_go(4, 1), ..Assets::empty() }, None);
     s.push_frame(&white_palette());
     s
 }
@@ -476,7 +631,7 @@ fn background_shift_interpolates_across_the_wrap() {
         mask: None,
         planes: [vec![item(1, 40, pattern.clone())], vec![item(1, 40, zero.clone())], vec![item(1, 40, zero.clone())], vec![item(1, 40, zero)]],
     };
-    let mut s = LayerSink::new(Assets { my: empty_go(), sht1: empty_go(), bh1 }, None);
+    let mut s = LayerSink::new(Assets { bh1, ..Assets::empty() }, None);
     let mut init = white_palette();
     for x in [0u16, 40] {
         let mut c = base_cmd(Op::S19ADC);
@@ -557,7 +712,7 @@ fn hd_draws_at_four_times_and_interpolates() {
     // 項目 0 是 8x4 邏輯像素，HD 32x16。
     std::fs::write(dir.join("SHT1/0000.png"), solid_png(32, 16, [255, 0, 0, 255])).unwrap();
     let hd = HdAssets::open(&dir).unwrap();
-    let mut s = LayerSink::new(Assets { my: empty_go(), sht1: solid_go(4, 1), bh1: empty_go() }, Some(hd));
+    let mut s = LayerSink::new(Assets { sht1: solid_go(4, 1), ..Assets::empty() }, Some(hd));
     s.push_frame(&white_palette());
     s.push_frame(&[clear_cmd(0x8000), sprite_cmd(1, 10, 0x8000, oid(1))]);
     s.push_frame(&[clear_cmd(0), sprite_cmd(3, 14, 0, oid(1))]);
@@ -606,7 +761,7 @@ fn hd_missing_and_wrong_size_fall_back_to_scaled_original_with_marker() {
         }
         g
     };
-    let mut s = LayerSink::new(Assets { my: empty_go(), sht1: go, bh1: empty_go() }, Some(hd));
+    let mut s = LayerSink::new(Assets { sht1: go, ..Assets::empty() }, Some(hd));
     s.push_frame(&white_palette());
     let mut cmds = vec![clear_cmd(0)];
     for (i, x) in [(0u16, 2u16), (1, 8), (2, 14)] {
@@ -629,7 +784,7 @@ fn hd_missing_and_wrong_size_fall_back_to_scaled_original_with_marker() {
     assert!(m[1].contains("0001.png") && m[1].contains("尺寸"));
     assert!(m[2].contains("0002.png") && m[2].contains("解碼失敗"));
     // 沒有 HD 資料夾時，hd: true 輸出原版圖的 4 倍最近鄰。
-    let mut plain = LayerSink::new(Assets { my: empty_go(), sht1: solid_go(4, 1), bh1: empty_go() }, None);
+    let mut plain = LayerSink::new(Assets { sht1: solid_go(4, 1), ..Assets::empty() }, None);
     plain.push_frame(&white_palette());
     plain.push_frame(&[clear_cmd(0), sprite_cmd(2, 10, 0, None)]);
     let small = plain.render(1.0, EXACT).0.to_vec();
@@ -649,7 +804,24 @@ fn hd_fuzz_does_not_panic() {
     let mut r = Rng(0xFEED_FACE_1234);
     let n = 6usize;
     let assets = rand_assets(&mut r, n);
-    for (lib, go) in [("MY", &assets.my), ("SHT1", &assets.sht1), ("BH1", &assets.bh1)] {
+    let libs = [
+        ("MY", &assets.my),
+        ("SHT1", &assets.sht1),
+        ("SHT2", &assets.sht2),
+        ("SHT3", &assets.sht3),
+        ("SHT4", &assets.sht4),
+        ("SHT5", &assets.sht5),
+        ("BH1", &assets.bh1),
+        ("BH2", &assets.bh2),
+        ("BH4", &assets.bh4),
+        ("MAP", &assets.map),
+        ("J1", &assets.j1),
+        ("J2", &assets.j2),
+        ("J3", &assets.j3),
+        ("J4", &assets.j4),
+        ("BEG1", &assets.beg1),
+    ];
+    for (lib, go) in libs {
         std::fs::create_dir_all(dir.join(lib).join("masks")).unwrap();
         for i in 0..n {
             let it = &go.planes[0][i];
@@ -706,6 +878,18 @@ fn hd_fuzz_does_not_panic() {
         for _ in 0..12 {
             cmds.push(DrawCmd::Blit(rand_cmd(&mut r, n as u32, page)));
         }
+        for _ in 0..3 {
+            cmds.push(rand_extra(&mut r));
+        }
+        if f % 3 == 0 {
+            cmds.extend(scroll_group(&mut r));
+            for op in SCROLL_SINGLES {
+                let mut c = base_cmd(op);
+                c.x = r.below(40) as u16;
+                c.page = page;
+                cmds.push(DrawCmd::Blit(c));
+            }
+        }
         lay.push_frame(&cmds);
         for a in [0.0, 0.5, 1.0] {
             let (img, w, h) = lay.render(a, RenderOpts { hd: true, ..INTERP });
@@ -723,7 +907,7 @@ fn hd_fuzz_does_not_panic() {
 fn flash_frame_keeps_position_interpolation() {
     let mut go = solid_go(4, 1);
     go.mask = Some(vec![item(4, 1, vec![0x00; 4])]); // 全是剪影
-    let mut s = LayerSink::new(Assets { my: empty_go(), sht1: go, bh1: empty_go() }, None);
+    let mut s = LayerSink::new(Assets { sht1: go, ..Assets::empty() }, None);
     // 色號 8 與 15 都是白。
     let mut hi = [0u8; 48];
     hi[24..27].copy_from_slice(&[63, 63, 63]);
@@ -750,4 +934,326 @@ fn flash_frame_keeps_position_interpolation() {
     // 遮罩在 y = 18 AND 掉空頁沒有可見效果，可見的是平面：前一幀閃白 (24,14)，這一幀平面 (40,19)，平面位置 = 遮罩位置加 1 列。
     let want = if rs2_gfx::INTERP_CROSS_OP { (32, 16 + 1) } else { (40, 19) };
     assert_eq!((bb.0, bb.1), want, "閃白之後那一幀的平面位置");
+}
+
+// ---------------------------------------------------------------------------
+// 全遊戲新增命令的 HD 與索引色行為
+// ---------------------------------------------------------------------------
+
+/// 色號 0 黑、色號 15 白的調色盤。
+fn pal_black_and_white15() -> Vec<DrawCmd> {
+    let mut hi = [0u8; 48];
+    hi[45..48].copy_from_slice(&[63, 63, 63]);
+    vec![DrawCmd::SetDac { start: 0, rgb: [0; 48] }, DrawCmd::SetDac { start: 0x30, rgb: hi }]
+}
+
+/// 指定 RGB 的外框 `(x0, y0, x1, y1)`（含）。
+fn bbox_of(img: &[u8], w: usize, h: usize, rgb: [u8; 3]) -> Option<(usize, usize, usize, usize)> {
+    let mut bb: Option<(usize, usize, usize, usize)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y * w + x) * 4;
+            if img[o..o + 3] == rgb {
+                bb = Some(match bb {
+                    None => (x, y, x, y),
+                    Some((a, b, c, d)) => (a.min(x), b.min(y), c.max(x), d.max(y)),
+                });
+            }
+        }
+    }
+    bb
+}
+
+fn hd_sink(dir: &std::path::Path, assets: Assets) -> LayerSink {
+    let mut s = LayerSink::new(assets, Some(HdAssets::open(dir).unwrap()));
+    s.push_frame(&pal_black_and_white15());
+    s
+}
+
+fn at(op: Op, x: u16, y: u16) -> BlitCmd {
+    BlitCmd { x, y, ..base_cmd(op) }
+}
+
+fn map_assets() -> Assets {
+    // MAP 圖塊 8x10，每列 1 位元組。
+    let it = || item(10, 1, vec![0xFF; 10]);
+    Assets { map: GoFile { mask: None, planes: [vec![it()], vec![it()], vec![it()], vec![it()]] }, ..Assets::empty() }
+}
+
+#[test]
+fn hd_map_tile_is_written_into_scratch_at_four_times_and_copied_out() {
+    let dir = temp_dir("hdmap");
+    std::fs::create_dir_all(dir.join("MAP")).unwrap();
+    std::fs::write(dir.join("MAP/0000.png"), solid_png(32, 40, [255, 0, 0, 255])).unwrap();
+    let mut s = hd_sink(&dir, map_assets());
+    // 圖塊寫在暫存區 A 的欄 2、列 3，再把這 10 列複製到顯示頁 (5, 20)。
+    let mut copy = at(Op::S19BA4, 5, 20);
+    copy.src_x = 2;
+    copy.src_y = 3;
+    copy.cx = 10;
+    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::S18ACE, 2, 3)), DrawCmd::Blit(copy)]);
+    let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    assert_eq!((w, h), (1280, 800));
+    assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((160, 80, 191, 119)));
+    assert!(s.missing_hd().is_empty(), "{:?}", s.missing_hd());
+    // 原版圖的索引色引擎同一組命令：8x10 的色號 15 圖塊（四平面都是 FF）。
+    let (img, w, _) = s.render(1.0, EXACT);
+    let px = |x: usize, y: usize| img[(y * w + x) * 4];
+    assert_eq!([px(40, 20), px(47, 29), px(48, 20), px(40, 30)], [255, 255, 0, 0]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hd_beg_and_j_libraries_read_their_own_directories() {
+    let dir = temp_dir("hdj");
+    std::fs::create_dir_all(dir.join("J2")).unwrap();
+    std::fs::create_dir_all(dir.join("BEG1")).unwrap();
+    std::fs::write(dir.join("J2/0000.png"), solid_png(32, 16, [0, 255, 0, 255])).unwrap();
+    std::fs::write(dir.join("BEG1/0000.png"), solid_png(32, 16, [0, 0, 255, 255])).unwrap();
+    let mut s = hd_sink(&dir, Assets { j2: solid_go(4, 1), beg1: solid_go(4, 1), ..Assets::empty() });
+    let mut a = at(Op::S19068, 3, 10);
+    a.beg_group = BegGroup::J2;
+    let mut b = at(Op::S19068, 20, 30);
+    b.beg_group = BegGroup::Beg1;
+    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(a), DrawCmd::Blit(b)]);
+    let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    assert_eq!(bbox_of(img, w, h, [0, 255, 0]), Some((96, 40, 127, 55)));
+    assert_eq!(bbox_of(img, w, h, [0, 0, 255]), Some((640, 120, 671, 135)));
+    assert!(s.missing_hd().is_empty(), "{:?}", s.missing_hd());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hd_inverted_draw_complements_rgb_and_fills_transparent_with_color_15() {
+    let dir = temp_dir("hdinv");
+    std::fs::create_dir_all(dir.join("MY")).unwrap();
+    // 8x2 邏輯像素 = 32x8：全部 (200,100,50)，左上角一個 HD 像素透明。
+    let mut rgba = [200u8, 100, 50, 255].repeat(32 * 8);
+    rgba[3] = 0;
+    std::fs::write(dir.join("MY/0000.png"), png::encode_rgba(32, 8, &rgba)).unwrap();
+    let mut s = hd_sink(&dir, Assets { my: solid_go(2, 1), ..Assets::empty() });
+    s.push_frame(&[clear_cmd(0), DrawCmd::Blit(at(Op::S18C6E, 1, 10))]);
+    let (img, w, _) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    let px = |x: usize, y: usize| [img[(y * w + x) * 4], img[(y * w + x) * 4 + 1], img[(y * w + x) * 4 + 2]];
+    assert_eq!(px(32 + 5, 40 + 5), [55, 155, 205]);
+    assert_eq!(px(32, 40), [255, 255, 255], "透明處是色號 15 的顏色");
+    assert_eq!(px(31, 40), [0, 0, 0], "矩形外不動");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hd_vram_fill_paints_bits_only_under_the_full_map_mask() {
+    let dir = temp_dir("hdfill");
+    std::fs::create_dir_all(dir.join("MY")).unwrap();
+    let mut s = hd_sink(&dir, Assets::empty());
+    let fill = DrawCmd::VramFill { off: 0, words: 20, value: 0x00FF };
+    // 40 位元組 = 一整列：低位元組 FF（8 個白像素），高位元組 00（黑）。
+    s.push_frame(&[clear_cmd(0), fill]);
+    let (img, w, _) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    let px = |x: usize, y: usize| img[(y * w + x) * 4];
+    assert_eq!([px(0, 0), px(31, 3), px(32, 0), px(0, 4)], [255, 255, 0, 0]);
+    assert_eq!(px(64, 0), 255, "每個字組的低位元組又是 FF");
+    // 部分平面的填色 HD 畫布表達不了，略過。
+    let mut s = hd_sink(&dir, Assets::empty());
+    s.push_frame(&[clear_cmd(0), DrawCmd::SetMapMask { mask: 2 }, fill]);
+    let (img, w, _) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    assert_eq!(img[0], 0);
+    let _ = w;
+    // 索引色引擎照做：只寫平面 1，色號 2。
+    let (img, w, _) = s.render(1.0, EXACT);
+    assert_eq!(img[0], 0, "色號 2 的 DAC 是黑");
+    let _ = w;
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hd_scroll_pipeline_moves_a_tile_left_by_forty_bytes_and_by_four_pixels() {
+    let dir = temp_dir("hdscroll");
+    std::fs::create_dir_all(dir.join("MAP")).unwrap();
+    std::fs::write(dir.join("MAP/0000.png"), solid_png(32, 40, [255, 0, 0, 255])).unwrap();
+    let mut s = hd_sink(&dir, map_assets());
+    // 欄 40 的圖塊經 sub_180C6 左移 28h 位元組到欄 0，sub_17FA0 從欄 0 起顯示。
+    s.push_frame(&[
+        clear_cmd(0),
+        DrawCmd::Blit(at(Op::S18ACE, 40, 0)),
+        DrawCmd::Blit(at(Op::S180C6, 0, 0)),
+        DrawCmd::Blit(BlitCmd { page: 0, ..at(Op::S17FA0, 0, 0) }),
+    ]);
+    let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((0, 0, 31, 39)));
+    // 暫存區 A 的欄 3 圖塊，選平面 3 後 sub_17EBA 與 sub_17EEA：B 相對 A 左移 4 像素，sub_18031 從 B 顯示。
+    let mut s = hd_sink(&dir, map_assets());
+    let b = |op: Op| DrawCmd::Blit(at(op, 0, 0));
+    s.push_frame(&[
+        clear_cmd(0),
+        DrawCmd::Blit(at(Op::S18ACE, 3, 0)),
+        DrawCmd::SetMapMask { mask: 8 },
+        b(Op::S17EBA),
+        b(Op::S17EEA),
+        DrawCmd::SetMapMask { mask: 0x0F },
+        DrawCmd::Blit(BlitCmd { page: 0, scratch: 0x8000, ..at(Op::S18031, 0, 0) }),
+    ]);
+    let (img, w, h) = s.render(1.0, RenderOpts { hd: true, ..EXACT });
+    assert_eq!(bbox_of(img, w, h, [255, 0, 0]), Some((80, 0, 111, 39)), "A 的像素 24～31 在 B 是 20～27");
+    // 索引色引擎：同一組命令，但只選了平面 3，所以圖塊（色號 15）在 B 只剩平面 3 的位元（色號 8），位置在像素 20～27。
+    let mem = s.index_memory();
+    let px = |x: usize, y: usize| mem[(y * 40 + x / 8) * 8 + x % 8];
+    assert_eq!([px(19, 0), px(20, 0), px(27, 9), px(28, 0), px(20, 10)], [0, 8, 8, 0, 0]);
+    assert_eq!(s.anomalies(), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn hd_sets_name_the_libraries_and_palettes_of_each_scene() {
+    use rs2_gfx::{HdLib, HdSet};
+    assert_eq!(HdSet::Title.libs(), vec![HdLib::My, HdLib::Beg1]);
+    assert_eq!(HdSet::Stage(3).libs(), vec![HdLib::My, HdLib::Sht3, HdLib::Map]);
+    assert_eq!(HdSet::Stage(4).libs(), vec![HdLib::My, HdLib::Sht4, HdLib::Bh4]);
+    assert_eq!(HdSet::Cutscene(2).libs(), vec![HdLib::My, HdLib::J2]);
+    assert!(HdSet::Stage(9).libs().is_empty());
+    // 每個調色盤名稱都要在 PALETTES 內，不然預載不到變體。
+    for set in [HdSet::Title, HdSet::Stage(1), HdSet::Stage(2), HdSet::Stage(3), HdSet::Stage(4), HdSet::Cutscene(1), HdSet::Cutscene(2), HdSet::Cutscene(3), HdSet::Cutscene(4), HdSet::Ending] {
+        for p in set.palettes() {
+            assert!(rs2_gfx::pal::PALETTES.iter().any(|q| q.0 == *p), "{set:?} 的調色盤 {p} 不在 PALETTES");
+        }
+    }
+    // 依場景預載：只讀該場景的圖庫。
+    let dir = temp_dir("hdset");
+    for lib in ["MY", "SHT2", "BH2", "SHT3"] {
+        std::fs::create_dir_all(dir.join(lib)).unwrap();
+    }
+    std::fs::write(dir.join("SHT2/0000.png"), solid_png(32, 16, [1, 2, 3, 255])).unwrap();
+    std::fs::write(dir.join("SHT3/0000.png"), solid_png(32, 16, [1, 2, 3, 255])).unwrap();
+    std::fs::write(dir.join("BH2/0000.png"), solid_png(32, 16, [1, 2, 3, 255])).unwrap();
+    let mut s = LayerSink::new(Assets { sht2: solid_go(4, 1), sht3: solid_go(4, 1), bh2: solid_go(4, 1), ..Assets::empty() }, Some(HdAssets::open(&dir).unwrap()));
+    let (files, bytes) = s.preload_hd_set(HdSet::Stage(2), 2).unwrap();
+    assert_eq!((files, bytes), (2, 2 * 32 * 16 * 4), "SHT2 與 BH2 各一張，SHT3 不讀");
+    assert!(s.loaded_hd().iter().all(|f| !f.starts_with("SHT3")));
+    assert!(LayerSink::new(Assets::empty(), None).preload_hd_set(HdSet::Title, 1).is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn index_engine_tracks_map_mask_and_stale_read_plane_like_vgasink() {
+    // 針對性的狀態案例（隨機差分測試也涵蓋）：partial map mask 下的清除、AND、填色與 VramFill。
+    let mut r = Rng(0x5EED);
+    let assets = rand_assets(&mut r, 4);
+    let mut vga = VgaSink::new(assets.clone());
+    let mut lay = LayerSink::new(assets, None);
+    let mut c = base_cmd(Op::S19ADC);
+    c.cx = 4;
+    let seq: Vec<DrawCmd> = vec![
+        DrawCmd::Blit(c),
+        DrawCmd::SetMapMask { mask: 2 },
+        DrawCmd::VramFill { off: 0, words: 300, value: 0xF0F0 },
+        DrawCmd::Blit(BlitCmd { dx: 0x0F, cx: 3, ..base_cmd(Op::S1A287) }),
+        DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::S1A09F) }),
+        DrawCmd::Blit(base_cmd(Op::S11504)),
+        DrawCmd::VramFill { off: 0x100, words: 10, value: 0xFFFF },
+    ];
+    for d in &seq {
+        vga.apply(d);
+    }
+    lay.push_frame(&seq);
+    assert_eq!(mem_diff(&vga, &lay), 0);
+    assert_eq!(lay.anomalies(), vga.anomalies());
+}
+
+// ---------------------------------------------------------------------------
+// 全流程對拍（rs2-trace 的 L8）找到的問題與快照入口
+// ---------------------------------------------------------------------------
+
+/// 幀計數命令不畫（沒有 BIOS 字型、`show_counter: false`）時，它帶的 `word_2687E` 仍要記下。
+/// 核心把邏輯對 `word_2687E` 的寫入附在下一個繪製命令上，`VgaSink::blit` 在分派前套用；
+/// 之後 `y < 0` 的列複製（`sub_19683` 的 `add si, word_2687E`，位址 19690h）靠它推進來源指標。
+#[test]
+fn hidden_frame_counter_still_carries_the_stride_residual() {
+    let mut r = Rng(0xC0FFEE);
+    let assets = rand_assets(&mut r, 6);
+    for stride in [1u16, 4, 5, 0x28] {
+        let mut vga = VgaSink::new(assets.clone());
+        let mut lay = LayerSink::new(assets.clone(), None);
+        // 暫存區填成每列不同的內容，來源起點差一個位元組就看得出來。
+        let mut fill = vec![DrawCmd::Blit(BlitCmd { cx: 4, ..base_cmd(Op::S19ADC) })];
+        for i in 0..6u16 {
+            fill.push(DrawCmd::Blit(BlitCmd { index: i, y: i * 7, x: i * 3, ..base_cmd(Op::S19ADC) }));
+        }
+        let mut counter = base_cmd(Op::S1890D);
+        counter.cx = 321;
+        counter.text_x = 0x12;
+        counter.text_y = 0xBF;
+        counter.stride_reg = Some(stride);
+        let mut up = base_cmd(Op::S19C4F);
+        up.y = (-6i16) as u16;
+        up.cx = 40;
+        up.shift = 3;
+        up.page = 0x8000;
+        let cmds: Vec<DrawCmd> = fill.into_iter().chain([DrawCmd::Blit(counter), DrawCmd::Blit(up)]).collect();
+        for c in &cmds {
+            vga.apply(c);
+        }
+        lay.push_frame(&cmds);
+        assert_eq!(mem_diff(&vga, &lay), 0, "stride {stride}");
+        assert_eq!(lay.stride_reg(), vga.stride_reg(), "stride {stride}");
+        // 補間重放（render 的另一條路徑）也要套用。
+        let want = rgb_of(&vga, lay.draw_page());
+        let (img, _, _) = lay.render(1.0, INTERP);
+        assert_eq!(diff_px(img, &want), 0, "stride {stride}，補間重放");
+    }
+}
+
+/// 快照入口：兩邊從同一份平面與 DAC 起跑，記憶體與畫面一開始就相同，之後的隨機命令也相同。
+#[test]
+fn snapshot_start_matches_vgasink() {
+    let mut r = Rng(0x5A5A_1234);
+    let assets = rand_assets(&mut r, 8);
+    let planes: Vec<Vec<u8>> = (0..4).map(|_| (0..0x10000).map(|_| r.next() as u8).collect()).collect();
+    let mut dac = [0u8; 768];
+    for v in dac.iter_mut() {
+        *v = r.below(64) as u8;
+    }
+    let mut vga = VgaSink::new(assets.clone());
+    let mut lay = LayerSink::new(assets, None);
+    let p = [&planes[0][..], &planes[1][..], &planes[2][..], &planes[3][..]];
+    vga.load_snapshot(p, &dac);
+    lay.load_snapshot(p, &dac);
+    vga.set_stride_reg(9);
+    lay.set_stride_reg(9);
+    assert_eq!(mem_diff(&vga, &lay), 0, "快照載入後");
+    let page = lay.draw_page();
+    assert_eq!(page, 0, "快照載入後畫頁回到 0");
+    let (img, _, _) = lay.render(1.0, EXACT);
+    assert_eq!(diff_px(img, &rgb_of(&vga, page)), 0, "快照後的畫面");
+    let mut r2 = Rng(77);
+    for f in 0..30 {
+        let page = if f % 2 == 0 { 0x8000u16 } else { 0 };
+        let mut cmds = vec![DrawCmd::Blit(BlitCmd { page, ..base_cmd(Op::S19CF9) })];
+        for _ in 0..12 {
+            let mut c = rand_cmd(&mut r2, 8, page);
+            c.stride_reg = if r2.chance(20) { Some(r2.below(0x60) as u16) } else { None };
+            cmds.push(DrawCmd::Blit(c));
+        }
+        for c in &cmds {
+            vga.apply(c);
+        }
+        lay.push_frame(&cmds);
+        assert_eq!(mem_diff(&vga, &lay), 0, "快照後第 {f} 幀");
+    }
+    assert_eq!(lay.anomalies(), vga.anomalies());
+}
+
+/// 快照載入後調色盤名稱依 DAC 0 至 15 的指紋辨識，不在清單內為 `None`。
+#[test]
+fn snapshot_identifies_the_palette_name() {
+    let mut r = Rng(3);
+    let assets = rand_assets(&mut r, 2);
+    let zeros: Vec<Vec<u8>> = (0..4).map(|_| vec![0u8; 0x10000]).collect();
+    let p = [&zeros[0][..], &zeros[1][..], &zeros[2][..], &zeros[3][..]];
+    let mut lay = LayerSink::new(assets, None);
+    let mut dac = [0u8; 768];
+    for v in dac.iter_mut() {
+        *v = 1 + r.below(60) as u8;
+    }
+    lay.load_snapshot(p, &dac);
+    assert_eq!(lay.palette_name(), None);
 }

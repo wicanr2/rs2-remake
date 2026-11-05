@@ -1,17 +1,33 @@
 //! 一局遊戲：`Game` 加兩個繪製接收端，以及視窗模式與 `--headless-steps` 共用的步進與繪製路徑。
-//! 不依賴 SDL，所以主迴圈以外的邏輯（重新開始、過關畫面、模式選擇）可以直接測。
+//! 不依賴 SDL，所以主迴圈以外的邏輯（模式選擇、排程）可以直接測。
 //!
 //! `Game::step` 回傳的 `draws` 同時餵給 `VgaSink`（補間關閉的原版圖）與 `LayerSink`（補間與 HD），
 //! 兩邊都隨時是最新的，所以 F1、F3 切換不需要重播。畫面顯示的選擇只影響 `render`，不碰 `Game`。
 
-use crate::font;
-use rs2_core::{DrawCmd, Exit, Fixes, Game, Input, Start};
+use rs2_audio::SpkEv;
+use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, MixFile, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
+use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink};
 use rs2_trace::Inputs;
 
-/// 過關後顯示的提示（這個切片只有第一關）。
-pub const CLEAR_TEXT: &str = "STAGE 1 CLEAR - PRESS ENTER";
+/// 遊戲從哪裡開始。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Begin {
+    /// 正式遊戲：從標題開始，走完四關與片尾。
+    Title,
+    /// 直接進第一關，結束就離開。除錯與 A6 回歸用。
+    Stage1(Start),
+}
+
+/// 交給音訊端的訊息，依遊戲發生的順序。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AudioMsg {
+    Play(MixFile),
+    Stop,
+    /// 一段繪圖附帶音。靜音時不產生。
+    Speaker(Vec<SpkEv>),
+}
 
 /// 顯示選項。`hd` 只有在 `Session::hd_available()` 時才生效。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,12 +41,8 @@ pub struct ViewOpts {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
-    /// `Exit::End`：已經重新開始。
-    Restarted,
-    /// `Exit::Clear`：顯示過關畫面，等 Enter。
-    Cleared,
-    /// `Exit::Quit`：Ctrl+Q。
-    Quit,
+    /// 遊戲結束，主迴圈離開。
+    Ended(Exit),
 }
 
 pub struct Session {
@@ -40,7 +52,14 @@ pub struct Session {
     view: ViewOpts,
     hd_available: bool,
     steps: u64,
-    cleared: bool,
+    /// 上一步回報的 `Frame.ticks`。
+    ticks: u16,
+    /// 上一步沒有繪製命令（輪詢、暫停），畫面停在最新一幀，不補間。
+    hold: bool,
+    /// 喇叭閘門函式沒有被改成 `retn`。
+    speaker_on: bool,
+    assets: Assets,
+    audio: Vec<AudioMsg>,
     rgb: Vec<u8>,
     frame: Vec<u8>,
     logged_missing: usize,
@@ -48,18 +67,28 @@ pub struct Session {
 
 impl Session {
     /// 建立並把進入關卡的初始化命令餵給接收端。
-    pub fn new(inputs: &Inputs, assets: Assets, hd: Option<HdAssets>, start: Start, fixes: Fixes, view: ViewOpts) -> Session {
-        let mut game = Game::new(&inputs.image, &inputs.dm1, start, fixes);
+    pub fn new(inputs: &Inputs, assets: Assets, hd: Option<HdAssets>, begin: Begin, fixes: Fixes, view: ViewOpts) -> Session {
+        let mut game = match begin {
+            Begin::Title => {
+                let ds = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
+                Game::from_snapshot(inputs.game_files(), ds.bytes(), Entry::Title, fixes)
+            }
+            Begin::Stage1(start) => Game::new(&inputs.image, &inputs.dm1, start, fixes),
+        };
         let init = game.take_draws();
         let hd_available = hd.is_some();
         let mut s = Session {
             game,
             vga: VgaSink::new(assets.clone()),
-            layer: LayerSink::new(assets, hd),
+            layer: LayerSink::new(assets.clone(), hd),
             view,
             hd_available,
             steps: 0,
-            cleared: false,
+            ticks: 0,
+            hold: false,
+            speaker_on: true,
+            assets,
+            audio: Vec::new(),
             rgb: vec![0; 320 * 200 * 3],
             frame: Vec::new(),
             logged_missing: 0,
@@ -80,32 +109,40 @@ impl Session {
     pub fn step(&mut self, scancodes: &[u8]) -> Outcome {
         let frame = self.game.step(&Input { scancodes }, &mut |_g: &Game, _pt: u32| {});
         self.steps += 1;
-        // 暫停步（frame.paused）沒有推進模擬，draws 是空的，LayerSink 會直接忽略。
+        self.ticks = frame.ticks;
+        self.hold = frame.draws.is_empty();
+        for c in &frame.audio {
+            match *c {
+                AudioCmd::Play(m) => self.audio.push(AudioMsg::Play(m)),
+                AudioCmd::Stop => self.audio.push(AudioMsg::Stop),
+                AudioCmd::Speaker(on) => self.speaker_on = on,
+            }
+        }
+        if self.speaker_on {
+            for d in &frame.draws {
+                if let DrawCmd::Blit(b) = d {
+                    let ev = speaker_events(&self.assets, b);
+                    if !ev.is_empty() {
+                        self.audio.push(AudioMsg::Speaker(ev));
+                    }
+                }
+            }
+        }
         self.feed(&frame.draws);
         match frame.exit {
             None => Outcome::Continue,
-            Some(Exit::Quit) => Outcome::Quit,
-            Some(Exit::End) => {
-                self.restart();
-                Outcome::Restarted
-            }
-            Some(Exit::Clear) => {
-                self.cleared = true;
-                Outcome::Cleared
-            }
+            Some(e) => Outcome::Ended(e),
         }
     }
 
-    /// 重新開始新局。`Game`、`VgaSink`、`LayerSink` 都沿用，血條殘留等行為依規格維持。
-    pub fn restart(&mut self) {
-        self.game.restart(Start::NewGame { difficulty: None });
-        let init = self.game.take_draws();
-        self.feed(&init);
-        self.cleared = false;
+    /// 取走累積的音訊訊息。
+    pub fn take_audio(&mut self) -> Vec<AudioMsg> {
+        std::mem::take(&mut self.audio)
     }
 
-    pub fn is_cleared(&self) -> bool {
-        self.cleared
+    /// 上一步回報的 `Frame.ticks`：到下一步要等幾個 tick。
+    pub fn ticks(&self) -> u16 {
+        self.ticks
     }
 
     /// 已呼叫 `step` 的次數（含暫停步與重新開始之後）。
@@ -149,10 +186,9 @@ impl Session {
     ///
     /// - 補間關且原版圖：`VgaSink::render_page(取樣時畫的那一頁)`，320×200，逐像素等於原版。
     /// - 其餘：`LayerSink::render(alpha, ..)`，原版圖 320×200，HD 1280×800。
-    ///
-    /// 過關後疊上提示文字。
     pub fn render(&mut self, alpha: f32) -> (&[u8], usize, usize) {
         let hd = self.hd_effective();
+        let alpha = if self.hold { 1.0 } else { alpha };
         let (w, h);
         if !self.view.tween && !hd {
             self.vga.render_page(self.layer.draw_page(), &mut self.rgb);
@@ -169,41 +205,6 @@ impl Session {
             self.frame.extend_from_slice(img);
             (w, h) = (iw, ih);
         }
-        if self.cleared {
-            overlay_clear(&mut self.frame, w, h);
-        }
         (&self.frame, w, h)
-    }
-}
-
-/// 在畫面中央疊上過關提示。字的大小隨寬度（320 寬 1 倍）。
-pub fn overlay_clear(buf: &mut [u8], w: usize, h: usize) {
-    let s = (w / 320).max(1);
-    let tw = font::text_width(CLEAR_TEXT, s) as i32;
-    let th = font::text_height(s) as i32;
-    let (cx, cy) = (w as i32 / 2, h as i32 / 2);
-    let pad = 4 * s as i32;
-    font::fill_rect(buf, w, h, cx - tw / 2 - pad, cy - th / 2 - pad, tw + 2 * pad, th + 2 * pad, [0, 0, 0, 255]);
-    font::draw_text(buf, w, h, cx - tw / 2, cy - th / 2, CLEAR_TEXT, s, [255, 255, 255, 255]);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlay_draws_inside_the_frame_and_keeps_alpha_opaque() {
-        for (w, h) in [(320usize, 200usize), (1280, 800)] {
-            let mut buf = vec![7u8; w * h * 4];
-            overlay_clear(&mut buf, w, h);
-            let changed = buf.chunks_exact(4).filter(|p| p != &[7, 7, 7, 7]).count();
-            assert!(changed > 0);
-            // 提示框在中央，四個角不動。
-            for &(x, y) in &[(0usize, 0usize), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
-                let o = (y * w + x) * 4;
-                assert_eq!(&buf[o..o + 4], &[7, 7, 7, 7]);
-            }
-            assert!(buf.chunks_exact(4).all(|p| p == [7, 7, 7, 7] || p[3] == 255));
-        }
     }
 }

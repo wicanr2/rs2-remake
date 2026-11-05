@@ -1,0 +1,56 @@
+# 全流程對拍隨機輸入 stage=4 profile=seeker seed=2 frames=1537。tools/dos/gen_fuzz.py wt 產生，不要手改。
+# 第 4 關入口開始，先跑 5 筆追蹤不送輸入，之後 poke 與 play now 交錯；poke 由 rs2dyn 記進 wait-wt_fz4-seeker-2.pokes。
+include /tools-dos/scenarios/to-s4.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_fz4-seeker-2
+trace fz full
+untiltrace 5 400_000_000
+pokew 0x1E6B2 0x0
+pokew 0x1E6B4 0x2
+poke 0x1DA8D 59
+poke 0x1DA8E 59
+pokew 0x273A5 0x59
+pokew 0x1DAA9 0x42
+play now 1A*2 0A*2 1A*4 00*2 10 30 10 00 10*3 30 10 00 10 00*2 10*3 30 10*2 00 10*3 30 10*15 00*2 19*2 39 19 09 1C*6 3C 0C 10*7 30 10 1A*8 14*7 10*3 30 10*3 00 10*4 11*7 01 11 31 11*4 01 11*2 !SHT5.GO
+skipif open:SHT5.GO done
+play now 11*7 19*3 02 12*3 32 12*3 10 00 10 00 10 30 10*5 11*3 31 11*2 00 10 16 36 16*4 06 16*3 18*7 00 10 00 30 10*3 00 10*4 08 38 18*4 !SHT5.GO
+skipif open:SHT5.GO done
+play now 15 05 15*3 1A*10 3A 10 00*2 10*6 00 10*2 00 10*4 00 10 30 10 00 10*5 00 10*8 30 10*6 00*2 10*6 30 10*2 02 12*3 1A*2 30 10*5 00 10*6 15*5 !SHT5.GO
+skipif open:SHT5.GO done
+play now 15 35 15*12 05*2 15 35 15*9 12*4 32 02 12*2 10 00 10*2 14*6 1F*4 3F 1F*4 0F 1F*2 0F 1F 3F 1F*3 0F 3F 1F*5 0F 1F*2 10*9 00 10 30 10*8 00 10*2 30 10*9 !SHT5.GO
+skipif open:SHT5.GO done
+play now 00 10*5 30 10*11 1A*3 3A 1A*3 10*9 30 10 16*2 05 15*2 05 15*7 05*2 15*3 35 15*4 10*3 00 10*10 30 10*3 16*3 34 04 14*5 04 09 19*5 29 19 09 19*11 09 19*3 39 19*6 1C*3 2C 0C 1C*2 0C*2 1C 30 10*2 00 10 06*2 !SHT5.GO
+skipif open:SHT5.GO done
+play now 16 10*3 30 00 10 00*3 10*16 30 10*5 00 30 10*16 0F 1F*2 3F 1F*2 0F 1F 3F 1F*8 0F 19*5 14*5 34 10*5 00 10*3 30 10*3 !SHT5.GO
+skipif open:SHT5.GO done
+down home
+play now 10 00 10*4 00*2 10*6 30 10*3 00 10*4 1A*10 10 30 10*3 16*2 06 16*6 10 30 10*11 06 16*4 36 16*6 18*2 10*2 30 10*7 30 10*3 00 10 00 10*2 00 10*5 00 10*2 20 00*2 10*9 00 10*8 30 10*10 30 10*8 30 10 15*2 !SHT5.GO
+skipif open:SHT5.GO done
+play now 15*2 35 15*7 10*6 00 10*2 30 00 10*6 00 10*2 30 10*3 14 04 14*4 34 15*4 35 15*2 1F*6 0F 1F*2 0F 1F*6 2F 1F*8 2F 0F !SHT5.GO
+skipif open:SHT5.GO done
+down pgup
+play now 1F*12 20 10*5 00 10*3 14*2 04 14*7 12*2 32 12*2 09 19 11*9 10*5 19*2 39 09*2 1A*3 0A*2 3A 1A*2 0A 10*4 15*5 19*2 09 14*2 19*4 35 15*2 05 15*5 19*3 !SHT5.GO
+skipif open:SHT5.GO done
+play now 19 39 19*2 18*7 15*3 05 15*2 12*3 32 12*4 19*8 39 19 09 19*11 09 !SHT5.GO
+skipif open:SHT5.GO done
+up home
+play now 19*5 39 19*8 10 00 10*4 30 14*9 04 14*3 04 05*2 15 35 15*3 05 15*13 35 05 15*5 !SHT5.GO
+skipif open:SHT5.GO done
+play now 18*11 12*3 32 12*20 32 12*5 32 12*2 16*7 !SHT5.GO
+skipif open:SHT5.GO done
+play now 13*8 18*2 38 18*2 10*5 00 10*3 01 11*2 01 10*5 30 10*2 00 19 09 19 1A*8 19*2 09 19*3 39 19*2 18*12 08 18*4 35 !SHT5.GO
+skipif open:SHT5.GO done
+play now 15*5 35 15 12*4 02 12*15 32 12*5 30 10*2 00 10*4 30 10 1A 0A 12*2 32 12*2 02*2 12 02 14*2 04 14*2 34 14 12*2 10*9 30 10*2 19*3 09 19 11*11 1A*3 3A 1A 10*4 18*11 38 12*4 16*5 36 16*5 36 16 06 16*2 14*5 19*3 10*3 30 10*4 20 10*5 !SHT5.GO
+skipif open:SHT5.GO done
+up pgup
+play now 10*6 00 10 08 18*3 08 38 18*8 38 05 15*3 19 09 19*3 16*2 06 16 06 16*2 30 10*8 00 16*8 36 16*18 36 16*4 06*2 16*5 06 36 16*4 36 16*5 11*6 31 11*7 01 11 00 10*6 30 10*5 00 10*7 00 10*5 00 16 36 06 16*3 !SHT5.GO
+skipif open:SHT5.GO done
+play now 16*6 10*4 30 11 01 11*2 10*3 30 10*4 00 10*10 20 10*2 00 10*2 19 39 19*2 15*11 05 11*6 !SHT5.GO
+skipif open:SHT5.GO done
+label done
+secs 2
+trace off
+waittrace off

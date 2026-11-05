@@ -77,6 +77,11 @@ impl Pal {
         }
     }
 
+    /// 套用 `SetDacOne`（INT 10h AX=1010h）。名稱不變：單一暫存器的改動（淡出、閃光）不換圖庫變體。
+    pub fn set_one(&mut self, index: u8, rgb: &[u8; 3]) {
+        self.dac[index as usize] = [rgb[0] & 0x3F, rgb[1] & 0x3F, rgb[2] & 0x3F];
+    }
+
     pub fn name_str(&self) -> Option<&'static str> {
         self.name.map(|i| PALETTES[i].0)
     }

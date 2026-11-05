@@ -5,17 +5,23 @@ pub mod draw;
 pub mod dseg;
 mod ebullet;
 mod entity;
+mod ending;
 mod flow;
 #[cfg(test)]
 mod fix_tests;
 mod fx;
 pub mod game;
+mod loader;
 mod pbullet;
 mod player;
+mod stage2;
+mod stage3;
+mod stage4;
+mod title;
 pub mod regs;
 mod video;
 
-pub use draw::{BlitCmd, DrawCmd, ObjId, Op, Pool, ShtGroup};
+pub use draw::{AudioCmd, BegGroup, BlitCmd, DrawCmd, MixFile, ObjId, Op, Pool, ShtGroup};
 pub use dseg::{Dseg, a};
-pub use game::{A0_EXEMPT, Exit, Fixes, Frame, Game, Input, Start};
+pub use game::{A0_EXEMPT, Core, DS_EXEMPT, Entry, Exit, Fixes, Frame, Game, GameFiles, Input, Start, boot_ds, boot_ds_with_dm1, ds_exempt};
 pub use regs::Regs;

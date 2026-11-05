@@ -1,0 +1,203 @@
+diff --git a/cmd/rs2dyn/audio.go b/cmd/rs2dyn/audio.go
+new file mode 100644
+index 00000000..06c291d9
+--- /dev/null
++++ b/cmd/rs2dyn/audio.go
+@@ -0,0 +1,61 @@
++package main
++
++import (
++	"bufio"
++	"fmt"
++	"os"
++	"path/filepath"
++
++	"github.com/wicanr2/dosgolem/internal/machine"
++)
++
++// audioTrace 記下 OPL 暫存器寫入、喇叭閘門與 PIT 通道 2 的變化，一行一筆：
++//
++//	種類 步數 tick 週期（只有 OPL 有） 值...
++//
++// tick 是 IRQ 0 的累計次數，ASMDRV 改寫 PIT 之後就是驅動的計時 tick。
++type audioTrace struct {
++	f *os.File
++	w *bufio.Writer
++}
++
++func (r *rt) audioStart(name string) error {
++	if r.au != nil {
++		return fmt.Errorf("audiotrace 已經開著")
++	}
++	f, err := os.Create(filepath.Join(r.out, "audio-"+name+".tsv"))
++	if err != nil {
++		return err
++	}
++	a := &audioTrace{f: f, w: bufio.NewWriter(f)}
++	r.au = a
++	m := r.m
++	m.ObserveOPLWrites(func(w machine.OPLWrite) {
++		fmt.Fprintf(a.w, "O\t%d\t%d\t%d\t%02X\t%02X\n", w.Step, m.Ticks, w.Cycles, w.Reg, w.Val)
++	})
++	m.ObserveSpeaker(func(s machine.SpeakerSample) {
++		fmt.Fprintf(a.w, "S\t%d\t%d\t0\t%d\t%d\n", s.Step, m.Ticks, s.Level, s.Gate)
++	})
++	m.ObservePITChannel2(func(p machine.PIT2Change) {
++		fmt.Fprintf(a.w, "P\t%d\t%d\t0\t%d\t%d\n", p.Step, m.Ticks, p.Divisor, p.Mode)
++	})
++	r.logf("audiotrace", "start %s", name)
++	return nil
++}
++
++func (r *rt) audioStop() error {
++	if r.au == nil {
++		return fmt.Errorf("audiotrace 沒有開")
++	}
++	m := r.m
++	m.ObserveOPLWrites(nil)
++	m.ObserveSpeaker(nil)
++	m.ObservePITChannel2(nil)
++	err := r.au.w.Flush()
++	if e := r.au.f.Close(); err == nil {
++		err = e
++	}
++	r.au = nil
++	r.logf("audiotrace", "stop")
++	return err
++}
+diff --git a/cmd/rs2dyn/rt.go b/cmd/rs2dyn/rt.go
+index 0c18d84f..d6ce20a4 100644
+--- a/cmd/rs2dyn/rt.go
++++ b/cmd/rs2dyn/rt.go
+@@ -90,6 +90,7 @@ type rt struct {
+ 	wt        *waitTracer // waittrace（wait.go）
+ 	wtErr     error       // waitSync 遇到的錯誤，由下一個 step 回傳
+ 	wtStopAt  int64       // -waitstop，< 0 表示沒有
++	au        *audioTrace // audiotrace 開著時
+ 	playStop  string      // play 的 !NAME：這個檔（大寫）開啟過就視為關卡已結束，不再等筆數
+ 	skipLabel string      // skipif 成立後略過命令直到這個 label
+ }
+diff --git a/cmd/rs2dyn/script.go b/cmd/rs2dyn/script.go
+index 3e020986..731c53dc 100644
+--- a/cmd/rs2dyn/script.go
++++ b/cmd/rs2dyn/script.go
+@@ -49,6 +49,8 @@ import (
+ //	settle                 讓最近一次取樣所在的半步走完，寫 trace-NAME.end（rows=N exit=none|E|Q|C），供逐幀比對判斷離開
+ //	dsdump EVERY           完整追蹤開著時，筆數是 EVERY 倍數的取樣點另存整個資料段 ds-NAME-n.ds（0 關閉）
+ //	waittrace NAME [STOPN] sub_11097 每次離開等待（1109Dh）記一筆到 wait-NAME.jsonl、.dsd（格式見 wait.go）；waittrace off 結束
++//	audiotrace NAME|off    開始或停止記錄 OPL、喇叭閘門與 PIT 通道 2（audio-NAME.tsv）
++//	waitbanks N            n=N 那筆寫完後把圖庫記憶體傾印成 wait-NAME.bk，腳本繼續
+ //	waitstop N             n=N 那筆寫完後傾印 NAME-wN.ds、.p0～p3、.json、.png 並結束（也可用旗標 -waitstop）
+ //	waitsync on|off        waittrace 開著時，鍵與 poke 先等到等待迴圈裡才送（預設 on）
+ //	untilwait N [budget]   跑到 waittrace 已寫出 N 筆
+@@ -580,6 +582,29 @@ func (r *rt) exec(f []string) error {
+ 			r.wtStopAt = int64(v)
+ 		}
+ 		return nil
++	case "audiotrace":
++		// audiotrace NAME | off：開始或停止記錄 OPL、喇叭閘門與 PIT 通道 2（audio-NAME.tsv）
++		if err := need(1); err != nil {
++			return err
++		}
++		if f[1] == "off" {
++			return r.audioStop()
++		}
++		return r.audioStart(f[1])
++	case "waitbanks":
++		// waitbanks N：waittrace 的 n=N 那筆寫完後把圖庫記憶體傾印成 wait-NAME.bk，腳本繼續
++		if err := need(1); err != nil {
++			return err
++		}
++		if r.wt == nil {
++			return fmt.Errorf("waittrace 還沒開")
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		r.wt.banksAt = int64(v)
++		return nil
+ 	case "waitsync":
+ 		// waitsync on|off：waittrace 開著時，鍵與 poke 是否先等到 sub_11097 的等待迴圈裡才送（預設 on）
+ 		if err := need(1); err != nil {
+diff --git a/cmd/rs2dyn/wait.go b/cmd/rs2dyn/wait.go
+index 7edfd117..f39fa691 100644
+--- a/cmd/rs2dyn/wait.go
++++ b/cmd/rs2dyn/wait.go
+@@ -77,6 +77,7 @@ type waitTracer struct {
+ 	irqs                  uint64   // 已處理的 m.KeyIRQs
+ 
+ 	stopAt int64 // >= 0：寫完這一筆（n 欄）之後傾印並停止
++	banksAt int64 // >= 0：寫完這一筆之後把圖庫記憶體傾印成 wait-NAME.bk，不停止
+ 
+ 	sync        bool
+ 	keyIn       uint64 // 在等待迴圈裡送達的鍵
+@@ -110,7 +111,7 @@ func (r *rt) waitStart(name string, stopAt int64) error {
+ 	t := &waitTracer{name: name, jf: jf, jw: bufio.NewWriterSize(jf, 1<<16), df: df, dw: bufio.NewWriterSize(df, 1<<20),
+ 		cur: make([]byte, 0x10000), buf: make([]byte, 0, 1024),
+ 		cmpLin: a, jbLin: r.base + idaWaitJb - idaBase, outLin: r.base + idaWaitOut - idaBase,
+-		stopAt: stopAt, sync: true, irqs: r.m.KeyIRQs, tick0: r.m.Ticks}
++		stopAt: stopAt, banksAt: -1, sync: true, irqs: r.m.KeyIRQs, tick0: r.m.Ticks}
+ 	if r.wtStopAt >= 0 && stopAt < 0 {
+ 		t.stopAt = r.wtStopAt
+ 	}
+@@ -206,6 +207,8 @@ func (r *rt) waitRecord() error {
+ 	b = strconv.AppendUint(b, uint64(c.R[cpu.CX]), 10)
+ 	b = append(b, `,"frame":`...)
+ 	b = strconv.AppendUint(b, uint64(r.iw(idaFrame)), 10)
++	b = append(b, `,"step":`...)
++	b = strconv.AppendUint(b, m.Steps, 10)
+ 	b = append(b, `,"sc":[`...)
+ 	for i, k := range t.sc {
+ 		if i > 0 {
+@@ -253,6 +256,11 @@ func (r *rt) waitRecord() error {
+ 	t.jw.Flush()
+ 	t.dw.Flush()
+ 	t.n++
++	if t.banksAt >= 0 && int64(t.n-1) == t.banksAt {
++		if err := r.dumpBanks("wait-" + t.name); err != nil {
++			return err
++		}
++	}
+ 	if t.stopAt >= 0 && int64(t.n-1) == t.stopAt {
+ 		name := fmt.Sprintf("%s-w%d", t.name, t.stopAt)
+ 		if err := r.dumpDS(name); err != nil {
+@@ -264,6 +272,9 @@ func (r *rt) waitRecord() error {
+ 		if err := r.shot(name); err != nil {
+ 			return err
+ 		}
++		if err := r.dumpBanks(name); err != nil {
++			return err
++		}
+ 		r.logf("waitstop", "n=%d 已傾印 %s", t.stopAt, name)
+ 		return errWaitStop
+ 	}
+@@ -400,3 +411,28 @@ func (r *rt) untilWait(n, budget uint64) error {
+ 	}
+ 	return r.runUntil(fmt.Sprintf("等待筆數 >= %d", n), func() bool { return r.wt.n >= n }, budget)
+ }
++
++// dumpBanks 把圖庫記憶體存成 NAME.bk：10 位元組表頭是遮罩段與四個平面段（dseg:39Ch 起的 5 個段值），
++// 之後是第一段開頭到最後一段結尾（段起點 + 64 KB）的線性記憶體。越界圖號會讀到段內的殘留內容，
++// 要有這份才能在重製端重現並證實。
++func (r *rt) dumpBanks(name string) error {
++	if _, err := r.gaddr(0x1CBC0); err != nil {
++		return err
++	}
++	ds := r.base + dsBias - idaBase
++	var segs [5]uint32
++	b := make([]byte, 0, 10)
++	for i := range segs {
++		lo, hi := r.m.Read8(ds+0x39C+2*uint32(i)), r.m.Read8(ds+0x39D+2*uint32(i))
++		segs[i] = uint32(lo) | uint32(hi)<<8
++		b = append(b, lo, hi)
++	}
++	for a := segs[0] << 4; a < segs[4]<<4+0x10000; a++ {
++		b = append(b, r.m.Read8(a))
++	}
++	if err := os.WriteFile(filepath.Join(r.out, name+".bk"), b, 0o644); err != nil {
++		return err
++	}
++	r.logf("dumpbanks", "%s", name)
++	return nil
++}

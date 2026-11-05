@@ -10,9 +10,9 @@
 
 use crate::draw::Pool;
 use crate::dseg::a;
-use crate::game::Game;
+use crate::game::Core;
 
-impl Game {
+impl Core {
     /// `sub_16302`：第一關背景五層（天空、波浪、倒懸岩、山影遮罩、山影圖），再填上方空白。
     pub(crate) fn s16302(&mut self) {
         // 天空（層 0）。

@@ -196,14 +196,21 @@ fn replay_one(inputs: &Inputs, trace: &Path, pokes: &[Poke], end: &End, dumps: &
         while next_poke < pokes.len() && pokes[next_poke].row == n {
             let p = &pokes[next_poke];
             if p.width == 1 {
-                g.ds.w8(a(p.addr), p.val as u8);
+                g.poke8(a(p.addr), p.val as u8);
             } else {
-                g.ds.w16(a(p.addr), p.val);
+                g.poke16(a(p.addr), p.val);
             }
             st.pokes_applied += 1;
             next_poke += 1;
         }
         let sc = parse_sc(want);
+        // 按著 Esc 走到一輪結尾就進暫停，這一筆的掃描碼是暫停之後才送的（腳本用 untilpc 10ED8h 等它）。
+        if g.ds.r8(0xA8CC) == 1 && g.at_round_end() {
+            let f = g.step(&Input { scancodes: &[] }, &mut |_g: &Game, _pt: u32| {});
+            if !f.paused {
+                return Err(format!("第 {n} 筆前應該進暫停"));
+            }
+        }
         let mut got: Option<String> = None;
         let mut snap: Option<Vec<u8>> = None;
         let want_snap = dumps.contains_key(&n);
@@ -236,7 +243,7 @@ fn replay_one(inputs: &Inputs, trace: &Path, pokes: &[Poke], end: &End, dumps: &
             st.ds_checked += 1;
         }
         st.rows += 1;
-        last_exit = f.exit;
+        last_exit = if n + 1 == lines.len() { f.exit.or_else(|| g.settle()) } else { f.exit };
         if f.exit.is_some() && n + 1 < lines.len() {
             return Err(format!("重製在第 {n} 筆之後{}，但收據還有 {} 筆", exit_name(f.exit), lines.len() - n - 1));
         }

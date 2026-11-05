@@ -2,18 +2,18 @@
 //! 不用原版檔：資料段全 0，只擺這個情境需要的值。
 
 use crate::dseg::a;
-use crate::game::{Fixes, Game, Start};
+use crate::game::{Core, Fixes, Start};
 
-fn game(fixes: Fixes) -> Game {
+fn game(fixes: Fixes) -> Core {
     let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-    Game::new(&image, &[], Start::Demo, fixes)
+    Core::new(&image, &[], Start::Demo, fixes)
 }
 
 const G2: u16 = 0x2C1C;
 const EB_TABLE: u16 = 0x32B3;
 
 /// 把敵彈槽 `slot` 的 1×1 形狀寫進 G2，回傳寫到的位址。走真正的 `sub_17855`。
-fn write_bullet_cell(g: &mut Game, slot: u8, shape: u8) -> u16 {
+fn write_bullet_cell(g: &mut Core, slot: u8, shape: u8) -> u16 {
     let s = 0x7000u16;
     g.ds.w16(s, 1);
     g.ds.w16(s + 2, 1);
@@ -175,4 +175,20 @@ fn seeker_spawn_leak_on_counts_actual_spawns() {
         assert_eq!(fire_b(Fixes::ALL, 19, facing), 1);
         assert_eq!(fire_b(Fixes::ALL, 20, facing), 0);
     }
+}
+
+/// 第二關幀 260 的中頭目合成：沒被打中過（`byte_1CFAA` 是 `N`）時原版永遠卡住，修正後照常往下走。
+#[test]
+fn no_hit_hang_on_continues() {
+    let mut g = game(Fixes::ALL);
+    g.ds.w8(a(0x1CFAA), b'N');
+    g.s1316c();
+}
+
+#[test]
+#[should_panic(expected = "131CE")]
+fn no_hit_hang_off_reproduces_the_hang() {
+    let mut g = game(Fixes::NONE);
+    g.ds.w8(a(0x1CFAA), b'N');
+    g.s1316c();
 }

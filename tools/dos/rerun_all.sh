@@ -2,6 +2,8 @@
 # 重跑 docs/re/10-dynamic-receipts.md 引用的全部收據，輸出到 workspace/dosrun/<輸出名>/。
 #   tools/dos/rerun_all.sh build          建置 workspace/dosgolem 的 rs2dyn（要先套 tools/dosgolem-patches）
 #   tools/dos/rerun_all.sh g1|g2|g3|g4|g5|g6|g7|g8|g9  每組最多 4 個容器並行（每個 1 核、2 GB），組內前景等待
+#   tools/dos/rerun_all.sh g11  音訊收據與第二關卡死條件（hang_s2 預期逾時，exit=1）
+#   tools/dos/rerun_all.sh g10  全流程對拍收據 wt_*（規格 002），最多 3 個容器並行（每個 2 核、2 GB），輸出 workspace/dosrun/wt_*
 # 腳本、配置（A/B/C，見 run_scenario.sh）與逾時依下表。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -32,5 +34,10 @@ case "${1:-}" in
     "$R" defect-armor defect_armor A 590 & "$R" defect-seeker-leak defect_seeker_leak A 590 & "$R" defect-seeker-ctrl defect_seeker_ctrl A 590 & "$R" defect-slot-carry defect_slot_carry A 590 & wait ;;
   g9) # 重製對拍用：兩個入口的第一幀傾印、頭目擊殺的平面傾印
     "$R" a0-demo a0_demo A 590 & "$R" a0-newgame a0_newgame A 590 & "$R" a5-boss a5_boss A 590 & wait ;;
-  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5|g6|g7|g8|g9" >&2; exit 1 ;;
+  g10) # 全流程對拍收據（規格 002）：wt_*，一次最多 3 個容器，名稱前綴 rs2-wt-。含 stage1 到 stage4、ending、p2、pause、fz2 到 fz4 各 3 份
+    "$ROOT/tools/dos/wt_run.sh" -j 3 title flow menu mute stage1 stage2 stage3 stage4 ending p2 pause \
+      fz2-mix-1 fz2-sweep-2 fz2-spread-3 fz3-mix-1 fz3-laser-2 fz3-roam-3 fz4-mix-1 fz4-seeker-2 fz4-sweep-3 ;;
+  g11) # 音訊收據（規格 003）與第二關卡死條件
+    "$R" au-title au_title A 800 & "$R" au-flow au_flow A 800 & "$R" hang-s2 hang_s2 A 590 & "$R" hang-s2-ctrl hang_s2_ctrl A 590 & wait ;;
+  *) echo "用法：rerun_all.sh build|g1|g2|g3|g4|g5|g6|g7|g8|g9|g10|g11" >&2; exit 1 ;;
 esac

@@ -1,0 +1,65 @@
+# 全流程對拍收據 wt_flow：標題按鍵進遊戲，第一關開秘技，之後每一關開秘技、玩幾秒，以 Ctrl+C 離開，
+# 經 J 過場（按空白）過四關，第四關 Ctrl+C 進片尾，按鍵看完片尾，按 Q 離開。鍵都在等待迴圈裡送（waitsync）。
+include /tools-dos/scenarios/prefix-to-title.txt
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+audiotrace wt_flow
+waittrace wt_flow
+# 第四關按 Ctrl+C 時還活著的兩個實體把第 9 號圖帶進片尾，SHT5 只有 5 項，原版讀到表外記憶體
+waitbanks 437
+untilopen BEG1.BD4 1 400_000_000
+secs 5.2
+tap space 0.3 0
+untilopen J1.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen B.MIX 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第一關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J2.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT2.GO 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第二關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J3.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT3.GO 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第三關 Ctrl+C ===
+chord ctrl+c 0.4 0.1
+untilopen J4.GO 1 600_000_000
+secs 3
+tap space 0.3 0
+untilopen SHT4.GO 1 600_000_000
+untilvec8
+until16 0x1CFE2 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+secs 3
+log === 第四關 Ctrl+C：進片尾 ===
+chord ctrl+c 0.4 0.1
+untilopen SHT5.GO 1 600_000_000
+secs 4
+tap space 0.3 0
+secs 2
+tap space 0.3 0
+secs 12
+log === 片尾按 Q 離開 ===
+tap q 0.3 0
+secs 6
+waittrace off
+audiotrace off

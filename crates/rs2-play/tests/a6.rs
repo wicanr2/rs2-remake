@@ -14,8 +14,10 @@
 //! | 負對照 | 改收據一個掃描碼，雜湊必須不同，且不同的第一步不早於被改的那一步 |
 //! | HD | 有 `RS2_HD` 才跑：HD 圖開關與中途切換，雜湊相同 |
 
-use rs2_core::{Fixes, Game, Input, Start};
+use rs2_core::{Entry, Fixes, Game, Input, Start, boot_ds_with_dm1};
 use rs2_formats::sha256_hex;
+use rs2_gfx::Assets;
+use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
 use rs2_trace::{load_inputs, parse_sc};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -265,6 +267,104 @@ fn a6_hd_group() {
     compared += r.hashes.len();
     assert!(compared > 0);
     println!("A6 HD：{compared} 筆雜湊與原版圖相同");
+}
+
+const TITLE_STEPS: usize = 1500;
+
+/// 規格 002 B7：用全流程收據的按鍵，`rs2-play` 從標題走完四關到片尾。
+///
+/// 每步的掃描碼來自 `replay_observed`（它同時確認這份輸入和原版逐筆相同），每步 `Dseg` 雜湊也來自那裡，
+/// 所以這裡比到的是「前端走的路徑等於通過全流程對拍的路徑」。開補間、HD 全開時雜湊也要一樣，
+/// 修正全開時不比雜湊，但要走完不出錯。
+#[test]
+#[ignore]
+fn b7_play_from_title_to_ending() {
+    let dir = env_path("RS2_ORIG");
+    let inputs = load_inputs(&dir).unwrap();
+    let assets = Assets::load(&dir).unwrap();
+    let rc = load_receipt(&env_path("RS2_DOSRUN").join("wt_flow")).unwrap();
+    let mut lines = String::new();
+    let mut want: Vec<String> = Vec::new();
+    let mut frames = 0u32;
+    let opts = ReplayOpts { ds_report: false, locate_root: None, boot: true };
+    let v = replay_observed(&inputs, &assets, &rc, &opts, &mut |ev| {
+        if let ReplayEvent::StepAt { sc, ds, .. } = ev {
+            let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
+            lines.push_str(&format!("{{\"sc\":[{}]}}\n", codes.join(",")));
+            want.push(sha256_hex(ds));
+            frames = u16::from_le_bytes([ds[0x422], ds[0x423]]) as u32;
+        }
+    });
+    assert!(matches!(v, Verdict::Pass { .. }), "全流程收據沒有通過");
+    assert!(frames > 0, "最後沒有停在片尾");
+    let replay = out_dir().join("flow-sc.jsonl");
+    std::fs::write(&replay, lines).unwrap();
+    let rp = replay.to_str().unwrap();
+    let steps = want.len().to_string();
+
+    let r = run("flow-orig", &["--original-bugs", "--replay", rp, "--tween", "off", "--headless-steps", &steps]);
+    assert_eq!(r.hashes, want, "前端與 rs2-core 的 Dseg 雜湊不同");
+    assert_full_path("flow-orig", &r, want.len());
+    assert!(r.stderr.contains("ending_"), "沒有走到片尾的調色盤：\n{}", r.stderr);
+
+    let r = run("flow-tween", &["--original-bugs", "--replay", rp, "--tween", "on", "--counter", "on", "--headless-steps", &steps]);
+    assert_eq!(r.hashes, want, "補間與幀計數改變了 Dseg 雜湊");
+
+    if let Ok(hd) = std::env::var("RS2_HD") {
+        let r = run("flow-hd", &["--original-bugs", "--replay", rp, "--hd", &hd, "--headless-steps", &steps]);
+        assert_eq!(r.hashes, want, "HD 改變了 Dseg 雜湊");
+        assert!(r.stderr.contains("HD true"), "沒有啟用 HD：\n{}", r.stderr);
+        assert!(!r.stderr.contains("缺圖："), "HD 有缺圖：\n{}", r.stderr);
+    }
+
+    let wav = out_dir().join("flow.wav");
+    let r = run("flow-fixed", &["--replay", rp, "--headless-steps", &steps, "--wav-out", wav.to_str().unwrap()]);
+    assert_eq!(r.hashes.len(), want.len());
+    println!("B7 全流程：{} 步，前端雜湊與對拍路徑相同，修正全開也走完", want.len());
+}
+
+/// 規格 002 B7：正式入口。不按鍵從標題跑開場與示範，每步整段 `Dseg` 雜湊和 `rs2-core` 相同。
+#[test]
+#[ignore]
+fn b7_title_matches_core() {
+    let steps = TITLE_STEPS.to_string();
+    let r = run("title-core", &["--original-bugs", "--headless-steps", &steps]);
+    assert_eq!(r.hashes.len(), TITLE_STEPS);
+    let inputs = load_inputs(&env_path("RS2_ORIG")).unwrap();
+    let boot = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
+    let mut g = Game::from_snapshot(inputs.game_files(), boot.bytes(), Entry::Title, Fixes::NONE);
+    for (i, want) in r.hashes.iter().enumerate() {
+        g.step(&Input { scancodes: &[] }, &mut |_g: &Game, _pt: u32| {});
+        assert_eq!(&sha256_hex(g.state_hash_input()), want, "第 {} 步", i + 1);
+    }
+    println!("B7 標題：{} 筆與 rs2-core 相同", r.hashes.len());
+}
+
+/// 規格 002 B7：前端開關不影響模擬，標題入口也一樣。
+#[test]
+#[ignore]
+fn b7_title_four_combos() {
+    let n = four_combos("title", &["--start", "title"], 800);
+    assert_eq!(n, 3 * 800);
+}
+
+/// 規格 003 C5：音訊不影響模擬，而且真的有聲音。
+#[test]
+#[ignore]
+fn c5_audio_does_not_touch_the_simulation() {
+    let steps = 800.to_string();
+    let wav = out_dir().join("title.wav");
+    let _ = std::fs::remove_file(&wav);
+    let a = run("title-noaudio", &["--no-audio", "--headless-steps", &steps]);
+    let b = run("title-wav", &["--headless-steps", &steps, "--wav-out", wav.to_str().unwrap()]);
+    assert_eq!(a.hashes, b.hashes);
+    let d = std::fs::read(&wav).unwrap();
+    assert_eq!(&d[..4], b"RIFF");
+    let pcm: Vec<i16> = d[44..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+    assert!(pcm.len() > 49716 * 30, "只有 {} 取樣", pcm.len());
+    let loud = pcm.iter().filter(|s| s.abs() > 500).count();
+    assert!(loud > pcm.len() / 4, "{loud} / {}", pcm.len());
+    println!("C5：{} 筆雜湊相同，音訊 {} 取樣，{loud} 個超過門檻", a.hashes.len(), pcm.len());
 }
 
 /// 工具本身：`--hash-out` 的行數等於步數，沒有 `--headless-steps` 以外的副作用。

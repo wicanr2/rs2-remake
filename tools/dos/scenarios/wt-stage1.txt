@@ -1,0 +1,20 @@
+# 全流程對拍收據 wt_stage1：從第一關入口 sub_10CD0 開始（J1 過場按空白之後），開秘技（不減血），每幀開火，位置不動，
+# 打倒核心、走完過關連爆、離開 sub_10CD0（J2.GO 開啟）。已移植的第一關在這份收據上驗證比對器本身。
+include /tools-dos/scenarios/prefix-to-j1.txt
+down space
+runsteps 300_000
+up space
+untilpc 0x10CD0 300_000_000
+dumpds entry
+dumpplanes entry
+shot entry
+fontdump
+waittrace wt_stage1
+trace s1 full
+untiltrace 5 400_000_000
+include /tools-dos/scenarios/cheat-god.txt
+play now 10*1130
+untilopen J2.GO 1 3_000_000_000
+secs 2
+trace off
+waittrace off

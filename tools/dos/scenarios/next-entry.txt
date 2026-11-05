@@ -1,0 +1,9 @@
+# 在目前這一關按 Ctrl+C，經 J${NEXT} 過場（按空白）停在下一個入口 ${ENTRY}。用法：先 set NEXT 2、set ENTRY 0x13205。
+# 第 NEXT 關的入口：2 是 13205h，3 是 13A51h，4 是 13DAFh。空白只按 30 萬步，放開之後才等入口。
+chord ctrl+c 0.4 0.1
+untilopen J${NEXT}.GO 1
+secs 3
+down space
+runsteps 300_000
+up space
+untilpc ${ENTRY} 300_000_000

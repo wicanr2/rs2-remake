@@ -1,0 +1,6 @@
+# 停在第四關入口 sub_13DAF。
+include /tools-dos/scenarios/to-s3.txt
+until16 0x1CFE2 5 400_000_000
+set NEXT 4
+set ENTRY 0x13DAF
+include /tools-dos/scenarios/next-entry.txt

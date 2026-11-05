@@ -44,6 +44,15 @@ impl Dseg {
         self.mem[o.wrapping_add(1) as usize] = hi;
     }
 
+    /// 載入一份 64 KB 快照。
+    pub fn load(&mut self, bytes: &[u8]) {
+        self.mem.copy_from_slice(&bytes[..0x10000]);
+    }
+
+    pub fn copy_from(&mut self, other: &Dseg) {
+        self.mem.copy_from_slice(&other.mem[..]);
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.mem[..]
     }

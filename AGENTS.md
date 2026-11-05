@@ -30,7 +30,7 @@
 | [tools/ida_export.sh](tools/ida_export.sh) | 用 IDA 匯出 `workspace/ida/s_export.json` 與 `s_disasm.txt` |
 | [tools/q.sh](tools/q.sh) | 查反組譯與資料段，用法見 `tools/q.py` |
 | [tools/dos/](tools/dos/) | 重跑動態收據。`tools/dosgolem-patches/` 是套在 `workspace/dosgolem` 上的修改 |
-| [crates/](crates/) | Rust 重製。`rs2-formats` 解碼、`rs2-core` 模擬、`rs2-gfx` 繪製、`rs2-trace` 對拍、`rs2-play` 視窗。建置與測試走 [tools/rust.sh](tools/rust.sh) |
+| [crates/](crates/) | Rust 重製。`rs2-formats` 解碼、`rs2-core` 模擬、`rs2-gfx` 繪製、`rs2-audio` 音樂與喇叭、`rs2-trace` 對拍、`rs2-play` 視窗。建置與測試走 [tools/rust.sh](tools/rust.sh) |
 
 ## 硬規則
 
@@ -76,7 +76,7 @@
 
 ## 重製技術棧
 
-Rust 1.99.1，edition 2024，建置與測試一律在 Docker（`rust:1.99.1-slim-bookworm`）。模擬核心不碰時間、檔案與繪圖，才能和原版逐幀對拍。第一份規格見 [docs/spec/001-rust-first-stage.md](docs/spec/001-rust-first-stage.md)。
+Rust 1.99.1，edition 2024，建置與測試一律在 Docker（`rust:1.99.1-slim-bookworm`）。模擬核心不碰時間、檔案與繪圖，才能和原版逐幀對拍。規格在 [docs/spec/](docs/spec/)，001 第一關、002 全流程、003 音訊。
 
 ## 工作流程
 

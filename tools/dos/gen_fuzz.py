@@ -36,6 +36,10 @@ Profile：
   late     同 roam，但從第 640 筆起（頭目段）恢復受傷並把血量設成 3，玩家在頭目戰中死亡
 
 seeker、laser、spread、charge、mix、roam、sweep、carrier、hot、late 在第 5 筆另外寫隨機難度（dhp、dfire 兩個字），move 不寫任何變數。
+
+全流程對拍（docs/spec/002-full-game.md）另有兩種產生方式，見 `wt`、`duo` 的說明（檔案中段的註解）：
+  python -I gen_fuzz.py wt STAGE PROFILE SEED      第二、三、四關入口開始的隨機輸入收據，腳本 wt-fzSTAGE-PROFILE-SEED.txt
+  python -I gen_fuzz.py duo SEED                   選單選 2 PLAYERS 的雙人收據，腳本 wt-p2.txt
 """
 import os
 import re
@@ -401,6 +405,128 @@ def render(profile, seed, frames, segs, ds_every=DS_EVERY):
     return "\n".join(lines), "\n".join(pokes) + ("\n" if pokes else "")
 
 
+
+
+# ---- 全流程對拍（wait trace）用的產生器 ----
+# 用法（容器內 python -I，一般經 tools/dos/fuzz/gen_wt.sh 呼叫）：
+#   python -I gen_fuzz.py wt STAGE PROFILE SEED [--scenarios DIR]   第 STAGE（2 到 4）關入口開始的隨機輸入，寫 wt-fzSTAGE-PROFILE-SEED.txt
+#   python -I gen_fuzz.py duo SEED [--scenarios DIR]                 選單選 2 PLAYERS，兩位玩家都有輸入，血量調低讓兩人都死，寫 wt-p2.txt
+# 收據是 workspace/dosrun/wt_<名稱>/，其中 wait-<名稱>.pokes 由 rs2dyn 在 poke 當下自己記（n 是等待筆序，
+# 不是追蹤筆數），所以這裡不寫 .pokes。腳本用 `skipif` 在關卡結束後略過剩下的 poke、鍵與 play。
+
+WT_PROFILES = ("mix", "roam", "sweep", "seeker", "laser", "spread", "charge")  # 全部不減血，武器與難度隨機
+WT_FRAMES = {2: (1050, 1300), 3: (1500, 1800), 4: (1250, 1700)}  # 頭目分別在幀 630、約 1200、1075 之後出現
+WT_END = {2: "J3.GO", 3: "J4.GO", 4: "SHT5.GO"}  # 關卡結束時下一個過場開的檔
+HP2 = 0x1CFE0
+P2_DIR = ("t", "b", "f", "h", "r", "y", "v", "n")  # 上 下 左 右 左上 右上 左下 右下（byte_2749E～274A0、274AC～274BC）
+P2_FIRE = "lshift"  # 274B5
+P2_TURN = "z"  # 274B7
+
+
+def event_lines(ev):
+    out = []
+    for e in ev:
+        if e[0] == "poke":
+            _, addr, width, val = e
+            out.append(f"poke 0x{addr:X} {val:02X}" if width == 1 else f"pokew 0x{addr:X} 0x{val:X}")
+        elif e[0] == "cmd":
+            out.append(e[1])
+        else:
+            _, how, key = e
+            out.append(f"{how} {key}")
+    return out
+
+
+def render_wt(stage, profile, seed, frames, segs):
+    name = f"wt_fz{stage}-{profile}-{seed}"
+    end = WT_END[stage]
+    lines = [
+        f"# 全流程對拍隨機輸入 stage={stage} profile={profile} seed={seed} frames={frames}。tools/dos/gen_fuzz.py wt 產生，不要手改。",
+        f"# 第 {stage} 關入口開始，先跑 {LEAD} 筆追蹤不送輸入，之後 poke 與 play now 交錯；poke 由 rs2dyn 記進 wait-{name}.pokes。",
+        f"include /tools-dos/scenarios/to-s{stage}.txt",
+        "dumpds entry",
+        "dumpplanes entry",
+        "shot entry",
+        "fontdump",
+        f"waittrace {name}",
+        "trace fz full",
+        f"untiltrace {LEAD} 400_000_000",
+    ]
+    for ev, bs in segs:
+        lines += event_lines(ev)
+        lines.append("play now " + " ".join(tokens(bs)) + f" !{end}")
+        lines.append(f"skipif open:{end} done")
+    lines += ["label done", "secs 2", "trace off", "waittrace off", ""]
+    return name, "\n".join(lines)
+
+
+def build_duo(seed, frames=None):
+    """玩家 1 的輸入沿用 mix 的隨機遊玩；玩家 2 每段換一組方向鍵、開火鍵按住或放開、偶爾轉向。血量一開始就調低。"""
+    r = Lcg(seed)
+    if frames is None:
+        frames = r.range(520, 700)
+    bs = frames_free(r, frames, 25, (0, 1, 1, 2, 3), 30)
+    held = set()
+    fire = False
+    segs_out = []
+    for idx, seg in split_segments(r, bs, 15, 60):
+        ev = []
+        if idx == 0:
+            ev += diff_pokes(r) + [("poke", HP1, 2, r.pick((1, 3, 7))), ("poke", HP2, 2, r.pick((1, 3, 7)))]
+        want = set()
+        if not r.chance(1, 4):
+            want = {r.pick(P2_DIR) for _ in range(r.range(1, 2))}
+        for k in sorted(held - want):
+            ev.append(("key", "up", k))
+        for k in sorted(want - held):
+            ev.append(("key", "down", k))
+        held = want
+        if r.chance(1, 2):
+            ev.append(("key", "up" if fire else "down", P2_FIRE))
+            fire = not fire
+        if r.chance(1, 6):
+            ev += [("key", "down", P2_TURN), ("key", "up", P2_TURN)]
+        segs_out.append((ev, seg))
+    return frames, segs_out
+
+
+def render_duo(seed, frames, segs):
+    lines = [
+        f"# 全流程對拍：雙人 seed={seed} frames={frames}。tools/dos/gen_fuzz.py duo 產生，不要手改。",
+        "# 選單選 2 PLAYERS（byte_1CFDD = 11h），玩家 1 用方向鍵與右 Shift，玩家 2 用 R T Y／F H／V B N 與左 Shift、Z。血量調低，不開秘技。",
+        "include /tools-dos/scenarios/prefix-to-title.txt",
+        "dumpds entry",
+        "dumpplanes entry",
+        "shot entry",
+        "fontdump",
+        "waittrace wt_p2",
+        "untilopen BEG1.BD4 1 400_000_000",
+        "secs 5.2",
+        "tap c 0.3 0",
+        "secs 1.5",
+        "tap down 0.003 0.5",
+        "tap right 0.003 0.5",
+        "tap right 0.003 0.5",
+        "tap enter 0.15 0.3",
+        "secs 3",
+        "tap space 0.3 0",
+        "untilopen J1.GO 1 600_000_000",
+        "secs 3",
+        "tap space 0.3 0",
+        "untilopen B.MIX 1 600_000_000",
+        "untilvec8",
+        "trace p2 full",
+        "untiltrace 20 400_000_000",
+    ]
+    for ev, bs in segs:
+        lines += event_lines(ev)
+        lines.append("play now " + " ".join(tokens(bs)))
+        lines.append("skipif exit done")
+    lines += ["label done"] + [f"up {k}" for k in P2_DIR + (P2_FIRE, P2_TURN)]
+    lines += ["secs 6", "trace off", "waittrace off", ""]
+    return "\n".join(lines)
+
+
 def check(scenario_path, trace_path):
     """用收據的 in1 驗證送鍵時序：每一列玩家 1 讀到的方向位元，要等於腳本在那一列送出的方向鍵狀態。
 
@@ -465,6 +591,26 @@ def main(argv):
         else:
             args.append(argv[i])
             i += 1
+    sdir = opts.get("--scenarios", "/dos/scenarios")
+    if args and args[0] == "wt":
+        if len(args) != 4 or args[1] not in ("2", "3", "4") or args[2] not in WT_PROFILES or not re.fullmatch(r"[0-9]{1,9}", args[3]):
+            raise SystemExit(f"用法：gen_fuzz.py wt STAGE(2|3|4) PROFILE({'|'.join(WT_PROFILES)}) SEED")
+        stage, profile, seed = int(args[1]), args[2], int(args[3])
+        frames = int(opts["--frames"]) if "--frames" in opts else Lcg(seed * 7919 + stage).range(*WT_FRAMES[stage])
+        frames, segs = build(profile, seed, frames)
+        name, scen = render_wt(stage, profile, seed, frames, segs)
+        with open(os.path.join(sdir, f"wt-{name[3:]}.txt"), "w", encoding="utf-8") as f:
+            f.write(scen)
+        print(f"{name}: frames={frames} segments={len(segs)}")
+        return
+    if args and args[0] == "duo":
+        if len(args) != 2 or not re.fullmatch(r"[0-9]{1,9}", args[1]):
+            raise SystemExit("用法：gen_fuzz.py duo SEED")
+        frames, segs = build_duo(int(args[1]), int(opts["--frames"]) if "--frames" in opts else None)
+        with open(os.path.join(sdir, "wt-p2.txt"), "w", encoding="utf-8") as f:
+            f.write(render_duo(int(args[1]), frames, segs))
+        print(f"wt_p2: frames={frames} segments={len(segs)}")
+        return
     if len(args) != 2:
         raise SystemExit(__doc__)
     profile, seed_s = args

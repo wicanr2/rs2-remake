@@ -6,9 +6,10 @@ mod assets;
 mod font;
 mod layer;
 pub mod png;
+pub mod speaker;
 mod sink;
 pub mod vga;
 
 pub use assets::Assets;
-pub use layer::{HdAssets, INTERP_CROSS_OP, INTERP_MAX_PX, LayerSink, RenderOpts, pal};
-pub use sink::{VgaSink, disp_row, locate, scratch_row};
+pub use layer::{HdAssets, HdLib, HdSet, INTERP_CROSS_OP, INTERP_MAX_PX, LayerSink, RenderOpts, pal};
+pub use sink::{ATTR_REGS, BankDump, VgaSink, disp_row, locate, scratch_row};

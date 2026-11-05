@@ -1,0 +1,787 @@
+diff --git a/cmd/rs2dyn/main.go b/cmd/rs2dyn/main.go
+index 5955b18..6171253 100644
+--- a/cmd/rs2dyn/main.go
++++ b/cmd/rs2dyn/main.go
+@@ -9,6 +9,7 @@ package main
+ 
+ import (
+ 	"bufio"
++	"errors"
+ 	"flag"
+ 	"fmt"
+ 	"os"
+@@ -32,6 +33,7 @@ func main() {
+ 	tick := flag.Uint64("tick", 0, "釘住計時器間隔（指令數）；0 ＝ 隨 PIT 分頻")
+ 	maxSteps := flag.Uint64("max-steps", 20_000_000_000, "整體步數上限")
+ 	statePeek := flag.Bool("verbose", false, "把事件日誌也印到 stdout")
++	waitStop := flag.Int64("waitstop", -1, "waittrace 的 n=N 那筆寫完後傾印資料段、平面與畫面並正常結束（tools/dos/wait_locate.sh 用）")
+ 	flag.Parse()
+ 	if *root == "" || *out == "" || *script == "" {
+ 		flag.Usage()
+@@ -93,6 +95,7 @@ func main() {
+ 
+ 	r := newRT(m, d, *out, w, *statePeek)
+ 	r.maxSteps = *maxSteps
++	r.wtStopAt = *waitStop
+ 	r.logf("config", "root=%s prog=%s chain=%s adlib=%v cpu=%s tick=%d", *root, *prog, *chain, *adlib, *cpuModel, *tick)
+ 	r.install()
+ 
+@@ -101,7 +104,10 @@ func main() {
+ 		die(err)
+ 	}
+ 	defer f.Close()
+-	if err := r.runScript(f); err != nil {
++	if err := r.runScript(f); err != nil && errors.Is(err, errWaitStop) {
++		r.summary()
++		return
++	} else if err != nil {
+ 		r.logf("error", "%v", err)
+ 		w.Flush()
+ 		fmt.Fprintln(os.Stderr, "rs2dyn:", err)
+diff --git a/cmd/rs2dyn/play.go b/cmd/rs2dyn/play.go
+index f46fbff..d490fff 100644
+--- a/cmd/rs2dyn/play.go
++++ b/cmd/rs2dyn/play.go
+@@ -23,6 +23,9 @@ import (
+ //
+ // 主迴圈中途離開（玩家死亡、過關連爆結束等，10D59h 執行過），之後不會再有取樣，play 在那裡停下並記一行
+ // "play exit"，不再等不會來的筆數。離開前已送出的鍵照常留在 sc 裡。
++//
++// 第二至四關沒有 10D59h 可偵測：TOKEN 可以是 !NAME，指定檔（例如第二關 !J3.GO、第三關 !J4.GO、第四關 !SHT5.GO）
++// 開啟過就視為關卡結束，play 在那裡停下（或直接略過），不再等不會來的筆數。
+ func (r *rt) play(f0 uint64, toks []string) error {
+ 	if r.tf == nil {
+ 		return fmt.Errorf("play 需要完整追蹤（trace NAME full）")
+@@ -32,6 +35,8 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 		r.logf("play", "skipped f0=%d: 主迴圈已離開 code=%c rows=%d", f0, rune(byte(r.tf.exitDX)), r.tf.n)
+ 		return nil
+ 	}
++	r.playStop = ""
++	defer func() { r.playStop = "" }()
+ 	var seq []byte
+ 	marks := map[int][]string{}
+ 	for _, t := range toks {
+@@ -39,6 +44,11 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 			marks[len(seq)] = append(marks[len(seq)], t[1:])
+ 			continue
+ 		}
++		if strings.HasPrefix(t, "!") {
++			// !NAME：這個檔開啟過就視為關卡結束（第二至四關沒有 10D59h 可偵測）。第二關 !J3.GO、第三關 !J4.GO、第四關 !SHT5.GO。
++			r.playStop = strings.ToUpper(t[1:])
++			continue
++		}
+ 		n := uint64(1)
+ 		if i := strings.IndexByte(t, '*'); i >= 0 {
+ 			v, err := strconv.ParseUint(t[i+1:], 10, 32)
+@@ -55,6 +65,10 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 			seq = append(seq, byte(b))
+ 		}
+ 	}
++	if r.playEnded() {
++		r.logf("play", "skipped f0=%d: %s 已開啟（關卡結束）rows=%d", f0, r.playStop, r.tf.n)
++		return nil
++	}
+ 	dirs := [4]struct {
+ 		bit  byte
+ 		name string
+@@ -83,7 +97,7 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 		}
+ 		if ex {
+ 			exited = true
+-			r.logf("play", "exit code=%c at byte=%d rows=%d", rune(byte(r.tf.exitDX)), i, r.tf.n)
++			r.logf("play", "%s at byte=%d rows=%d", r.playExitWhy(), i, r.tf.n)
+ 			break
+ 		}
+ 		for _, nm := range marks[i] {
+@@ -142,7 +156,7 @@ func (r *rt) play(f0 uint64, toks []string) error {
+ 		}
+ 		if ex {
+ 			exited = true
+-			r.logf("play", "exit code=%c at byte=%d rows=%d", rune(byte(r.tf.exitDX)), len(seq), r.tf.n)
++			r.logf("play", "%s at byte=%d rows=%d", r.playExitWhy(), len(seq), r.tf.n)
+ 		}
+ 	}
+ 	if !exited {
+diff --git a/cmd/rs2dyn/rt.go b/cmd/rs2dyn/rt.go
+index d04c504..0c18d84 100644
+--- a/cmd/rs2dyn/rt.go
++++ b/cmd/rs2dyn/rt.go
+@@ -86,10 +86,16 @@ type rt struct {
+ 	gameTicks      uint64
+ 	vars           map[string]string
+ 	waitLin        []uint32
++
++	wt        *waitTracer // waittrace（wait.go）
++	wtErr     error       // waitSync 遇到的錯誤，由下一個 step 回傳
++	wtStopAt  int64       // -waitstop，< 0 表示沒有
++	playStop  string      // play 的 !NAME：這個檔（大寫）開啟過就視為關卡已結束，不再等筆數
++	skipLabel string      // skipif 成立後略過命令直到這個 label
+ }
+ 
+ func newRT(m *machine.Machine, d *dos.DOS, out string, w *bufio.Writer, verbose bool) *rt {
+-	return &rt{m: m, d: d, out: out, w: w, verbose: verbose,
++	return &rt{m: m, d: d, out: out, w: w, verbose: verbose, wtStopAt: -1,
+ 		holdSecs: 0.15, gapSecs: 0.15, lastDiv: m.PITDivisor(),
+ 		handlerEntries: map[uint32]uint64{}, portCount: map[uint16]uint64{}, openCount: map[string]int{}}
+ }
+@@ -150,6 +156,11 @@ func (r *rt) rd16(ida uint32) (uint16, error) {
+ // step 單步，附帶所有逐指令的觀測。
+ func (r *rt) step() error {
+ 	m, d := r.m, r.d
++	if r.wtErr != nil {
++		e := r.wtErr
++		r.wtErr = nil
++		return e
++	}
+ 	if err := m.Step(); err != nil {
+ 		return err
+ 	}
+@@ -189,6 +200,11 @@ func (r *rt) step() error {
+ 	if r.tf != nil {
+ 		r.traceFullTick()
+ 	}
++	if r.wt != nil {
++		if err := r.waitTick(); err != nil {
++			return err
++		}
++	}
+ 	if r.traps != nil {
+ 		r.trapCheck()
+ 	}
+@@ -296,17 +312,25 @@ func keyScan(name string) (uint8, error) {
+ }
+ 
+ func (r *rt) down(sc uint8) {
++	r.waitSync()
+ 	if r.tf != nil {
+ 		r.keyLog = append(r.keyLog, sc)
+ 	}
+ 	r.m.ScheduleKey(r.m.Steps, sc, false)
++	if r.wt != nil {
++		r.wt.pend = append(r.wt.pend, sc)
++	}
+ 	r.logf("key", "down %02X", sc)
+ }
+ func (r *rt) up(sc uint8) {
++	r.waitSync()
+ 	if r.tf != nil {
+ 		r.keyLog = append(r.keyLog, sc|0x80)
+ 	}
+ 	r.m.ScheduleKey(r.m.Steps, sc, true)
++	if r.wt != nil {
++		r.wt.pend = append(r.wt.pend, sc|0x80)
++	}
+ 	r.logf("key", "up %02X", sc)
+ }
+ 
+@@ -513,6 +537,7 @@ func (r *rt) matchPals(shown [16][3]uint8, ac [17]uint8) any {
+ 
+ func (r *rt) summary() {
+ 	r.traceStop()
++	r.waitClose()
+ 	m, d := r.m, r.d
+ 	r.drainPorts()
+ 	r.logf("summary", "steps=%d ticks=%d keyIRQs=%d exited=%v exit=%d pit=%d", m.Steps, m.Ticks, m.KeyIRQs, d.Exited, d.ExitCode, m.PITDivisor())
+diff --git a/cmd/rs2dyn/script.go b/cmd/rs2dyn/script.go
+index a384bdf..3e02098 100644
+--- a/cmd/rs2dyn/script.go
++++ b/cmd/rs2dyn/script.go
+@@ -43,11 +43,17 @@ import (
+ //	trace NAME / trace off 逐幀記錄遊戲變數到 trace-NAME.tsv（舊格式，幀計數一變就記）
+ //	trace NAME full        逐幀完整狀態到 trace-NAME.jsonl（固定取樣點 10F98h／10FE3h，格式見 docs/re/10）
+ //	untiltrace N [budget]  跑到完整追蹤已寫出 N 筆
+-//	play now HH...         同上，從目前的追蹤筆數接著送
++//	play now HH...         同上，從目前的追蹤筆數接著送（TOKEN 可加 !NAME：該檔開啟過就視為關卡結束，見 play.go）
+ //	play F0 HH|HH*N...        依逐幀輸入位元組送鍵（01 上、02 下、04 右、08 左、10 開火、20 轉向、40 右 Shift 按住、80 多送一個右 Shift 按下碼），第 i 個位元組給 n=F0+i 那一幀
+ //	tracerows K            再跑 K 個追蹤筆數
+ //	settle                 讓最近一次取樣所在的半步走完，寫 trace-NAME.end（rows=N exit=none|E|Q|C），供逐幀比對判斷離開
+ //	dsdump EVERY           完整追蹤開著時，筆數是 EVERY 倍數的取樣點另存整個資料段 ds-NAME-n.ds（0 關閉）
++//	waittrace NAME [STOPN] sub_11097 每次離開等待（1109Dh）記一筆到 wait-NAME.jsonl、.dsd（格式見 wait.go）；waittrace off 結束
++//	waitstop N             n=N 那筆寫完後傾印 NAME-wN.ds、.p0～p3、.json、.png 並結束（也可用旗標 -waitstop）
++//	waitsync on|off        waittrace 開著時，鍵與 poke 先等到等待迴圈裡才送（預設 on）
++//	untilwait N [budget]   跑到 waittrace 已寫出 N 筆
++//	fontdump               F000:FA6E 起 2048 位元組存成 biosfont.bin
++//	skipif COND LABEL      COND（exit 或 open:NAME）成立就略過其後的命令直到 `label LABEL`
+ //	tracepc IDA [max]      執行到該 IDA 位址就記暫存器與幀計數
+ //	watchw NAME IDA LEN [max]  寫入該範圍就記位址、舊新值、寫入者位址與幀計數
+ //	until8 IDA VAL [budget]  跑到 IDA 位址的 byte 等於 VAL
+@@ -95,6 +101,13 @@ func argNum(f []string, i int, def uint64) (uint64, error) {
+ 
+ func (r *rt) exec(f []string) error {
+ 	cmd := f[0]
++	if r.skipLabel != "" {
++		// skipif 之後略過所有命令，直到同名的 label
++		if cmd == "label" && len(f) > 1 && f[1] == r.skipLabel {
++			r.skipLabel = ""
++		}
++		return nil
++	}
+ 	need := func(k int) error {
+ 		if len(f) < k+1 {
+ 			return fmt.Errorf("%s 需要 %d 個參數", cmd, k)
+@@ -494,8 +507,16 @@ func (r *rt) exec(f []string) error {
+ 		if err != nil {
+ 			return err
+ 		}
++		if r.wt != nil {
++			if err := r.waitSyncErr(); err != nil {
++				return err
++			}
++		}
+ 		for i, v := range b {
+ 			r.m.Write8(la+uint32(i), v)
++			if err := r.waitLogPoke(uint32(a)+uint32(i), 1, uint32(v)); err != nil {
++				return err
++			}
+ 		}
+ 		r.logf("poke", "ida=%X lin=%05X %s", a, la, f[2])
+ 		return nil
+@@ -515,9 +536,98 @@ func (r *rt) exec(f []string) error {
+ 		if err != nil {
+ 			return err
+ 		}
++		if r.wt != nil {
++			if err := r.waitSyncErr(); err != nil {
++				return err
++			}
++		}
+ 		r.m.Write16(la, uint16(v))
++		if err := r.waitLogPoke(uint32(a), 2, uint32(uint16(v))); err != nil {
++			return err
++		}
+ 		r.logf("poke", "ida=%X lin=%05X word=%04X", a, la, v)
+ 		return nil
++	case "waittrace":
++		// waittrace NAME [STOPN]：開始等待點收據；STOPN 給了就在 n=STOPN 那筆寫完後傾印並停止
++		if err := need(1); err != nil {
++			return err
++		}
++		if f[1] == "off" {
++			r.waitClose()
++			return nil
++		}
++		stop := int64(-1)
++		if len(f) > 2 {
++			v, err := num(f[2])
++			if err != nil {
++				return err
++			}
++			stop = int64(v)
++		}
++		return r.waitStart(f[1], stop)
++	case "waitstop":
++		// waitstop N：waittrace 的 n=N 那筆寫完後傾印 NAME-wN.ds、.p0～p3、.json、.png 並停止腳本（正常結束）
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		if r.wt != nil {
++			r.wt.stopAt = int64(v)
++		} else {
++			r.wtStopAt = int64(v)
++		}
++		return nil
++	case "waitsync":
++		// waitsync on|off：waittrace 開著時，鍵與 poke 是否先等到 sub_11097 的等待迴圈裡才送（預設 on）
++		if err := need(1); err != nil {
++			return err
++		}
++		if r.wt == nil {
++			return fmt.Errorf("waittrace 還沒開")
++		}
++		r.wt.sync = f[1] == "on"
++		return nil
++	case "untilwait":
++		// untilwait N [budget]：跑到 waittrace 已寫出 N 筆
++		if err := need(1); err != nil {
++			return err
++		}
++		v, err := num(f[1])
++		if err != nil {
++			return err
++		}
++		b, err := argNum(f, 2, 1_500_000_000)
++		if err != nil {
++			return err
++		}
++		return r.untilWait(v, b)
++	case "fontdump":
++		return r.fontDump()
++	case "skipif":
++		// skipif COND LABEL：COND 成立就略過其後的命令直到 `label LABEL`。COND：exit（完整追蹤的主迴圈已離開）、
++		// open:NAME（遊戲已開啟過這個檔）。用在隨機輸入腳本：關卡結束或玩家全滅之後，不再送鍵或 poke。
++		if err := need(2); err != nil {
++			return err
++		}
++		hit := false
++		switch {
++		case f[1] == "exit":
++			hit = r.tf != nil && r.tf.exited
++		case strings.HasPrefix(f[1], "open:"):
++			hit = r.openCount[strings.ToUpper(f[1][5:])] > 0
++		default:
++			return fmt.Errorf("skipif 不認得的條件 %q", f[1])
++		}
++		if hit {
++			r.skipLabel = f[2]
++			r.logf("skipif", "%s 成立，略過到 label %s", f[1], f[2])
++		}
++		return nil
++	case "label":
++		return nil
+ 	case "watchtick":
+ 		return r.watchTick()
+ 	case "watchwait":
+diff --git a/cmd/rs2dyn/trace_full.go b/cmd/rs2dyn/trace_full.go
+index 9f4ba15..1110027 100644
+--- a/cmd/rs2dyn/trace_full.go
++++ b/cmd/rs2dyn/trace_full.go
+@@ -399,17 +399,22 @@ func (r *rt) untilTraceRows(n, budget uint64) error {
+ 	return r.runUntil(fmt.Sprintf("追蹤筆數 >= %d", n), func() bool { return r.tf.n >= n }, budget)
+ }
+ 
+-// untilRowOrExit 跑到完整追蹤已寫出 n 筆，或主迴圈已離開（loopExit）。回傳 true 表示是因為離開而停，
++// untilRowOrExit 跑到完整追蹤已寫出 n 筆，或主迴圈已離開（loopExit），或 play 的 !NAME 指定的檔已經開啟
++// （第二至四關沒有 loopExit，關卡結束時下一個過場會開檔）。回傳 true 表示是因為離開而停，
+ // 此時筆數不足 n，後面不會再有取樣。
+ func (r *rt) untilRowOrExit(n, budget uint64) (bool, error) {
+ 	t := r.tf
+ 	if t == nil {
+ 		return false, fmt.Errorf("完整追蹤還沒開（trace NAME full）")
+ 	}
+-	err := r.runUntil(fmt.Sprintf("追蹤筆數 >= %d 或主迴圈離開", n), func() bool { return t.n >= n || t.exited }, budget)
+-	return err == nil && t.n < n && t.exited, err
++	done := func() bool { return t.exited || r.playEnded() }
++	err := r.runUntil(fmt.Sprintf("追蹤筆數 >= %d 或主迴圈離開", n), func() bool { return t.n >= n || done() }, budget)
++	return err == nil && t.n < n && done(), err
+ }
+ 
++// playEnded：play 的 !NAME 指定的檔（大寫）已經成功開啟過。
++func (r *rt) playEnded() bool { return r.playStop != "" && r.openCount[r.playStop] > 0 }
++
+ // settle 讓最近一次取樣所在的那半步走完（到 10D32h 或 10D29h），或確認主迴圈已在這之前離開，
+ // 然後寫 trace-NAME.end。收據的最後一筆因此帶著原版自己的結論：之後這個迴圈是否離開、離開碼是什麼。
+ // 沒有它，play 一送完最後一筆就停在取樣點上，離開判斷（sub_10D8D 與 10D41h 起的比較）還沒執行。
+@@ -434,3 +439,11 @@ func (r *rt) settle() error {
+ 	r.logf("settle", "%s %s", t.name, line[:len(line)-1])
+ 	return os.WriteFile(filepath.Join(r.out, "trace-"+t.name+".end"), []byte(line), 0o644)
+ }
++
++// playExitWhy 是 play 停下來的原因，寫進日誌：!NAME 指定的檔開啟了，或主迴圈離開（離開碼）。
++func (r *rt) playExitWhy() string {
++	if r.playEnded() {
++		return "stop open=" + r.playStop
++	}
++	return fmt.Sprintf("exit code=%c", rune(byte(r.tf.exitDX)))
++}
+diff --git a/cmd/rs2dyn/wait.go b/cmd/rs2dyn/wait.go
+new file mode 100644
+index 0000000..7edfd11
+--- /dev/null
++++ b/cmd/rs2dyn/wait.go
+@@ -0,0 +1,402 @@
++package main
++
++import (
++	"bufio"
++	"crypto/sha256"
++	"encoding/binary"
++	"encoding/hex"
++	"errors"
++	"fmt"
++	"os"
++	"path/filepath"
++	"strconv"
++
++	"github.com/wicanr2/dosgolem/internal/cpu"
++)
++
++// 全流程對拍的等待點收據（docs/spec/002-full-game.md「全流程對拍」）。
++//
++// waittrace NAME 在 sub_11097 離開等待的位置（IDA 1109Dh，jb 沒有跳回之後、mov word ptr ds:0A7F9h, 0 之前）記一筆。
++// 每個邏輯幀、每段動畫、每次等待都走這一點，所以涵蓋標題、過場與各關。輸出（皆在 -out 目錄）：
++//
++//	wait-NAME.jsonl  每筆 {"n","ret","cx","frame","sc","vram","dac","start"}
++//	  ret    堆疊上的返回位址換成 IDA 線性位址，十六進位小寫、不補零
++//	  cx     CX，也就是 sub_11097 的等待 tick 數
++//	  frame  word_1CFE2 幀計數
++//	  sc     上一筆之後「送達 INT 9」的掃描碼（放開碼帶 80h），以 IRQ1 送出的那一步為準，不是排程的那一刻
++//	  sct    sc 每個鍵送達時距上一筆已經過幾個 INT 8（IRQ0）。輪詢迴圈（沒有 sub_11097 的等待，例如片尾等按鍵、選單）
++//	         裡的鍵靠它排進對的 tick；等待裡的鍵不需要。選用欄位，規格 002 的欄位表沒有
++//	  vram   平面 0、1、2、3 各 64 KB 依序串接（共 256 KB）的 SHA-256
++//	  dac    256 色 DAC（768 位元組）串接屬性暫存器 0 至 15 與 overscan（17 位元組，同 shot 的 ac 欄）的 SHA-256
++//	  start  CRTC 顯示起點（m.DisplayStart）
++//	wait-NAME.dsd    資料段差異，小端序。第 0 筆存整個 64 KB（兩段各 32 KB，因為長度欄只有 16 位元），
++//	                 之後每筆只存和上一筆不同的位元組。每筆：u32 筆序、u32 段數，每段 u16 偏移、u16 長度、位元組。
++//	                 相隔 4 位元組以內的差異合成一段（多存的是未變的位元組）
++//	wait-NAME.pokes  waittrace 開著時的 poke、pokew，每行 `n 0x線性位址 寬 0x值`：n 是 poke 當時已寫出的筆數，
++//	                 也就是第 n 筆（0 起算）等待結束之前寫入，格式同 tools/dos/fuzz/*.pokes
++//
++// waittrace 只讀狀態（記憶體、平面、DAC、CPU 暫存器），不改變執行，同一份腳本不開它得到相同的步數。
++// 例外是 waitsync（預設開）：waittrace 開著時，下 down、up、poke、pokew 之前先跑到 sub_11097 的等待迴圈裡才動手，
++// 讓鍵與 poke 落在等待裡，和重製「恢復時處理掃描碼」的模型一致（docs/spec/002-full-game.md「全流程對拍」）。waittrace 沒開時完全不啟動。
++//
++// 位址簽章不符就拒絕開始。
++
++const (
++	idaWaitCmp = 0x11097 // cmp ds:0A7F9h, cx
++	idaWaitJb  = 0x1109B // jb short sub_11097
++	idaWaitOut = 0x1109D // mov word ptr ds:0A7F9h, 0
++)
++
++// sub_11097 整個函式的機器碼：cmp ds:0A7F9h, cx；jb；mov word ptr ds:0A7F9h, 0；retn。
++var sigWait = []byte{0x39, 0x0E, 0xF9, 0xA7, 0x72, 0xFA, 0xC7, 0x06, 0xF9, 0xA7, 0x00, 0x00, 0xC3}
++
++// errWaitStop 是 waitstop 傾印完成後的結束訊號，main 當成正常結束。
++var errWaitStop = errors.New("waitstop：已傾印並停止")
++
++// idaWaitTick 是 word_273B9 在資料段的 IDA 位址，等待迴圈比較的對象。
++const idaWaitTick = 0x273B9
++
++type waitTracer struct {
++	name string
++	jf   *os.File
++	jw   *bufio.Writer
++	df   *os.File
++	dw   *bufio.Writer
++	pf   *os.File // 第一次 poke 才建立
++
++	n         uint64 // 已寫出的筆數
++	prev, cur []byte // 上一筆與這一筆的資料段（prev 為 nil 表示還沒有）
++	buf       []byte
++
++	cmpLin, jbLin, outLin uint32 // 執行期線性位址
++	pre                   uint32 // 下一步執行前的 CS:IP 線性位址
++	sc                    []uint8
++	sct                   []uint32 // sc 每個鍵送達時，距上一筆的 INT 8 數
++	tick0                 uint64   // 上一筆（或開始）時的 m.Ticks
++	pend                  []uint8  // 已排程、還沒送達的掃描碼，順序與送達相同
++	irqs                  uint64   // 已處理的 m.KeyIRQs
++
++	stopAt int64 // >= 0：寫完這一筆（n 欄）之後傾印並停止
++
++	sync        bool
++	keyIn       uint64 // 在等待迴圈裡送達的鍵
++	keyOut      uint64 // 在等待迴圈外送達的鍵（例如輪詢迴圈、一幀的計算中）
++	syncTimeout uint64 // waitsync 等不到等待而放棄的次數
++	pokes       int
++}
++
++func (r *rt) waitStart(name string, stopAt int64) error {
++	if r.wt != nil {
++		return fmt.Errorf("waittrace %s 還開著", r.wt.name)
++	}
++	if _, err := r.gaddr(idaBase); err != nil {
++		return err
++	}
++	a := r.base + idaWaitCmp - idaBase
++	for i, b := range sigWait {
++		if got := r.m.Read8(a + uint32(i)); got != b {
++			return fmt.Errorf("sub_11097 的機器碼不符（第 %d 位元組 %02X，預期 %02X），拒絕追蹤", i, got, b)
++		}
++	}
++	jf, err := os.Create(filepath.Join(r.out, "wait-"+name+".jsonl"))
++	if err != nil {
++		return err
++	}
++	df, err := os.Create(filepath.Join(r.out, "wait-"+name+".dsd"))
++	if err != nil {
++		jf.Close()
++		return err
++	}
++	t := &waitTracer{name: name, jf: jf, jw: bufio.NewWriterSize(jf, 1<<16), df: df, dw: bufio.NewWriterSize(df, 1<<20),
++		cur: make([]byte, 0x10000), buf: make([]byte, 0, 1024),
++		cmpLin: a, jbLin: r.base + idaWaitJb - idaBase, outLin: r.base + idaWaitOut - idaBase,
++		stopAt: stopAt, sync: true, irqs: r.m.KeyIRQs, tick0: r.m.Ticks}
++	if r.wtStopAt >= 0 && stopAt < 0 {
++		t.stopAt = r.wtStopAt
++	}
++	// 開始之前已排程、還沒送達的鍵：定時事件先送，再來硬體佇列（machine.keyTick 的順序）。
++	for _, k := range r.m.ScheduledKeys() {
++		t.pend = append(t.pend, k.Code())
++	}
++	t.pend = append(t.pend, r.m.KeyCodes()...)
++	c := r.m.CPU
++	t.pre = uint32(c.Seg[cpu.CS])<<4 + uint32(c.IP)
++	r.wt = t
++	r.logf("waittrace", "start %s base=%05X stop=%d pending_keys=%d", name, r.base, t.stopAt, len(t.pend))
++	return nil
++}
++
++func (r *rt) waitClose() {
++	t := r.wt
++	if t == nil {
++		return
++	}
++	t.jw.Flush()
++	t.dw.Flush()
++	t.jf.Close()
++	t.df.Close()
++	if t.pf != nil {
++		t.pf.Close()
++	}
++	r.logf("waittrace", "stop %s rows=%d keys_in_wait=%d keys_outside_wait=%d pend_left=%d sync_timeouts=%d pokes=%d",
++		t.name, t.n, t.keyIn, t.keyOut, len(t.pend), t.syncTimeout, t.pokes)
++	r.wt = nil
++}
++
++// readDS 讀整個 64 KB 資料段。
++func (r *rt) readDS(dst []byte) {
++	lin := r.base + dsBias - idaBase
++	if lin+0x10000 <= 0xA0000 && int(lin)+0x10000 <= len(r.m.Mem) {
++		copy(dst, r.m.Mem[lin:lin+0x10000])
++		return
++	}
++	for i := range dst {
++		dst[i] = r.m.Read8(lin + uint32(i))
++	}
++}
++
++// waitTick 在每道指令之後呼叫。
++func (r *rt) waitTick() error {
++	t := r.wt
++	m := r.m
++	if m.KeyIRQs != t.irqs {
++		for ; t.irqs < m.KeyIRQs; t.irqs++ {
++			code := uint8(0xFF)
++			if len(t.pend) > 0 {
++				code, t.pend = t.pend[0], t.pend[1:]
++			} else {
++				r.logf("waittrace", "error 送達的鍵沒有對應的排程紀錄（掃描碼記成 FF）")
++			}
++			t.sc = append(t.sc, code)
++			t.sct = append(t.sct, uint32(m.Ticks-t.tick0))
++			if t.pre == t.cmpLin || t.pre == t.jbLin {
++				t.keyIn++
++			} else {
++				t.keyOut++
++				if t.keyOut <= 40 {
++					r.logf("waittrace", "key %02X 送達時不在等待迴圈裡（被中斷的指令 lin=%05X ida=%05X）", code, t.pre, t.pre-r.base+idaBase)
++				}
++			}
++		}
++	}
++	cs, ip := m.Insn()
++	c := m.CPU
++	now := uint32(c.Seg[cpu.CS])<<4 + uint32(c.IP)
++	if uint32(cs)<<4+uint32(ip) == t.jbLin && now == t.outLin {
++		if err := r.waitRecord(); err != nil {
++			return err
++		}
++	}
++	t.pre = now
++	return nil
++}
++
++func (r *rt) waitRecord() error {
++	t := r.wt
++	m := r.m
++	c := m.CPU
++	sp := uint32(c.Seg[cpu.SS])<<4 + uint32(c.R[cpu.SP])
++	retLin := uint32(c.Seg[cpu.CS])<<4 + uint32(m.Read16(sp))
++	b := t.buf[:0]
++	b = append(b, `{"n":`...)
++	b = strconv.AppendUint(b, t.n, 10)
++	b = append(b, `,"ret":"`...)
++	b = strconv.AppendUint(b, uint64(retLin-r.base+idaBase), 16)
++	b = append(b, `","cx":`...)
++	b = strconv.AppendUint(b, uint64(c.R[cpu.CX]), 10)
++	b = append(b, `,"frame":`...)
++	b = strconv.AppendUint(b, uint64(r.iw(idaFrame)), 10)
++	b = append(b, `,"sc":[`...)
++	for i, k := range t.sc {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(k), 10)
++	}
++	b = append(b, `],"sct":[`...)
++	for i, k := range t.sct {
++		if i > 0 {
++			b = append(b, ',')
++		}
++		b = strconv.AppendUint(b, uint64(k), 10)
++	}
++	t.sc, t.sct, t.tick0 = t.sc[:0], t.sct[:0], m.Ticks
++	h := sha256.New()
++	for p := 0; p < 4; p++ {
++		h.Write(m.EGAPlane(p))
++	}
++	b = append(b, `],"vram":"`...)
++	b = hex.AppendEncode(b, h.Sum(nil))
++	h.Reset()
++	h.Write(m.DAC[:])
++	var ac [17]byte
++	for i := 0; i < 16; i++ {
++		ac[i] = m.VGA.Pal(i)
++	}
++	ac[16] = m.VGA.Overscan()
++	h.Write(ac[:])
++	b = append(b, `","dac":"`...)
++	b = hex.AppendEncode(b, h.Sum(nil))
++	b = append(b, `","start":`...)
++	b = strconv.AppendUint(b, uint64(m.DisplayStart()), 10)
++	b = append(b, '}', '\n')
++	t.jw.Write(b)
++	t.buf = b
++
++	r.readDS(t.cur)
++	t.writeDSD()
++	if t.prev == nil {
++		t.prev = make([]byte, 0x10000)
++	}
++	t.prev, t.cur = t.cur, t.prev
++	// 每筆都 flush：容器逾時被殺時，已寫出的筆數不會留在緩衝區裡。
++	t.jw.Flush()
++	t.dw.Flush()
++	t.n++
++	if t.stopAt >= 0 && int64(t.n-1) == t.stopAt {
++		name := fmt.Sprintf("%s-w%d", t.name, t.stopAt)
++		if err := r.dumpDS(name); err != nil {
++			return err
++		}
++		if err := r.dumpPlanes(name); err != nil {
++			return err
++		}
++		if err := r.shot(name); err != nil {
++			return err
++		}
++		r.logf("waitstop", "n=%d 已傾印 %s", t.stopAt, name)
++		return errWaitStop
++	}
++	return nil
++}
++
++// writeDSD 寫 .dsd 的一筆。cur 是這一筆的資料段，t.prev 是上一筆（nil 表示第一筆）。
++func (t *waitTracer) writeDSD() {
++	var segs []byte
++	var count uint32
++	seg := func(off, n int) {
++		var h [4]byte
++		binary.LittleEndian.PutUint16(h[0:], uint16(off))
++		binary.LittleEndian.PutUint16(h[2:], uint16(n))
++		segs = append(segs, h[:]...)
++		segs = append(segs, t.cur[off:off+n]...)
++		count++
++	}
++	if t.prev == nil {
++		seg(0, 0x8000)
++		seg(0x8000, 0x8000)
++	} else {
++		prev, cur := t.prev, t.cur
++		const gap = 4 // 相隔不超過這麼多位元組的差異合成一段
++		for i := 0; i < 0x10000; {
++			if prev[i] == cur[i] {
++				i++
++				continue
++			}
++			lo, hi, quiet := i, i, 0
++			for j := i + 1; j < 0x10000 && quiet <= gap; j++ {
++				if prev[j] != cur[j] {
++					hi, quiet = j, 0
++				} else {
++					quiet++
++				}
++			}
++			for lo <= hi {
++				n := hi - lo + 1
++				if n > 0x8000 {
++					n = 0x8000
++				}
++				seg(lo, n)
++				lo += n
++			}
++			i = hi + 1
++		}
++	}
++	var h [8]byte
++	binary.LittleEndian.PutUint32(h[0:], uint32(t.n))
++	binary.LittleEndian.PutUint32(h[4:], count)
++	t.dw.Write(h[:])
++	t.dw.Write(segs)
++}
++
++// waitSync 讓機器停在 sub_11097 的等待迴圈裡（而且這次等待還沒滿，之後至少還有一個指令邊界）。
++// 找不到時（輪詢迴圈沒有呼叫 sub_11097）過了預算就放棄，記一次 sync_timeouts。錯誤放進 r.wtErr，由下一個 step 回傳。
++func (r *rt) waitSync() {
++	t := r.wt
++	if t == nil || !t.sync || r.wtErr != nil {
++		return
++	}
++	inWait := func() bool {
++		c := r.m.CPU
++		lin := uint32(c.Seg[cpu.CS])<<4 + uint32(c.IP)
++		return (lin == t.cmpLin || lin == t.jbLin) && r.m.Read16(r.base+idaWaitTick-idaBase) < c.R[cpu.CX]
++	}
++	if inWait() {
++		return
++	}
++	budget := r.m.IRQ0Every * 6
++	if budget < 2_000_000 {
++		budget = 2_000_000
++	}
++	end := r.m.Steps + budget
++	for r.m.Steps < end && !r.d.Exited {
++		if err := r.step(); err != nil {
++			r.wtErr = err
++			return
++		}
++		if inWait() {
++			return
++		}
++	}
++	t.syncTimeout++
++}
++
++// waitSyncErr 是給 poke 命令用的 waitSync：回傳同步過程遇到的錯誤。
++func (r *rt) waitSyncErr() error {
++	r.waitSync()
++	e := r.wtErr
++	r.wtErr = nil
++	return e
++}
++
++// waitLogPoke 記一次 poke。呼叫端先 waitSync 再寫入。
++func (r *rt) waitLogPoke(ida uint32, width int, val uint32) error {
++	t := r.wt
++	if t == nil {
++		return nil
++	}
++	if t.pf == nil {
++		f, err := os.Create(filepath.Join(r.out, "wait-"+t.name+".pokes"))
++		if err != nil {
++			return err
++		}
++		t.pf = f
++	}
++	t.pokes++
++	_, err := fmt.Fprintf(t.pf, "%d 0x%X %d 0x%X\n", t.n, ida, width, val)
++	return err
++}
++
++// fontDump 把 F000:FA6E 起 2048 位元組存成 biosfont.bin。第一關的幀計數（sub_18A61）用 BIOS 字型，
++// 重製要用同一份才能逐像素對拍；這份字型不是遊戲素材，只留本機。
++func (r *rt) fontDump() error {
++	const base = 0xFFA6E
++	b := make([]byte, 2048)
++	for i := range b {
++		b[i] = r.m.Read8(base + uint32(i))
++	}
++	sum := sha256.Sum256(b)
++	if err := os.WriteFile(filepath.Join(r.out, "biosfont.bin"), b, 0o644); err != nil {
++		return err
++	}
++	r.logf("fontdump", "biosfont.bin 2048 bytes sha256=%s", hex.EncodeToString(sum[:]))
++	return nil
++}
++
++// untilWait 跑到 waittrace 已寫出 n 筆。
++func (r *rt) untilWait(n, budget uint64) error {
++	if r.wt == nil {
++		return fmt.Errorf("waittrace 還沒開")
++	}
++	return r.runUntil(fmt.Sprintf("等待筆數 >= %d", n), func() bool { return r.wt.n >= n }, budget)
++}
