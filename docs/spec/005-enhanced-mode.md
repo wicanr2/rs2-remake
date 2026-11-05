@@ -96,7 +96,7 @@
 | 遊戲設定 | 開設定畫面的強化頁 |
 | 全螢幕 | 全螢幕 |
 | 原貌／HD | 原版圖與 HD |
-| 顯示模式 | VGA、EGA、CGA、MGA（規格 004） |
+| 顯示模式 | VGA、EGA、CGA、MGA 循環，快捷鍵 F6（[規格 006](006-display-modes.md)）。CGA、MGA 以 4:3 呈現，VGA、EGA 維持 8:5。設定檔 `mode=`，命令列 `--mode`，`--toggle-at N:mode` 供 headless 驗證 |
 
 工具列下方一行狀態列：暫停、強化規則、無敵、手把接上或拔除等訊息。
 

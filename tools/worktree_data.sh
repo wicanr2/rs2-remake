@@ -20,7 +20,7 @@ link() {
 link "$MAIN/original" original
 mkdir -p workspace workspace/target workspace/target-play workspace/rs2 workspace/progress
 # 這些目錄由 tools/rust.sh 用 docker -v 掛進容器，符號連結可以。
-for d in cargo cargo-play dosrun hd ida unpacked dosgolem; do
+for d in cargo cargo-play dosrun dosrun-modes hd ida unpacked dosgolem; do
   link "$MAIN/workspace/$d" "workspace/$d"
 done
 # 測試從 /project/workspace/extracted 讀，/project 是整個 worktree 掛進去的，容器裡看不到主工作區的絕對路徑，

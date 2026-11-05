@@ -3,11 +3,10 @@
 
 用法：pkg_payload.py <原版目錄> <HD 資料夾> <原始碼快照> <輸出目錄>
 
-原版：只放 `rs2-formats` 的 EXPECTED 列的檔案，逐一驗 SHA-256。其餘檔案（破解組的 SEN.EXE、SEN.PAS、
-RS2.BAT 等）不進發行包（AGENTS.md 硬規則 7）。
-HD：只放執行時會讀的檔案，依 `rs2-gfx` 的 HdAssets 讀取路徑：
-  <圖庫>/NNNN.png、<圖庫>/masks/NNNN.png、<圖庫>/variants/<調色盤>/NNNN.png、base-palette.tsv，
-  另外保留 mono/（單色模式之後會用）。
+原版：只放 `rs2-formats` 的 EXPECTED 與 `rs2-gfx` 的 MONO_EXPECTED 列的檔案，逐一驗 SHA-256。其餘檔案
+（破解組的 SEN.EXE、SEN.PAS、RS2.BAT 等）不進發行包（AGENTS.md 硬規則 7）。
+HD：只放執行時會讀的檔案，依 `rs2-gfx` 的 HdAssets 與 MonoHdSink 讀取路徑：
+  <圖庫>/NNNN.png、<圖庫>/masks/NNNN.png、<圖庫>/variants/<調色盤>/NNNN.png、base-palette.tsv、mono/。
 沒歸類的檔案一律中止，避免素材資料夾多了新東西卻默默漏帶或夾帶。
 """
 import hashlib
@@ -45,13 +44,19 @@ def sha256(p: Path) -> str:
     return h.hexdigest()
 
 
-def expected(src: Path):
-    text = (src / "crates/rs2-formats/src/manifest.rs").read_text(encoding="utf-8")
-    body = text.split("pub const EXPECTED", 1)[1].split("];", 1)[0]
+def table(path: Path, name: str, want: int):
+    text = path.read_text(encoding="utf-8")
+    body = text.split(f"pub const {name}", 1)[1].split("];", 1)[0]
     pairs = re.findall(r'\("([^"]+)",\s*"([0-9a-f]{64})"\)', body)
-    if len(pairs) < 20:
-        sys.exit(f"payload：EXPECTED 只解析到 {len(pairs)} 筆，manifest.rs 格式變了？")
+    if len(pairs) != want:
+        sys.exit(f"payload：{name} 解析到 {len(pairs)} 筆，預期 {want} 筆，{path.name} 格式變了？")
     return pairs
+
+
+def expected(src: Path):
+    color = table(src / "crates/rs2-formats/src/manifest.rs", "EXPECTED", 26)
+    mono = table(src / "crates/rs2-gfx/src/mono.rs", "MONO_EXPECTED", 21)
+    return color + mono
 
 
 def put(src: Path, dst: Path):

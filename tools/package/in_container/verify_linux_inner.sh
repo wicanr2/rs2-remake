@@ -54,6 +54,14 @@ ae="$(compare -metric AE /out/demo-hd-0260.png /out/demo-orig-0260.png null: 2>&
 echo "HD 與原版圖同一步的差異像素數：$ae"
 [ "${ae%%.*}" -gt 1000 ] 2>/dev/null && pass "HD 與原版圖的畫面確實不同（差 $ae 像素）" || fail "HD 與原版圖的畫面沒有差異（$ae）"
 
+echo "== C2：CGA、MGA，單色圖庫來自發行包"
+for m in cga mga; do
+  run C2 15 "demo-$m" "$AI" --appimage-extract-and-run --start demo --mode "$m" --max-secs 15 --shot-at "60:/out/demo-$m-0060.png"
+  [ $? -eq 0 ] && pass "C2 $m 結束碼 0" || fail "C2 $m 結束碼非 0"
+  grep -q "\[單色\] 單色圖庫雜湊驗證通過" "/out/demo-$m.log" && pass "C2 $m 單色圖庫載入成功" || fail "C2 $m 單色圖庫載入失敗"
+  shot_check "/out/demo-$m-0060.png" "C2 $m 第 60 步"
+done
+
 echo "== D：唯讀的 AppDir（直接跑 AppRun，不經 AppImage 解開），HOME 指向不可寫的位置"
 HOME=/proc run D 8 readonly /appdir/AppRun --start demo --max-secs 8 --shot-at 40:/out/readonly-0040.png
 [ $? -eq 0 ] && pass "D 唯讀 AppDir 結束碼 0" || fail "D 唯讀 AppDir 結束碼非 0"

@@ -6,7 +6,7 @@
 
 驗什麼：
   共通  SHA256SUMS、zip 的 CRC、包內每個檔案對 MANIFEST.json 的 SHA-256、授權檔、沒有不該帶的檔案、
-        原版 26 檔的雜湊對 rs2-formats 的 EXPECTED、HD 有 base-palette.tsv 與 mono/。
+        原版 47 檔的雜湊對 rs2-formats 的 EXPECTED 與 rs2-gfx 的 MONO_EXPECTED、HD 有 base-palette.tsv 與 mono/。
   Windows  PE 為 x86_64、主控台子系統、相依 DLL 只有系統與同目錄的 SDL2.dll、版本資源有版本字串。
   macOS    fat 檔恰好 x86_64 加 arm64、相依路徑只有 @rpath 的 SDL2.framework 與系統函式庫、rpath 正確、
            最低系統版本、Info.plist、符號連結、arm64 的 ad-hoc 簽章 CodeDirectory 逐頁雜湊對得上。
@@ -166,13 +166,20 @@ def verify_macho(label, data, want_archs, rpath_expected, min_allowed):
 # 共通
 # ---------------------------------------------------------------------------
 
-def expected_original():
-    text = (SRC / "crates/rs2-formats/src/manifest.rs").read_text(encoding="utf-8")
-    body = text.split("pub const EXPECTED", 1)[1].split("];", 1)[0]
+def expected_table(path: Path, name: str):
+    text = path.read_text(encoding="utf-8")
+    body = text.split(f"pub const {name}", 1)[1].split("];", 1)[0]
     return dict(re.findall(r'\("([^"]+)",\s*"([0-9a-f]{64})"\)', body))
 
 
-FORBIDDEN = re.compile(r"(?:^|/)(SEN\.EXE|SEN\.PAS|RS2\.BAT|RS2\.JOY|JOYMOUSE\.CFG|FILE_ID\.DIZ|ASMDRV\.EXE|JGAME\.EXE|MYB\.BDT)$|/overview/|/_final/|hd-manifest\.json|hd-postfix\.json|hd-variants-manifest\.json|/maps/|/MAP/objects/", re.I)
+def expected_original():
+    color = expected_table(SRC / "crates/rs2-formats/src/manifest.rs", "EXPECTED")
+    mono = expected_table(SRC / "crates/rs2-gfx/src/mono.rs", "MONO_EXPECTED")
+    check(len(color) == 26 and len(mono) == 21, f"EXPECTED {len(color)} 筆、MONO_EXPECTED {len(mono)} 筆")
+    return {**color, **mono}
+
+
+FORBIDDEN = re.compile(r"(?:^|/)(SEN\.EXE|SEN\.PAS|RS2\.BAT|RS2\.JOY|JOYMOUSE\.CFG|FILE_ID\.DIZ|ASMDRV\.EXE|JGAME\.EXE)$|/overview/|/_final/|hd-manifest\.json|hd-postfix\.json|hd-variants-manifest\.json|/maps/|/MAP/objects/", re.I)
 
 
 def content_checks(label, files: dict, manifest: dict, prefix: str, data_root: str, doc_roots):
@@ -195,7 +202,7 @@ def content_checks(label, files: dict, manifest: dict, prefix: str, data_root: s
             check(prefix + root + n in regular, f"{label}：{root}{n} 存在")
     check(prefix + "LICENSE" in regular and prefix + "README.txt" in regular, f"{label}：發行包根目錄有 LICENSE 與 README.txt")
     check(all(b"RRSAL-1.0" in regular[prefix + r + "LICENSE"] for r in doc_roots + [""]), f"{label}：各處的 LICENSE 都是 RRSAL-1.0")
-    # 原版 26 檔
+    # 原版 47 檔：彩色 26 加單色 21
     exp = expected_original()
     got = {k.rsplit("/", 1)[1]: sha(v) for k, v in regular.items() if k.startswith(prefix + data_root + "original/")}
     check(got == exp, f"{label}：原版資料 {len(got)} 檔的雜湊與 rs2-formats EXPECTED 完全相同")

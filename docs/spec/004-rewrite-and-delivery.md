@@ -82,9 +82,9 @@
 
 ## 顯示模式
 
-- `DisplayMode`：VGA、EGA、CGA、MGA。工具列與快捷鍵切換，切換不影響模擬。
-- 先盤點 101 個 `byte_1CF74` 判斷點，分出只影響繪製的與影響邏輯的。影響邏輯的要另外決定如何不影響切換。
-- 原版對拍：`rs2dyn` 要補 CGA 模式 6 與 Hercules 的畫面記錄。
+規格在 [006](006-display-modes.md)（CONFORMED）。判斷點盤點見 [14 號文件](../re/14-display-modes.md)，M 與 P 的指令參照共 131 處。
+
+- `DisplayMode`：VGA、EGA、CGA、MGA。工具列與 F6 切換，切換不影響模擬。
 - HD：先用 `workspace/hd/assets/mono/` 的 1,526 張推導結果，看實際畫面後由使用者決定要不要重畫。
 
 ## 交付

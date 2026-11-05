@@ -71,6 +71,14 @@ ae="$(compare -metric AE /out/demo-hd-0260.png /out/demo-orig-0260.png null: 2>&
 echo "HD 與原版圖同一步的差異像素數：$ae"
 [ "${ae%%.*}" -gt 1000 ] 2>/dev/null && pass "HD 與原版圖的畫面確實不同（差 $ae 像素）" || fail "HD 與原版圖的畫面沒有差異（$ae）"
 
+echo "== C2：CGA、MGA，單色圖庫來自發行包"
+for m in cga mga; do
+  run C2 15 "demo-$m" "$WGAME\\rs2-play.exe" --start demo --mode "$m" --max-secs 15 --shot-at "60:Z:\\out\\demo-$m-0060.png"
+  [ $? -eq 0 ] && pass "C2 $m 結束碼 0" || fail "C2 $m 結束碼非 0"
+  grep -q "\[單色\] 單色圖庫雜湊驗證通過" "/out/demo-$m.log" && pass "C2 $m 單色圖庫載入成功" || fail "C2 $m 單色圖庫載入失敗"
+  shot_check "/out/demo-$m-0060.png" "C2 $m 第 60 步"
+done
+
 echo "== D：預設繪圖器（不指定 SDL_RENDER_DRIVER，Wine 的 Direct3D），15 秒，只看能不能起來"
 SDL_RENDER_DRIVER= run D 15 default-renderer "$WGAME\\rs2-play.exe" --start demo --max-secs 15 --shot-at "120:Z:\\out\\default-renderer-0120.png"
 rc=$?

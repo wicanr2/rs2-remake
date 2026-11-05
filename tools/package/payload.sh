@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 步驟：組出發行包的資料（原版檔案 26 個加 HD 執行時素材）到 workspace/pkg/payload。來源唯讀掛載。
+# 步驟：組出發行包的資料（原版檔案 47 個（彩色 26、單色 21）加 HD 執行時素材）到 workspace/pkg/payload。來源唯讀掛載。
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
