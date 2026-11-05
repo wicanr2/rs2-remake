@@ -8,7 +8,7 @@ use crate::draw::{MixFile, Pool, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_4};
 use crate::game::{Core, Exit, sample};
-use crate::mirror::{Palette, StageBuffers};
+use crate::flow::{Palette, StageBuffers};
 use crate::video::{Page, RowCopy, SCRATCH_A};
 
 /// 計數不超過這個值走普通段，之後走頭目段。
@@ -33,7 +33,7 @@ const WOBBLE_STEP: u16 = 0x0A;
 
 /// 通道背景的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Tunnel {
+pub struct Tunnel {
     /// `word_1D91D`：兩壁一起上下偏移的像素列數，由腳本逐幀 ±10。
     pub offset: u16,
     /// `word_1D91F`：下壁的水平相位，每幀加 1（8 像素），到 40 歸零。
@@ -193,7 +193,7 @@ impl Core {
     fn step_tunnel_script(&mut self) {
         let pos = self.scenes.tunnel.script_pos;
         self.scenes.tunnel.script_pos = pos.wrapping_add(1);
-        let byte = self.tunnel_script_byte(pos);
+        let byte = self.tables.tunnel_script_byte(pos);
         self.scenes.tunnel.apply_script_byte(byte);
     }
 

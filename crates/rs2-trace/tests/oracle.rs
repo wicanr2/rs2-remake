@@ -1,8 +1,9 @@
 //! 規格 001 的驗收。需要原版檔與收據，由 `tools/rust.sh verify` 帶 `--include-ignored` 跑。
 //! 比對筆數為 0 視為失敗，免得缺檔時看起來像通過。
 
-use rs2_core::{A0_EXEMPT, Fixes, Game, Input, Start};
+use rs2_core::{Fixes, Game, Input, Start};
 use rs2_formats::{EXPECTED, parse_go, sha256_hex};
+use rs2_trace::mirror::A0_EXEMPT;
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu};
 use std::path::PathBuf;
 
@@ -77,7 +78,8 @@ fn a0_check(start: Start, dump: &str) {
     let g = Game::new(&inputs.image, &inputs.dm1, start, Fixes::NONE);
     let want = std::fs::read(env_path("RS2_DOSRUN").join(dump)).unwrap();
     assert_eq!(want.len(), 0x10000);
-    let got = g.ds.bytes();
+    let got_ds = inputs.mirror().dump(g.state());
+    let got = got_ds.bytes();
     let mut bad = Vec::new();
     for i in 0..0x10000usize {
         if got[i] != want[i] && !A0_EXEMPT.iter().any(|&(lo, hi)| (lo as usize) <= i && i <= hi as usize) {
@@ -102,6 +104,7 @@ fn a0_newgame_entry() {
 fn replay(start: Start, receipt: &str, fixes: Fixes) -> usize {
     let dir = env_path("RS2_ORIG");
     let inputs = load_inputs(&dir).unwrap();
+    let m = inputs.mirror();
     let mut g = Game::new(&inputs.image, &inputs.dm1, start, fixes);
     let text = std::fs::read_to_string(env_path("RS2_DOSRUN").join(receipt)).unwrap();
     let lines: Vec<&str> = text.lines().collect();
@@ -110,7 +113,7 @@ fn replay(start: Start, receipt: &str, fixes: Fixes) -> usize {
         let sc = parse_sc(want);
         let mut got: Option<String> = None;
         let f = g.step(&Input { scancodes: &sc }, &mut |g: &Game, pt: u32| {
-            got = Some(row_json(g, n as u64, pt, &sc));
+            got = Some(row_json(&m, g, n as u64, pt, &sc));
         });
         let got = got.unwrap_or_else(|| panic!("第 {n} 步沒有取樣，exit={:?}", f.exit));
         let want = strip_emu(want);

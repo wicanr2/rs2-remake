@@ -12,7 +12,7 @@ use crate::draw::Pool;
 use crate::game::Core;
 
 /// 池的槽數。
-pub(crate) const POOL_SIZE: usize = 10;
+pub const POOL_SIZE: usize = 10;
 
 /// 三層的圖庫索引，依繪製順序：遠、中、近。
 const LAYERS: [u16; 3] = [0x10, 0x0F, 0x0E];
@@ -22,7 +22,7 @@ const EXIT_COL: i16 = -7;
 
 /// 一個景物。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Prop {
+pub struct Prop {
     /// 圖庫索引，也是狀態：0 是空槽。
     pub image: u16,
     /// 欄，位元組（8 像素），可為負。
@@ -34,15 +34,20 @@ pub(crate) struct Prop {
 }
 
 impl Prop {
+    /// 景物記錄（群組表指向的 4 個字組）的欄位順序：`(圖庫索引, x, y, 每幀往左的欄數)`。
+    pub fn from_words(w: [u16; 4]) -> Prop {
+        Prop { image: w[0], x: w[1], y: w[2], dx: w[3] }
+    }
+
     fn is_active(&self) -> bool {
         self.image != 0
     }
 }
 
 /// 景物領域的全部狀態。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Scenery {
-    pub(crate) props: [Prop; POOL_SIZE],
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Scenery {
+    pub props: [Prop; POOL_SIZE],
 }
 
 impl Scenery {
@@ -56,12 +61,12 @@ impl Core {
     pub(crate) fn spawn_scenery(&mut self) {
         let mut row = 0u16;
         loop {
-            let (frame, record) = self.scenery_group(row);
+            let (frame, record) = self.tables.scenery_group(row);
             if frame == 0 {
                 return;
             }
             if frame == self.stage_frame() {
-                let prop = self.scenery_record(record);
+                let prop = self.tables.scenery_record(record);
                 self.place_prop(prop);
             }
             row = row.wrapping_add(1);
@@ -112,8 +117,7 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut c = Core::for_test(Start::Demo, Fixes::NONE);
         c.draws.clear();
         c
     }
@@ -125,12 +129,7 @@ mod tests {
     /// 在群組表第 `row` 列放 `(幀, 記錄位址)`，記錄放在 `0x7000 + 8 * row`。
     fn put_group(c: &mut Core, row: u16, frame: u16, prop: Prop) {
         let rec = 0x7000 + 8 * row;
-        for (k, w) in [prop.image, prop.x, prop.y, prop.dx].into_iter().enumerate() {
-            c.ds.w16(rec + 2 * k as u16, w);
-        }
-        let at = 0x19DC + 4 * row;
-        c.ds.w16(at, frame);
-        c.ds.w16(at + 2, rec);
+        c.tables_mut().put_scenery_group(row, frame, rec, prop);
     }
 
     #[test]

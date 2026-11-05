@@ -7,14 +7,15 @@
 
 mod map;
 
-pub(crate) use map::MapScroll;
+pub use map::MapScroll;
 
 use crate::boss_scroll::SCRIPT_END;
 use crate::draw::{MixFile, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_3, STAGE_3_BOSS, STAGE_RUNNING};
 use crate::game::{Core, Exit, Req, sample};
-use crate::mirror::{BossScript, Palette, StageBuffers};
+use crate::boss_scroll::BossScript;
+use crate::flow::{Palette, StageBuffers};
 use crate::video::{Page, SCRATCH_A};
 
 /// 計數超過這個值走頭目段。
@@ -137,7 +138,7 @@ impl Core {
     fn draw_stage3_boss_backdrop(&mut self) {
         self.clear_draw_page();
         if self.stage_frame() <= BOSS_ART_FRAME {
-            self.scenes.boss.layers[0].restart(BOSS_START_Y, BOSS_START_X, BossScript::Stage3);
+            self.restart_boss_layer(0, BOSS_START_Y, BOSS_START_X, BossScript::Stage3);
             return;
         }
         let byte = self.step_boss_layer(0);

@@ -29,12 +29,12 @@ use crate::draw::{BegGroup, MixFile};
 use crate::game::{Core, Exit};
 use crate::intro::IntroEnd;
 use crate::menu::Menu;
-use crate::mirror::PLAYER1_ACTIVE;
+use crate::player::PLAYER1_ACTIVE;
 use crate::video::{Page, SCRATCH_B};
 
 /// 標題領域的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Title {
+pub struct Title {
     pub menu: Menu,
     /// 示範輪播（原版 `word_1D146`），見 [`Title::next_demo`]。
     pub demo_round: u16,
@@ -209,8 +209,8 @@ mod rotation {
 /// 這不取代 `rs2-trace` 的全流程對拍（規格 002 B2）。
 #[cfg(test)]
 mod smoke {
-    use crate::game::{Entry, Fixes, Frame, Game, GameFiles, Input};
-    use crate::mirror::TITLE_LEVEL;
+    use crate::game::{Entry, Fixes, Frame, Game, GameFiles, Input, State};
+    use crate::tables::Tables;
 
     fn load() -> Game {
         let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
@@ -218,12 +218,9 @@ mod smoke {
         let image = rs2_formats::unpack_s_exe(&exe).unwrap();
         let dm1 = std::fs::read(dir.join("DM1.LCK")).unwrap();
         let dm2 = std::fs::read(dir.join("DM2.LCK")).unwrap();
-        let mut snap = vec![0u8; 0x10000];
-        let src = &image[rs2_formats::DSEG_IMAGE_OFFSET..];
-        let n = src.len().min(0x10000);
-        snap[..n].copy_from_slice(&src[..n]);
+        let state = State::power_on(&Tables::parse(&image).unwrap());
         let files = GameFiles { image, dm1, dm2, ..GameFiles::default() };
-        Game::from_snapshot(files, &snap, Entry::Title, Fixes::NONE)
+        Game::from_state(files, state, Entry::Title, Fixes::NONE)
     }
 
     /// 開場動畫的等待序列：`earth_slides_in` 結尾 1 tick 加 `ship_approaches` 的 15 次（含時間到才有的最後一次）。
@@ -314,132 +311,6 @@ mod smoke {
             }
         });
         assert_eq!(&got[..want.len()], &want[..], "等待序列不同");
-        assert_eq!(g.ds.r16(TITLE_LEVEL), 2, "難度應從 1 變 2");
-    }
-}
-
-/// 對 `wt_title` 收據的暫時比對：標題、DM1 的第一關示範、第二關的過場卡（不含第二關本體）。
-/// 比 `cx`、幀計數與資料段。資料段的豁免用 `DS_EXEMPT`（`A7F9h` 收據記在歸零之前）。
-/// 全流程的正式對拍在 `rs2-trace` 的 `wait` 測試，這裡只用來提早抓錯。
-#[cfg(test)]
-mod receipt {
-    use crate::game::{Entry, Fixes, Game, GameFiles, Input};
-
-    fn u16le(b: &[u8], at: usize) -> usize {
-        u16::from_le_bytes([b[at], b[at + 1]]) as usize
-    }
-
-    fn u32le(b: &[u8], at: usize) -> usize {
-        u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize
-    }
-
-    #[test]
-    #[ignore]
-    fn title_demo1_and_stage2_card() {
-        let orig = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG"));
-        let run = std::path::PathBuf::from(std::env::var("RS2_DOSRUN").expect("缺 RS2_DOSRUN")).join("wt_title");
-        let exe = std::fs::read(orig.join("S.EXE")).unwrap();
-        let image = rs2_formats::unpack_s_exe(&exe).unwrap();
-        let dm1 = std::fs::read(orig.join("DM1.LCK")).unwrap();
-        let dm2 = std::fs::read(orig.join("DM2.LCK")).unwrap();
-        let snap = std::fs::read(run.join("entry.ds")).unwrap();
-        let files = GameFiles { image, dm1, dm2, ..GameFiles::default() };
-        let mut g = Game::from_snapshot(files, &snap, Entry::Title, Fixes::NONE);
-
-        // 收據：cx、frame。
-        let text = std::fs::read_to_string(run.join("wait-wt_title.jsonl")).unwrap();
-        let field = |line: &str, key: &str| -> u64 {
-            let k = line.find(&format!("\"{key}\":")).unwrap() + key.len() + 3;
-            let rest = &line[k..];
-            let end = rest.find([',', '}']).unwrap();
-            rest[..end].parse().unwrap()
-        };
-        let rows: Vec<(u16, u16)> = text.lines().map(|l| (field(l, "cx") as u16, field(l, "frame") as u16)).collect();
-        // 第一個超過 100 筆的 cx=2 區段是第一關示範，接著的 cx=1 區段是第二關過場卡。止於過場卡結束。
-        let mut i = 0;
-        let mut end = None;
-        while i < rows.len() {
-            if rows[i].0 == 2 {
-                let mut j = i;
-                while j < rows.len() && rows[j].0 == 2 {
-                    j += 1;
-                }
-                if j - i > 100 {
-                    let mut k = j;
-                    while k < rows.len() && rows[k].0 == 1 {
-                        k += 1;
-                    }
-                    end = Some(k);
-                    break;
-                }
-                i = j;
-            } else {
-                i += 1;
-            }
-        }
-        let end = end.expect("收據裡找不到第二關過場卡");
-
-        // 資料段重建。
-        let dsd = std::fs::read(run.join("wait-wt_title.dsd")).unwrap();
-        let mut cur = vec![0u8; 0x10000];
-        let mut at = 0usize;
-        let mut ds_by_n: Vec<Vec<u8>> = Vec::new();
-        while at < dsd.len() && ds_by_n.len() < end {
-            let n = u32le(&dsd, at);
-            let cnt = u32le(&dsd, at + 4);
-            at += 8;
-            for _ in 0..cnt {
-                let off = u16le(&dsd, at);
-                let len = u16le(&dsd, at + 2);
-                at += 4;
-                cur[off..off + len].copy_from_slice(&dsd[at..at + len]);
-                at += len;
-            }
-            assert_eq!(n, ds_by_n.len());
-            ds_by_n.push(cur.clone());
-        }
-
-        let exempt = |o: usize| -> bool { crate::game::ds_exempt(o as u16) };
-
-        let mut n = 0usize;
-        let mut bad: Vec<String> = Vec::new();
-        let mut diff_total = 0usize;
-        // 偏移 -> (第一筆, 筆數, 第一筆的重製值, 收據值)
-        let mut by_off: std::collections::BTreeMap<usize, (usize, usize, u8, u8)> = std::collections::BTreeMap::new();
-        for step in 0..400_000 {
-            let mut hits: Vec<(u16, u16, Vec<u8>)> = Vec::new();
-            let f = g.step_full(&Input { scancodes: &[] }, &mut |_g, _pt| {}, &mut |g, cx| {
-                hits.push((cx, g.ds.r16(0x0422), g.ds.bytes().to_vec()));
-            });
-            for (cx, frame, ds) in hits {
-                if n >= end {
-                    break;
-                }
-                if (cx, frame) != rows[n] {
-                    bad.push(format!("n={n} cx/frame 重製 {cx}/{frame} 收據 {}/{}", rows[n].0, rows[n].1));
-                }
-                let want = &ds_by_n[n];
-                let diffs: Vec<usize> = (0..0x10000).filter(|&o| ds[o] != want[o] && !exempt(o)).collect();
-                diff_total += diffs.len();
-                for &o in &diffs {
-                    let e = by_off.entry(o).or_insert((n, 0usize, ds[o], want[o]));
-                    e.1 += 1;
-                }
-                n += 1;
-            }
-            if n >= end || f.exit.is_some() {
-                let _ = step;
-                break;
-            }
-        }
-        for b in &bad {
-            println!("{b}");
-        }
-        for (o, (first, cnt, got, want)) in &by_off {
-            println!("偏移 {o:04X} 第一筆 n={first} 共 {cnt} 筆 重製 {got:02X} 收據 {want:02X}");
-        }
-        println!("比對 {n} 筆（目標 {end}），資料段非豁免差異 {diff_total} 位元組，{} 個偏移，回報 {} 行", by_off.len(), bad.len());
-        assert!(n >= end, "沒跑滿");
-        assert!(bad.is_empty() && by_off.is_empty(), "有差異");
+        assert_eq!(g.state().title.menu.level, 2, "難度應從 1 變 2");
     }
 }

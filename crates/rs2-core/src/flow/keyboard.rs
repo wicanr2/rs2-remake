@@ -1,10 +1,10 @@
 //! 鍵盤中斷（INT 9，`1A83Dh`）：按鍵狀態表、開火與轉向旗標、開發者秘技、搖桿旗標、音效開關。
 //!
-//! 按鍵狀態表與最近按下的鍵（ASCII）仍在資料段，標題與片尾直接讀寫，經 `mirror.rs` 的 `key_down`、`last_key`
-//! 一族存取。表的內容：0 沒按過，1 按住，2 剛放開。其餘輸入狀態（開火旗標、秘技、搖桿旗標、最後的掃描碼）在 [`Controls`]。
+//! 按鍵狀態表（`Controls::keys`）：0 沒按過，1 按住，2 剛放開。最近按下的鍵（ASCII）、開火旗標、秘技、
+//! 搖桿旗標與最後的掃描碼也在 [`Controls`]。
 
 use crate::game::Core;
-use crate::mirror::Key;
+use crate::tables::ASCII_ENTRIES;
 
 /// 旗標的兩個值：`Y` 成立，`N` 不成立。
 pub(crate) const FLAG_ON: u8 = b'Y';
@@ -12,12 +12,15 @@ pub(crate) const FLAG_OFF: u8 = b'N';
 
 /// 掃描碼的最高位元是 1 表示放開。
 const BREAK_BIT: u8 = 0x80;
+/// 按鍵表的值：1 按住，2 剛放開。
+const KEY_HELD: u8 = 1;
+const KEY_RELEASED: u8 = 2;
 /// 開音效開關之前要累積的 tick 數。
 const SOUND_TOGGLE_MIN_TICKS: u16 = 5;
 
 /// 每位玩家三個旗標，INT 9 設成 `Y`，玩家邏輯處理後清成 `N`。位元組寬，值不限於 `Y`、`N`。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct FireFlags {
+pub struct FireFlags {
     /// 開火鍵放開過，下一次按下算新按（玩家 1 `byte_273A7`，玩家 2 `byte_273A8`）。
     pub new_press: [u8; 2],
     /// 本幀有開火鍵事件，含按住時的自動重複（`byte_273A9`、`byte_273AB`）。
@@ -29,7 +32,7 @@ pub(crate) struct FireFlags {
 /// 開發者秘技。按 1、2、3 各一次再按小鍵盤 5 解鎖，解鎖後按空白鍵補滿血、按小鍵盤 `*` 開無敵，Alt 清除。
 /// 欄位是字組寬，值不限於 `Y`、`N`。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Cheat {
+pub struct Cheat {
     /// `word_2739D`：已解鎖（低位元組 `Y`）。
     pub unlocked: u16,
     /// `word_2739F`、`word_273A1`、`word_273A3`：1、2、3 鍵各按了幾次。
@@ -38,18 +41,241 @@ pub(crate) struct Cheat {
     pub invincible: u16,
 }
 
+/// 按鍵狀態表的項數：掃描碼 0 至 5Eh。真實的鍵盤沒有更大的掃描碼；原版的表之後是檔名工作區，
+/// 5Fh 以上的掃描碼只會寫壞它（重製忽略）。
+pub(crate) const KEY_ENTRIES: usize = 0x5F;
+
+/// 按鍵狀態表，以掃描碼索引，每鍵一個位元組：1 按住，2 剛放開，0 沒按過或已消耗。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyTable(pub [u8; KEY_ENTRIES]);
+
+impl Default for KeyTable {
+    fn default() -> KeyTable {
+        KeyTable([0; KEY_ENTRIES])
+    }
+}
+
 /// 輸入領域的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Controls {
+pub struct Controls {
+    /// 按鍵狀態表（INT 9 維護，標題與片尾直接讀寫）。
+    pub keys: KeyTable,
+    /// `byte_27422`：最近一次按下的鍵（ASCII），0 表示沒有。標題的各段動畫每步看一次它是不是 0。
+    pub last_key: u8,
     /// `byte_2742C`：最後一個按下（非放開）的鍵的掃描碼，放開時歸 0。沒有人讀。
     pub last_scan: u8,
     pub fire: FireFlags,
     pub cheat: Cheat,
     /// `byte_1DAAC`：搖桿與滑鼠輪詢開關（Ctrl+J 開、Ctrl+K 關）。重製不支援輪詢，旗標照原版維護。
     pub joymouse: u8,
+    /// `byte_2739A`：音效開關鍵（INT 9 的 `sub_1A891`）是否生效，`N` 不生效。標題期間 `N`，進關卡改 `Y`，離開改 `N`。
+    pub sound_key: u8,
+}
+
+/// 標題、片尾與關卡讀的鍵。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Key {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// 標題與片尾的選單用，關卡不讀。
+    #[allow(dead_code)]
+    Enter,
+    Space,
+    Q,
+    R,
+    Esc,
+    Digit1,
+    Digit2,
+    Digit3,
+    W,
+    Ctrl,
+    S,
+    D,
+    J,
+    K,
+    LeftShift,
+    Z,
+    C,
+    Slash,
+    RightShift,
+    KeypadStar,
+    Alt,
+    Keypad5,
+}
+
+impl Key {
+    /// set 1 掃描碼，也是按鍵表的索引。
+    pub(crate) const fn scancode(self) -> u16 {
+        match self {
+            Key::Up => 0x48,
+            Key::Down => 0x50,
+            Key::Left => 0x4B,
+            Key::Right => 0x4D,
+            Key::Enter => 0x1C,
+            Key::Space => 0x39,
+            Key::Q => 0x10,
+            Key::R => 0x13,
+            Key::Esc => 0x01,
+            Key::Digit1 => 0x02,
+            Key::Digit2 => 0x03,
+            Key::Digit3 => 0x04,
+            Key::W => 0x11,
+            Key::Ctrl => 0x1D,
+            Key::S => 0x1F,
+            Key::D => 0x20,
+            Key::J => 0x24,
+            Key::K => 0x25,
+            Key::LeftShift => 0x2A,
+            Key::Z => 0x2C,
+            Key::C => 0x2E,
+            Key::Slash => 0x35,
+            Key::RightShift => 0x36,
+            Key::KeypadStar => 0x37,
+            Key::Alt => 0x38,
+            Key::Keypad5 => 0x4C,
+        }
+    }
+}
+
+/// 玩家的開火旗標，INT 9 的 `sub_1A9B5` 依按鍵事件設成 `Y`，玩家邏輯處理後清成 `N`。
+/// 旗標本身在 [`FireFlags`]。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FireFlag {
+    /// 開火鍵放開過，下一次按下算新按（玩家 1 `273A7h`，玩家 2 `273A8h`）。
+    NewPress,
+    /// 本幀有開火鍵事件，含按住時的自動重複（`273A9h`、`273ABh`）。
+    Event,
+    /// 轉向鍵被按下（`273AAh`、`273ACh`）。
+    Turn,
 }
 
 impl Core {
+    /// 按鍵表第 `scan` 項（低 7 位元）。
+    fn key_state(&self, scan: u8) -> u8 {
+        self.flow.controls.keys.0.get(usize::from(scan & !BREAK_BIT)).copied().unwrap_or(0)
+    }
+
+    fn set_key_state(&mut self, scan: u8, v: u8) {
+        if let Some(slot) = self.flow.controls.keys.0.get_mut(usize::from(scan & !BREAK_BIT)) {
+            *slot = v;
+        }
+    }
+
+    /// 按鍵是不是按著（按鍵表的值為 1）。放開後 INT 9 寫 2，所以放開的鍵不算。
+    pub(crate) fn key_down(&self, key: Key) -> bool {
+        self.key_state(key.scancode() as u8) == KEY_HELD
+    }
+
+    /// 按鍵剛放開（按鍵表的值為 2）。關卡的暫停與開火旗標用：暫停中 Esc 的狀態維持 2 直到下一次按下。
+    pub(crate) fn key_released(&self, key: Key) -> bool {
+        self.key_state(key.scancode() as u8) == KEY_RELEASED
+    }
+
+    /// 清掉按鍵表裡這個鍵的狀態（寫 0）。
+    pub(crate) fn release_key(&mut self, key: Key) {
+        self.set_key_state(key.scancode() as u8, 0);
+    }
+
+    /// 把這個鍵的狀態寫成 2（剛放開）。轉向鍵處理後用，暫停用。
+    pub(crate) fn mark_key_released(&mut self, key: Key) {
+        self.set_key_state(key.scancode() as u8, KEY_RELEASED);
+    }
+
+    /// 按住就消耗掉（寫 0）並回傳 true：一次按鍵只處理一次。
+    pub(crate) fn take_key_press(&mut self, key: Key) -> bool {
+        let pressed = self.key_down(key);
+        if pressed {
+            self.release_key(key);
+        }
+        pressed
+    }
+
+    /// INT 9 收到按下碼：按鍵表寫 1。
+    pub(crate) fn note_key_down(&mut self, scan: u8) {
+        self.set_key_state(scan, KEY_HELD);
+    }
+
+    /// INT 9 收到放開碼：按鍵表寫 2。
+    pub(crate) fn note_key_up(&mut self, scan: u8) {
+        self.set_key_state(scan, KEY_RELEASED);
+    }
+
+    /// 無敵秘技等測試要看按鍵表原始值。
+    #[cfg(test)]
+    pub(crate) fn key_raw(&self, scan: u8) -> u8 {
+        self.key_state(scan)
+    }
+
+    /// 按鍵是不是按住（按鍵狀態表的值是 1；2 是剛放開）。表由 INT 9 維護。
+    pub(crate) fn key_held(&self, scan: u8) -> bool {
+        self.key_state(scan) == KEY_HELD
+    }
+
+    /// 展示模式還原輸入時直接寫按鍵狀態表。
+    pub(crate) fn set_key(&mut self, scan: u8, held: bool) {
+        self.set_key_state(scan, u8::from(held));
+    }
+
+    /// 掃描碼對應的 ASCII（原版 INT 9 的 `xlat`）。表只有 5Eh 項，掃描碼 5Eh 以上
+    /// 讀到的是緊接在表後的按鍵狀態表的前面幾項（原版兩張表在資料段相鄰），所以寫成明確的規則：
+    /// 超出 ASCII 表的掃描碼，取按鍵狀態表第 `scan - 5Eh` 項。
+    pub(crate) fn ascii_of(&self, scan: u8) -> u8 {
+        match self.tables.ascii.get(usize::from(scan)) {
+            Some(&ascii) => ascii,
+            None => self.key_state((usize::from(scan) - ASCII_ENTRIES) as u8),
+        }
+    }
+
+    /// 最近一次按下的鍵（ASCII），0 表示沒有。
+    pub(crate) fn last_key(&self) -> u8 {
+        self.flow.controls.last_key
+    }
+
+    pub(crate) fn set_last_key(&mut self, ascii: u8) {
+        self.flow.controls.last_key = ascii;
+    }
+
+    pub(crate) fn clear_last_key(&mut self) {
+        self.flow.controls.last_key = 0;
+    }
+
+    pub(crate) fn key_pressed(&self) -> bool {
+        self.last_key() != 0
+    }
+
+    /// 音效開關鍵是否生效（原版 `byte_2739A` 不是 `N`）。
+    pub(crate) fn sound_key_enabled(&self) -> bool {
+        self.flow.controls.sound_key != FLAG_OFF
+    }
+
+    /// 音效開關鍵是否生效（原版 `byte_2739A`）：標題期間 `N`，進關卡 `Y`。
+    pub(crate) fn set_sound_key_enabled(&mut self, on: bool) {
+        self.flow.controls.sound_key = if on { FLAG_ON } else { FLAG_OFF };
+    }
+
+    /// 玩家的開火旗標（`273A7h` 一族，INT 9 的 `sub_1A9B5` 設，玩家邏輯清）。
+    pub(crate) fn fire_flag(&self, player: usize, flag: FireFlag) -> bool {
+        let fire = &self.flow.controls.fire;
+        let slot = match flag {
+            FireFlag::NewPress => fire.new_press[player],
+            FireFlag::Event => fire.event[player],
+            FireFlag::Turn => fire.turn[player],
+        };
+        slot == FLAG_ON
+    }
+
+    pub(crate) fn set_fire_flag(&mut self, player: usize, flag: FireFlag, on: bool) {
+        let fire = &mut self.flow.controls.fire;
+        let slot = match flag {
+            FireFlag::NewPress => &mut fire.new_press[player],
+            FireFlag::Event => &mut fire.event[player],
+            FireFlag::Turn => &mut fire.turn[player],
+        };
+        *slot = if on { FLAG_ON } else { FLAG_OFF };
+    }
+
     /// 鍵盤中斷處理一個掃描碼。
     pub(crate) fn handle_scancode(&mut self, scan: u8) {
         self.flow.controls.last_scan = scan;
@@ -146,8 +372,7 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::Demo, Fixes::NONE)
+        Core::for_test(Start::Demo, Fixes::NONE)
     }
 
     const DIGIT_1: u8 = 0x02;
@@ -173,6 +398,40 @@ mod tests {
         assert!(!c.key_held(0x30), "放開後是 2，不算按住");
         assert_eq!(c.flow.controls.last_scan, 0, "放開時最後的掃描碼歸 0");
         assert_eq!(c.key_raw(0x30), 2);
+    }
+
+    #[test]
+    fn key_accessors_use_the_scancode_table() {
+        let mut c = core();
+        // 1Ch（Enter）的項：INT 9 寫 1 按下、2 放開。
+        c.flow.controls.keys.0[0x1C] = 1;
+        assert!(c.key_down(Key::Enter) && !c.key_down(Key::Space));
+        c.flow.controls.keys.0[0x1C] = 2;
+        assert!(!c.key_down(Key::Enter), "放開的鍵不算按著");
+        c.flow.controls.keys.0[0x1C] = 1;
+        c.release_key(Key::Enter);
+        assert_eq!(c.flow.controls.keys.0[0x1C], 0);
+        // 其餘的鍵對應：上 48h、下 50h、左 4Bh、右 4Dh、空白 39h、Q 10h、R 13h。
+        for (key, sc) in [(Key::Up, 0x48usize), (Key::Down, 0x50), (Key::Left, 0x4B), (Key::Right, 0x4D), (Key::Space, 0x39), (Key::Q, 0x10), (Key::R, 0x13)] {
+            c.flow.controls.keys.0[sc] = 1;
+            assert!(c.key_down(key), "{key:?}");
+        }
+        c.flow.controls.last_key = 0x43;
+        assert_eq!((c.last_key(), c.key_pressed()), (0x43, true));
+        c.clear_last_key();
+        assert!(!c.key_pressed());
+    }
+
+    #[test]
+    fn key_state_helpers_use_the_same_table() {
+        let mut c = core();
+        c.flow.controls.keys.0[0x48] = 1;
+        c.flow.controls.keys.0[0x50] = 2;
+        assert!(c.key_held(0x48) && !c.key_held(0x50) && !c.key_held(0x4B));
+        c.set_key(0x4B, true);
+        assert_eq!(c.key_raw(0x4B), 1);
+        c.set_key(0x4B, false);
+        assert_eq!(c.key_raw(0x4B), 0);
     }
 
     #[test]

@@ -18,7 +18,8 @@
 //! 移植還在進行，`unimplemented!` 的 panic 接起來回報成「未移植 sub_X」，不算比對失敗。
 
 use crate::{Inputs, parse_sc};
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, ShtGroup, a, boot_ds_with_dm1, ds_exempt};
+use crate::mirror::{Dseg, Mirror, a, ds_exempt};
+use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, Input, ShtGroup};
 use rs2_gfx::{Assets, BankDump, VgaSink};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -443,6 +444,7 @@ fn locate_detail(ctx: &LocateCtx, name: &str, n: u64, sink: &VgaSink) -> String 
 fn compare_row(
     name: &str,
     g: &Game,
+    got_ds: &Dseg,
     cx: u16,
     row: &WaitRow,
     want_ds: &[u8],
@@ -460,7 +462,7 @@ fn compare_row(
             diffs.push(format!("欄位 start：重製 {st} 原版 {}", row.start));
         }
     }
-    let ds = ds_diff(g.ds.bytes(), want_ds, report);
+    let ds = ds_diff(got_ds.bytes(), want_ds, report);
     if report {
         for l in &ds {
             println!("DSDIFF n={}{l}", row.n);
@@ -506,7 +508,7 @@ pub struct ReplayOpts {
     pub ds_report: bool,
     /// 收據根目錄；有值時，畫面不同就讀 `wl_<名稱>_<n>/` 的平面傾印（`tools/dos/wait_locate.sh`）定位。
     pub locate_root: Option<PathBuf>,
-    /// 資料段從 `boot_ds_with_dm1` 開始，不用收據的入口傾印。畫面仍從入口傾印開始，
+    /// 狀態從 `boot_state` 開始，不用收據的入口傾印。畫面仍從入口傾印開始，
     /// 因為開機畫面屬於啟動程序，不在移植範圍。只適用從標題開始的收據。
     pub boot: bool,
 }
@@ -519,13 +521,13 @@ pub fn replay(inputs: &Inputs, assets: &Assets, rc: &Receipt, ds_report: bool) -
 /// `replay_observed` 交給觀察者的事件：重製的繪製命令，依序。
 #[derive(Clone, Copy, Debug)]
 pub enum ReplayEvent<'a> {
-    /// `Game::from_snapshot` 後 `take_draws()` 的初始化命令。
+    /// `Game::from_state` 後 `take_draws()` 的初始化命令。
     Init(&'a [DrawCmd]),
     /// 一步（`step_full` 一次）回傳的繪製命令，已套用到 `replay_with` 自己的 `VgaSink`。
     Step(&'a [DrawCmd]),
     /// 同一步的繪製與音訊命令，`next_row` 是這一步結束時下一筆要比的等待。
     /// 原版對應的事件落在第 `next_row - 1` 筆與第 `next_row` 筆等待之間。
-    /// `sc` 是這一步送進去的掃描碼，`ds` 是這一步之後的整段資料段。
+    /// `sc` 是這一步送進去的掃描碼，`ds` 是這一步之後的整段資料段（`Mirror::dump` 的結果）。
     StepAt { sc: &'a [u8], draws: &'a [DrawCmd], audio: &'a [AudioCmd], next_row: usize, ds: &'a [u8] },
 }
 
@@ -548,9 +550,9 @@ fn replay_core(inputs: &Inputs, assets: &Assets, rc: &Receipt, opts: &ReplayOpts
         Ok(e) => e,
         Err(e) => return Verdict::Diff { at: 0, compared: 0, total, report: e },
     };
-    let boot = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
-    let start_ds: &[u8] = if opts.boot { boot.bytes() } else { &rc.entry_ds };
-    let mut g = Game::from_snapshot(inputs.game_files(), start_ds, entry, Fixes::NONE);
+    let m = Mirror::new(&inputs.image);
+    let start_state = if opts.boot { inputs.boot_state() } else { m.load_bytes(&rc.entry_ds) };
+    let mut g = Game::from_state(inputs.game_files(), start_state, entry, Fixes::NONE);
     // 入口的畫面：四個平面、DAC、BIOS 字型，與 word_2687E 的殘值（最近一次載入的圖庫項每列位元組數，從入口的資料段取）。
     let make_sink = || {
         let mut s = VgaSink::new(assets.clone());
@@ -603,14 +605,14 @@ fn replay_core(inputs: &Inputs, assets: &Assets, rc: &Receipt, opts: &ReplayOpts
             while next_poke < rc.pokes.len() && rc.pokes[next_poke].row <= done {
                 let p = rc.pokes[next_poke];
                 if p.width == 1 {
-                    g.poke8(a(p.addr), p.val as u8);
+                    m.poke8(g.state_mut(), a(p.addr), p.val as u8);
                 } else {
-                    g.poke16(a(p.addr), p.val);
+                    m.poke16(g.state_mut(), a(p.addr), p.val);
                 }
                 next_poke += 1;
             }
         }
-        let wait_pending = started && g.ds.r16(a(0x273B9)) == 0;
+        let wait_pending = started && g.state().flow.clock.since_wait == 0;
         let use_sct = row.sct.len() == row.sc.len();
         let mut sc: Vec<u8> = Vec::new();
         while fed_n < row.sc.len() && (wait_pending || !use_sct || row.sct[fed_n] as usize <= polls) {
@@ -634,7 +636,7 @@ fn replay_core(inputs: &Inputs, assets: &Assets, rc: &Receipt, opts: &ReplayOpts
                         return;
                     }
                     let ctx = opts.locate_root.as_deref().map(|root| LocateCtx { root, cmds: &cmds, fresh: &make_sink });
-                    diff = compare_row(&rc.name, gg, cx, row, want, sink_ref, ds_report, ctx.as_ref());
+                    diff = compare_row(&rc.name, gg, &m.dump(gg.state()), cx, row, want, sink_ref, ds_report, ctx.as_ref());
                     *done_ref += 1;
                 })
             }))
@@ -665,7 +667,8 @@ fn replay_core(inputs: &Inputs, assets: &Assets, rc: &Receipt, opts: &ReplayOpts
             }
         }
         if let Some(o) = obs.as_mut() {
-            o(ReplayEvent::StepAt { sc: &sc, draws: &frame.draws, audio: &frame.audio, next_row: done, ds: g.state_hash_input() });
+            let dump = m.dump(g.state());
+            o(ReplayEvent::StepAt { sc: &sc, draws: &frame.draws, audio: &frame.audio, next_row: done, ds: dump.bytes() });
             o(ReplayEvent::Step(&frame.draws));
         }
         // 輪詢步數：這一步內有等待結束就重算；交回控制權時 word_273B9 不為 0 表示是輪詢迴圈的一個 tick。
@@ -673,7 +676,7 @@ fn replay_core(inputs: &Inputs, assets: &Assets, rc: &Receipt, opts: &ReplayOpts
             polls = 0;
             polls_for = done;
         }
-        if frame.exit.is_none() && g.ds.r16(a(0x273B9)) != 0 {
+        if frame.exit.is_none() && g.state().flow.clock.since_wait != 0 {
             polls += 1;
         }
         if done == last_done {

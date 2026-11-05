@@ -52,7 +52,21 @@ pub(crate) enum DemoFile {
 }
 
 /// 展示錄影的位元組數。
-const DEMO_BYTES: usize = 3000;
+pub const DEMO_BYTES: usize = 3000;
+
+/// 展示錄影區（原版 `dseg:AAE2h` 起 3000 位元組）：每幀一個位元組，記錄玩家 1 的輸入位元。
+/// `DM1.LCK` 或 `DM2.LCK` 載入進來，非展示時玩家 1 把本幀的輸入錄在這裡。
+///
+/// 原版的位址是 16 位元環繞，超出 3000 位元組的位置是別的變數。重製的幀計數不會超過錄影長度
+/// （展示在第 288h 幀前重播，錄製有 5DBh 的上限），超出範圍的讀回 0、寫入丟掉。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DemoTape(pub Vec<u8>);
+
+impl Default for DemoTape {
+    fn default() -> DemoTape {
+        DemoTape(vec![0; DEMO_BYTES])
+    }
+}
 
 impl Core {
     /// 載入關卡圖庫（`SHT`、`BH`）。`SHT` 的遮罩一起換，`BH` 沒有遮罩，不動。
@@ -84,6 +98,18 @@ impl Core {
             self.record_demo_byte(i as u16, b);
         }
     }
+
+    /// 展示錄影第 `index` 個位元組。每幀一個位元組，記錄玩家 1 的輸入位元（`player::InputBit`）。
+    pub(crate) fn demo_byte(&self, index: u16) -> u8 {
+        self.tape.0.get(usize::from(index)).copied().unwrap_or(0)
+    }
+
+    /// 非展示時，玩家 1 把本幀的輸入位元錄在展示錄影的第 `index` 個位元組。
+    pub(crate) fn record_demo_byte(&mut self, index: u16, v: u8) {
+        if let Some(slot) = self.tape.0.get_mut(usize::from(index)) {
+            *slot = v;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -92,8 +118,7 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::Demo, Fixes::NONE)
+        Core::for_test(Start::Demo, Fixes::NONE)
     }
 
     #[test]

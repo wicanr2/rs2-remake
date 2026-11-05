@@ -2,7 +2,7 @@
 //! 不是驗收，沒有斷言。`tools/rust.sh test -p rs2-trace --test hd_tour -- --ignored --nocapture`。
 //! 輸出 `workspace/rs2/shots/tour/`，含原版美術，不進版控。
 
-use rs2_core::{Entry, Fixes, Game, Input, boot_ds_with_dm1};
+use rs2_core::{Fixes, Game, Input};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, png};
 use rs2_trace::load_inputs;
 use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
@@ -41,8 +41,7 @@ fn hd_tour() {
     std::fs::create_dir_all(&out).unwrap();
     let hd = HdAssets::open(&PathBuf::from(hd_dir)).unwrap();
     let mut lay = LayerSink::new(assets.clone(), Some(hd));
-    let boot = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
-    let mut g = Game::from_snapshot(inputs.game_files(), boot.bytes(), Entry::Title, Fixes::ALL);
+    let mut g = Game::boot(inputs.game_files(), Fixes::ALL);
     lay.push_frame(&g.take_draws());
 
     let mut stage = 0usize;
@@ -96,7 +95,7 @@ fn hd_tour() {
         if f.exit.is_some() {
             break;
         }
-        let frame = g.ds.r16(0x0422);
+        let frame = g.state().flow.frame;
         if !f.draws.is_empty() && step % (if stage >= 4 { 4 } else { EVERY as usize }) == 0 && last_shot != (stage, frame) {
             last_shot = (stage, frame);
             let name = |kind: &str| out.join(format!("s{}_{frame:05}_{kind}.png", stage + 1));

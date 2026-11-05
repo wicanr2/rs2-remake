@@ -4,7 +4,7 @@
 use crate::boss_scroll::SCRIPT_END;
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::BossScript;
+use crate::boss_scroll::BossScript;
 use crate::video::{Page, RowCopy, SCRATCH_A, SCRATCH_B};
 
 /// 計數超過這個值，背景整體開始下移，並在天空下方補色。
@@ -18,7 +18,7 @@ const BOSS_SCRIPT_START_FRAME: u16 = 0x26E;
 
 /// 五層背景的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Backdrop {
+pub struct Backdrop {
     /// `word_1E6B8`：所有層一起往下移的像素列數，計數超過 250 後每幀加 1。
     pub drop: u16,
     /// `word_1E6BA`：天空層另外的下移，計數超過 275 後每兩幀加 1（只有第二頁加）。
@@ -160,7 +160,7 @@ impl Core {
     pub(crate) fn draw_stage1_boss_backdrop(&mut self) {
         self.clear_draw_page();
         if self.stage_frame() <= BOSS_SCRIPT_START_FRAME {
-            self.scenes.boss.layers[0].restart(0xC8, 0xFFEC, BossScript::Stage1);
+            self.restart_boss_layer(0, 0xC8, 0xFFEC, BossScript::Stage1);
             return;
         }
         let byte = self.step_boss_layer(0);

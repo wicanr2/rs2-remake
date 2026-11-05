@@ -11,7 +11,7 @@ const CYCLE_B_PERIOD: u16 = 0x1E;
 
 /// 計時中斷累計的計數。五個字組都只有中斷處理函式加，讀的人如各欄位說明。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Clock {
+pub struct Clock {
     /// `word_273B7`：開機以來的 tick 數，只有中斷加，沒有人讀。
     pub total: u16,
     /// `word_273B9`：自上次等待結束以來的 tick 數。`await_timer_ticks` 讀它，等待結束時歸零。

@@ -15,7 +15,7 @@
 use crate::draw::ShtGroup;
 use crate::entity::Timetable;
 use crate::game::Core;
-use crate::mirror::Key;
+use crate::flow::Key;
 use crate::scene::Palette;
 use crate::video::{Page, SCRATCH_B};
 
@@ -80,7 +80,8 @@ impl Core {
 /// 由 `tools/rust.sh test -p rs2-core ending_smoke -- --ignored --nocapture` 跑。
 #[cfg(test)]
 mod ending_smoke {
-    use crate::game::{Entry, Exit, Fixes, Game, GameFiles, Input};
+    use crate::game::{Entry, Exit, Fixes, Game, GameFiles, Input, State};
+    use crate::tables::Tables;
 
     #[test]
     #[ignore]
@@ -88,12 +89,9 @@ mod ending_smoke {
         let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
         let exe = std::fs::read(dir.join("S.EXE")).unwrap();
         let image = rs2_formats::unpack_s_exe(&exe).unwrap();
-        let mut snap = vec![0u8; 0x10000];
-        let src = &image[rs2_formats::DSEG_IMAGE_OFFSET..];
-        let n = src.len().min(0x10000);
-        snap[..n].copy_from_slice(&src[..n]);
+        let state = State::power_on(&Tables::parse(&image).unwrap());
         let files = GameFiles { image, ..GameFiles::default() };
-        let mut g = Game::from_snapshot(files, &snap, Entry::Ending, Fixes::NONE);
+        let mut g = Game::from_state(files, state, Entry::Ending, Fixes::NONE);
         let mut waits: Vec<u16> = Vec::new();
         let mut exit = None;
         let mut keys = 0;

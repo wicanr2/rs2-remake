@@ -2,7 +2,7 @@
 //!
 //! 內容全部是 remake-owned，沒有原版收據可以對拍，行為的依據是規格與單元測試。原版規則永遠保留：
 //! `Rules::ORIGINAL`（四個選項全關）時這裡的決策點一個都不執行，原版路徑沒有多出任何資料段寫入、繪製命令，
-//! 也沒有多走一步原版的亂數表索引。強化狀態放在 [`AiState`]，不進 `Mirror`、不進資料段。
+//! 也沒有多走一步原版的亂數表索引。強化狀態放在 [`AiState`]，不進 `State`。
 //!
 //! 四個選項各是一個獨立的決策點，彼此可以單獨開關：
 //!
@@ -20,14 +20,14 @@
 //! - 不用時間。同樣的輸入與選項，兩次結果相同。
 //! - 強度初值寫成有名字的常數，沒有真人驗證，使用者試玩後調。強度隨難度（四段）調整，難度由原版兩個加成字組反推
 //!   （[`Core::ai_level`]）。
-//! - 只有生成表生成的敵人才有角色（[`Role`]，分類表在 `mirror.rs` 的 `enemy_role`）。從快照載入的敵人與片尾的字樣是
+//! - 只有生成表生成的敵人才有角色（[`Role`]，分類表在 `tables.rs` 的 `enemy_role`）。從快照載入的敵人與片尾的字樣是
 //!   [`Role::Inert`]，AI 不碰。
 
 use crate::draw::Pool;
 use crate::ebullet::{Aiming, FirePattern, Heading, POOL_SIZE as BULLET_SLOTS};
 use crate::entity::{Enemy, Kind, Mode, Motion, NEVER_FIRES, POOL_SIZE as ENEMY_SLOTS};
 use crate::game::Core;
-use crate::mirror::enemy_role;
+use crate::tables::enemy_role;
 use crate::pbullet::Behavior;
 
 // ---- 強度初值（沒有真人驗證）----
@@ -345,7 +345,8 @@ impl Core {
     /// 敵人形狀的寬與高。原版最大的形狀是 59×19，夾在 0 至 64，免得壞資料讓後面的 i16 運算溢位。
     fn footprint(&self, enemy: &Enemy) -> (i16, i16) {
         let size = |w: u16| (w as i16).clamp(0, 64);
-        (size(self.table_word(enemy.shape)), size(self.table_word(enemy.shape.wrapping_add(2))))
+        let shape = self.tables.shape(enemy.shape);
+        (size(shape.width), size(shape.height))
     }
 
     /// 普通的、會移動也會被打的敵機：`ai_fire` 與 `ai_react` 的對象。
@@ -598,7 +599,9 @@ mod tests {
     use crate::ebullet::{Bullet, Template, Tilt};
     use crate::entity::FIRE_ROLLS;
     use crate::game::{Fixes, Rules, Start};
-    use crate::mirror::{enemy_record_link, pb_record_link, record_link};
+    use crate::ebullet::record_link;
+    use crate::entity::enemy_record_link;
+    use crate::pbullet::pb_record_link;
     use crate::pbullet::{PlayerBullet, Slot as PlayerSlot};
 
     const ALL: Rules = Rules { ai_aim: true, ai_fire: true, ai_react: true, ai_boss: true, ..Rules::ORIGINAL };
@@ -608,8 +611,7 @@ mod tests {
     const BOSS: Rules = Rules { ai_boss: true, ..Rules::ORIGINAL };
 
     fn core_with(rules: Rules, fixes: Fixes) -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, fixes);
+        let mut c = Core::for_test(Start::Demo, fixes);
         // 展示錄影播放中一律原版規則（`Core::rules`）；這些測試要的是正式遊戲。
         c.set_demo_playing(false);
         c.fill_row_tables();
@@ -623,69 +625,54 @@ mod tests {
     }
 
     fn put_shape(c: &mut Core, at: u16, w: u16, h: u16, cell: u8) {
-        c.ds.w16(at, w);
-        c.ds.w16(at + 2, h);
-        for i in 0..w * h {
-            c.ds.w8(at + 4 + i, cell);
-        }
+        c.tables_mut().put_shape(at, w, h, cell);
     }
 
-    /// 在 `at` 擺一筆敵彈樣板（15 個字組）。
-    fn put_bullet_template(c: &mut Core, at: u16, step: u16, frames: u16, script: u16, shape: u16) {
+    /// 擺一筆敵彈樣板。
+    fn put_bullet_template(c: &mut Core, template: Template, step: u16, frames: u16, script: u16, shape: u16) {
         let words = [0u16, frames, 0, 0, step, 10, 0, 0, 0, 0, 0, step, 1, script, shape];
-        for (k, w) in words.into_iter().enumerate() {
-            c.ds.w16(at + 2 * k as u16, w);
-        }
+        c.tables_mut().put_bullet(template, Bullet::from_words(words));
     }
 
     /// 擺一種 1×1 的朝向 `h` 的瞄準彈樣板：每步 1 欄 1 列，腳本全是移動碼 `code`，結尾 `F7` 循環。
     fn install_shot(c: &mut Core, h: Heading, code: u8) {
         put_shape(c, 0x7100, 1, 1, 1);
-        for i in 0..9u16 {
-            c.ds.w16(0x7200 + 2 * i, 40 + i);
-        }
+        c.tables_mut().put_words(0x7200, &(0..9u16).map(|i| 40 + i).collect::<Vec<_>>());
         let script = 0x7300 + 0x10 * h.index();
-        for k in 0..7 {
-            c.ds.w8(script + k, code);
-        }
-        c.ds.w8(script + 7, 0xF7);
-        put_bullet_template(c, Template::Aimed(h).table_offset(), 1, 0x7200, script, 0x7100);
+        let mut bytes = [code; 8];
+        bytes[7] = 0xF7;
+        c.tables_mut().put_bytes(script, &bytes);
+        put_bullet_template(c, Template::Aimed(h), 1, 0x7200, script, 0x7100);
     }
 
     /// 擺 5×1 的寬彈樣板（三種傾斜）：每步 4 欄 1 列，腳本全是同一個碼（西北 8、西 7、西南 6）。
     fn install_wide(c: &mut Core) {
         put_shape(c, 0x7110, 5, 1, 1);
-        for i in 0..9u16 {
-            c.ds.w16(0x7220 + 2 * i, 13);
-        }
+        c.tables_mut().put_words(0x7220, &[13; 9]);
         for (n, (tilt, code)) in [(Tilt::NorthWest, 8u8), (Tilt::West, 7), (Tilt::SouthWest, 6)].into_iter().enumerate() {
             let script = 0x7400 + 0x10 * n as u16;
-            for k in 0..7 {
-                c.ds.w8(script + k, code);
-            }
-            c.ds.w8(script + 7, 0xF7);
-            put_bullet_template(c, Template::Wide(tilt).table_offset(), 4, 0x7220, script, 0x7110);
+            let mut bytes = [code; 8];
+            bytes[7] = 0xF7;
+            c.tables_mut().put_bytes(script, &bytes);
+            put_bullet_template(c, Template::Wide(tilt), 4, 0x7220, script, 0x7110);
         }
     }
 
     /// 全表亂數都是 `value`。
     fn fill_rolls(c: &mut Core, value: u16) {
         for i in 0..FIRE_ROLLS {
-            c.ds.w16(0x042C + 2 * i, value);
+            c.tables_mut().put_fire_roll(usize::from(i), value);
         }
     }
 
     /// 擺一個 2×2 的普通敵機在槽 `slot`，腳本是 `script`（結尾補 0F）。角色是普通敵人。
     fn grunt(c: &mut Core, slot: usize, col: u16, row: u16, threshold: u16, script: &[u8]) {
         put_shape(c, 0x7000, 2, 2, 1);
-        for i in 0..9u16 {
-            c.ds.w16(0x7100 + 2 * i, 20 + i);
-        }
+        c.tables_mut().put_words(0x7100, &(0..9u16).map(|i| 20 + i).collect::<Vec<_>>());
         let at = 0x7800 + 0x100 * slot as u16;
-        for (i, &b) in script.iter().enumerate() {
-            c.ds.w8(at + i as u16, b);
-        }
-        c.ds.w8(at + script.len() as u16, 0x0F);
+        let mut bytes = script.to_vec();
+        bytes.push(0x0F);
+        c.tables_mut().put_bytes(at, &bytes);
         let enemy = Enemy {
             hp: 3,
             frames: 0x7100,
@@ -1287,7 +1274,7 @@ mod tests {
 
     #[test]
     fn roles_follow_the_template_addresses() {
-        use crate::mirror::enemy_role;
+        use crate::tables::enemy_role;
         assert_eq!(enemy_role(0x42FE), Role::Grunt);
         assert_eq!(enemy_role(0x47AA), Role::BossCore(Boss::Stage1));
         assert_eq!(enemy_role(0x5BFC), Role::BossCore(Boss::Stage2));
@@ -1320,7 +1307,7 @@ mod tests {
     // ---- 選項之間互不干擾、決定性 ----
 
     /// 一個擺滿各種角色的場景，跑 `frames` 幀，回傳資料段全部位元組與 AI 以外的狀態雜湊。
-    fn scene(rules: Rules, frames: usize, roles: bool) -> Vec<u8> {
+    fn scene(rules: Rules, frames: usize, roles: bool) -> crate::game::State {
         let mut c = core(rules);
         install_shot(&mut c, Heading::E, 3);
         install_shot(&mut c, Heading::S, 5);
@@ -1350,8 +1337,7 @@ mod tests {
             patch_blank_bullets(&mut c);
             c.update_enemy_bullets();
         }
-        c.store_mirrors();
-        c.ds.bytes().to_vec()
+        c.snapshot()
     }
 
     /// 沒擺樣板的圖案會生出全 0 的記錄；形狀寬高 0 在原版是 65536 次迴圈（`loop_count`），所以測試場景給它們
@@ -1411,11 +1397,9 @@ mod tests {
 /// 用原版檔跑整關的測試。需要 `RS2_ORIG`，標 `#[ignore]`：`tools/rust.sh test -p rs2-core ai::real -- --ignored --nocapture`。
 #[cfg(test)]
 mod real {
-    use crate::dseg::a;
     use crate::ebullet::EnemyBullets;
     use crate::entity::Enemies;
     use crate::game::{Entry, Fixes, Game, GameFiles, Input, Rules, Start};
-    use crate::mirror::Mirror;
 
     fn files() -> GameFiles {
         let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
@@ -1434,9 +1418,9 @@ mod real {
             let entry = [Entry::Stage1, Entry::Stage2, Entry::Stage3, Entry::Stage4][stage as usize - 1];
             // 第一關初始化後的資料段（玩家 1 存活、難度已寫入）當快照，再補第二關入口檢查的密碼旗標（byte_1D3A2 = Y）。
             let boot = Game::new(&files.image, &[], start, fixes);
-            let mut snapshot = boot.ds.bytes().to_vec();
-            snapshot[usize::from(a(0x1D3A2))] = b'Y';
-            Game::from_snapshot(files, &snapshot, entry, fixes)
+            let mut state = boot.state().clone();
+            state.flow.password_accepted = b'Y';
+            Game::from_state(files, state, entry, fixes)
         };
         g.set_rules(rules);
         g
@@ -1503,7 +1487,7 @@ mod real {
     impl Chaser {
         fn keys(&mut self, g: &Game) -> Vec<u8> {
             let (en, _) = pools(g);
-            let me = crate::player::Players::from_dseg(&g.ds).ship[0];
+            let me = g.state().pl.ship[0];
             let target = en
                 .slots
                 .iter()
@@ -1532,7 +1516,7 @@ mod real {
         let mut out = Outcome { hashes: Vec::new(), exit: None, bullets: 0, peak: 0 };
         let mut chaser = Chaser::default();
         for step in 0..max {
-            g.poke16(a(0x1CFDE), 0xFF);
+            g.state_mut().pl.ship[0].hp = 0xFF;
             let k = match control {
                 Control::Idle => Vec::new(),
                 Control::Roam => keys(step),
@@ -1540,7 +1524,7 @@ mod real {
             };
             let f = g.step(&Input { scancodes: &k }, &mut |_: &Game, _| {});
             let mut h = 0xCBF2_9CE4_8422_2325u64;
-            fnv(&mut h, g.state_hash_input());
+            fnv(&mut h, format!("{:?}", g.state()).as_bytes());
             fnv(&mut h, format!("{:?}", f.draws).as_bytes());
             out.hashes.push(h);
             let (en, eb) = pools(g);
@@ -1561,10 +1545,7 @@ mod real {
     }
 
     fn pools(g: &Game) -> (Enemies, EnemyBullets) {
-        let (mut en, mut eb) = (Enemies::default(), EnemyBullets::default());
-        en.load(&g.ds);
-        eb.load(&g.ds);
-        (en, eb)
+        (g.state().en.clone(), g.state().eb.clone())
     }
 
     const AIM: Rules = Rules { ai_aim: true, ..Rules::ORIGINAL };

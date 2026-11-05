@@ -59,7 +59,7 @@ impl Core {
         if self.integrity_checked {
             return None;
         }
-        let sum = self.integrity_table_sum();
+        let sum = self.tables.integrity_sum;
         if sum != INTEGRITY_SUM {
             return Some(sum as u8);
         }
@@ -76,16 +76,14 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut c = Core::for_test(Start::Demo, Fixes::NONE);
         c.draws.clear();
         c
     }
 
-    /// 讓完整性檢查通過：把表的第一個字組設成使累加和剛好等於 [`INTEGRITY_SUM`]。
+    /// 讓完整性檢查通過：表格的累加和剛好等於 [`INTEGRITY_SUM`]。
     fn pass_the_integrity_check(c: &mut Core) {
-        c.set_integrity_table_word(0, INTEGRITY_SUM.wrapping_sub(0x64));
-        assert_eq!(c.integrity_table_sum(), INTEGRITY_SUM);
+        c.tables_mut().integrity_sum = INTEGRITY_SUM;
     }
 
     fn cells(c: &Core) -> Vec<BlitCmd> {
@@ -131,10 +129,10 @@ mod tests {
 
     #[test]
     fn a_failed_check_leaves_the_sum_in_al_for_every_cell_and_is_retried_each_time() {
-        // 資料段不是原版（累加和不對）：每格取檢查留下的累加和低位元組，不管血量。
+        // 表格不是原版（累加和不對）：每格取檢查留下的累加和低位元組，不管血量。
         let mut c = core();
         c.pl.ship[0].hp = 0xFF;
-        let sum = c.integrity_table_sum();
+        let sum = c.tables.integrity_sum;
         assert_ne!(sum, INTEGRITY_SUM);
         c.draw_health_bar(0);
         assert!(!c.integrity_checked);

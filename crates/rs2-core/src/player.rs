@@ -53,16 +53,31 @@ mod enhanced;
 
 #[cfg(test)]
 pub(crate) use contact::Pickup;
+
+/// `byte_1CFDD` 的活動玩家位元：玩家 1 在位元 0，玩家 2 在位元 4。
+pub(crate) const PLAYER1_ACTIVE: u8 = 0x01;
+pub(crate) const PLAYER2_ACTIVE: u8 = 0x10;
+
+/// 玩家的三張形狀表。每張是 `寬, 高, 寬 × 高 位元組`，兩位玩家各有一份，內容相同。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlayerShape {
+    /// 本體，5 × 1。
+    Body = 0,
+    /// 砲座，2 × 2。
+    Pod = 1,
+    /// 尾焰的髒格，3 × 3。
+    Flame = 2,
+}
 pub use enhanced::{WAVE_CHARGE_FULL, WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
 pub(crate) use enhanced::{BOTTOM_PIXELS, Enhanced, ShootView};
 
 use crate::fx::EffectKind;
 use crate::game::Core;
-use crate::mirror::FireFlag;
+use crate::flow::FireFlag;
 use crate::pbullet::Facing;
 
 /// 玩家數。
-pub(crate) const PLAYER_COUNT: usize = 2;
+pub const PLAYER_COUNT: usize = 2;
 
 /// 旗標位元組：`Y` 成立，`N` 不成立。
 const YES: u8 = b'Y';
@@ -274,7 +289,7 @@ pub(crate) static STYLES: [Style; PLAYER_COUNT] = [
 
 /// 砲座的狀態。位置與圖在每幀畫完之後才更新（[`Core::advance_pods`]），所以畫的與碰撞用的是上一幀算好的值。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Pods {
+pub struct Pods {
     /// 第一座砲座的旗標位元組：`Y` 已裝上，`N` 沒有。畫、碰撞、發射都只認 `Y`。
     pub first: u8,
     /// 第二座砲座的旗標位元組：`N` 沒有，其他值（`Y`）已裝上。
@@ -312,7 +327,7 @@ impl Pods {
 
 /// 一位玩家的狀態。欄位用原版的字組寬度，順序與位移對應見 `mirror.rs`。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Player {
+pub struct Player {
     /// 血量：初值 FFh，每次受擊右移一位，亮的位元數就是剩下的格數，0 是死亡。跨關保留，只在第一關或展示模式重設。
     pub hp: u16,
     /// 格網位置：欄、列。欄 1 至 33 的奇數，列 0 至 16。
@@ -419,8 +434,8 @@ impl Player {
 }
 
 /// 兩位玩家與共用的存活位元組。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Players {
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Players {
     /// 存活位元組（原版 `byte_1CFDD`）：玩家 1 是位元 0，玩家 2 是位元 4。標題選角色時設，死亡動畫結束時清，
     /// 兩位都是 0 時回標題。
     pub alive: u8,
@@ -453,6 +468,12 @@ impl Core {
     /// 標題選角色：設存活位元組（01h 玩家 1、10h 玩家 2、11h 雙人）。
     pub(crate) fn set_players_present(&mut self, alive: u8) {
         self.pl.alive = alive;
+    }
+
+    /// 活動玩家位元（原版 `byte_1CFDD`）：[`PLAYER1_ACTIVE`]、[`PLAYER2_ACTIVE`] 或兩者。
+    /// 玩家領域從這個位元組讀誰在場，選單和示範都在這裡設定。
+    pub(crate) fn set_active_players(&mut self, mask: u8) {
+        self.set_players_present(mask);
     }
 
     /// 開發者秘技（INT 9 的 `sub_1A8F4`）：兩位的血量補滿。
@@ -698,12 +719,12 @@ impl Core {
 pub(crate) mod test_support {
     use super::*;
     use crate::game::{Fixes, Start};
-    use crate::mirror::{GRID1_START, GRID2_START};
+    use crate::grid::{GRID1_START, GRID2_START};
+    use crate::tables::Shape;
 
     /// 全 0 的映像開出來的核心，列表已擺好，玩家狀態是原版映像的初值（旗標 `N`、光柱 y 為 2）。
     pub(crate) fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE);
+        let mut c = Core::for_test(Start::NewGame { difficulty: None }, Fixes::NONE);
         c.fill_row_tables();
         for p in &mut c.pl.ship {
             p.hit = NO;
@@ -718,15 +739,9 @@ pub(crate) mod test_support {
 
     /// 擺三張形狀表（本體 5 × 1、砲座 2 × 2、尾焰髒格 3 × 3，格值全 1），兩位玩家各一份。
     pub(crate) fn set_shapes(c: &mut Core) {
-        use crate::mirror::PlayerShape;
         for who in 0..PLAYER_COUNT {
             for (shape, w, h) in [(PlayerShape::Body, 5u16, 1u16), (PlayerShape::Pod, 2, 2), (PlayerShape::Flame, 3, 3)] {
-                let at = shape.table_offset(who);
-                c.ds.w16(at, w);
-                c.ds.w16(at + 2, h);
-                for i in 0..w * h {
-                    c.ds.w8(at + 4 + i, 1);
-                }
+                c.tables_mut().set_player_shape(shape, who, Shape::new(w, h, vec![1; usize::from(w * h)]));
             }
         }
     }
@@ -739,11 +754,11 @@ pub(crate) mod test_support {
     }
 
     pub(crate) fn put_g1(c: &mut Core, col: u16, row: u16, cell: u8) {
-        c.ds.w8(GRID1_START + row * 0x28 + col, cell);
+        c.grids.poke8(GRID1_START + row * 0x28 + col, cell);
     }
 
     pub(crate) fn put_g2(c: &mut Core, col: u16, row: u16, cell: u8) {
-        c.ds.w8(GRID2_START + row * 0x28 + col, cell);
+        c.grids.poke8(GRID2_START + row * 0x28 + col, cell);
     }
 
     /// 邏輯寫過、還沒被繪製命令帶走的形狀寬；沒有則 `None`。
@@ -756,8 +771,6 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{core, place};
     use super::*;
-    use crate::dseg::Dseg;
-    use crate::mirror::Mirror;
 
     fn hold(c: &mut Core, scan: u8) {
         c.set_key(scan, true);
@@ -1080,11 +1093,14 @@ mod tests {
         assert_eq!((c.pl.ship[0].hp, c.pl.ship[1].hp), (0xFF, 0xFF));
     }
 
+    /// 需要原版檔（`Game` 要解析表格），由 `tools/rust.sh test -p rs2-core -- --include-ignored` 跑。
     #[test]
-    fn the_public_status_views_read_the_mirrored_state() {
+    #[ignore]
+    fn the_public_status_views_read_the_state() {
         use crate::game::{Fixes, Game, Start};
-        // 全 0 的映像開一局：玩家 1 在場，起點欄 5 列 10，血量滿，砲座沒有。
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
+        let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh 跑"));
+        let image = rs2_formats::unpack_s_exe(&std::fs::read(dir.join("S.EXE")).unwrap()).unwrap();
+        // 開一局：玩家 1 在場，起點欄 5 列 10，血量滿，砲座沒有。
         let game = Game::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE);
         let status = game.player_status(0);
         assert_eq!((status.x, status.y), (5, 100));
@@ -1098,15 +1114,13 @@ mod tests {
 
     #[test]
     fn the_status_views_follow_the_documented_conditions() {
-        // Game 只有資料段複本，它的兩個視圖從 Mirror 讀回結構，條件和移動函式用的是同一組。
+        // Game 只有狀態複本，它的兩個視圖讀結構，條件和移動函式用的是同一組。
         let mut players = Players { alive: 0x11, ..Players::default() };
         players.ship[0] = Player { hp: 0, col: 0x21, row: 0, blit_x: 0x21, blit_y: 0, charge: 9, weapon: 0x4C, ..Player::default() };
         players.ship[0].pods.first = YES;
         players.ship[0].pods.second = YES;
         players.ship[1] = Player { hp: 0x0F, col: 1, row: 0x10, blit_x: 1, blit_y: 0x100, ..Player::default() };
-        let mut ds = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
-        players.store(&mut ds);
-        let back = Players::from_dseg(&ds);
+        let back = players;
         assert!(back.is_alive(0) && back.is_alive(1));
         let p1 = back.ship[0];
         assert!(!p1.can_move_right() && !p1.can_move_up() && p1.can_move_down() && p1.can_move_left());

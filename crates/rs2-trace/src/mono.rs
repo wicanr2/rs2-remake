@@ -9,8 +9,9 @@
 //! C 的 `word_26872`（畫頁偏移）是 `4000h`，核心記 `8000h`，那兩個位元組不比。
 
 use crate::Inputs;
+use crate::mirror::{Dseg, Mirror, a, ds_exempt};
 use crate::wait::{Dsd, Poke, Verdict, WaitRow, entry_of, parse_pokes, parse_row};
-use rs2_core::{Exit, Fixes, Game, Input, a, ds_exempt};
+use rs2_core::{Exit, Fixes, Game, Input};
 use rs2_gfx::{MonoAssets, MonoKind, MonoSink};
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -133,7 +134,7 @@ pub fn mono_ds_diff(kind: MonoKind, got: &[u8], want: &[u8]) -> Vec<String> {
     out
 }
 
-fn compare_row(rc: &MonoReceipt, g: &Game, cx: u16, row: &WaitRow, want_ds: &[u8], sink: &MonoSink) -> Option<String> {
+fn compare_row(rc: &MonoReceipt, g: &Game, got_ds: &Dseg, cx: u16, row: &WaitRow, want_ds: &[u8], sink: &MonoSink) -> Option<String> {
     let mut diffs: Vec<String> = Vec::new();
     if cx != row.cx {
         diffs.push(format!("欄位 cx：重製 {cx} 原版 {}", row.cx));
@@ -144,7 +145,7 @@ fn compare_row(rc: &MonoReceipt, g: &Game, cx: u16, row: &WaitRow, want_ds: &[u8
             diffs.push(format!("欄位 hpage：重製 {st} 原版 {want}"));
         }
     }
-    let ds = mono_ds_diff(rc.kind, g.ds.bytes(), want_ds);
+    let ds = mono_ds_diff(rc.kind, got_ds.bytes(), want_ds);
     if !ds.is_empty() {
         diffs.push(format!("欄位 資料段（前 {} 段）：\n{}", ds.len(), ds.join("\n")));
     }
@@ -203,7 +204,8 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
         Ok(e) => e,
         Err(e) => return Verdict::Diff { at: 0, compared: 0, total, report: e },
     };
-    let mut g = Game::from_snapshot(inputs.game_files(), &rc.entry_ds, entry, Fixes::NONE);
+    let m = Mirror::from_dump(&rc.entry_ds);
+    let mut g = Game::from_state(inputs.game_files(), m.load_bytes(&rc.entry_ds), entry, Fixes::NONE);
     g.set_terrain_scr(true);
     let mut sink = make_sink(rc, assets);
     for c in &g.take_draws() {
@@ -231,14 +233,14 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
             while next_poke < rc.pokes.len() && rc.pokes[next_poke].row <= done {
                 let p = rc.pokes[next_poke];
                 if p.width == 1 {
-                    g.poke8(a(p.addr), p.val as u8);
+                    m.poke8(g.state_mut(), a(p.addr), p.val as u8);
                 } else {
-                    g.poke16(a(p.addr), p.val);
+                    m.poke16(g.state_mut(), a(p.addr), p.val);
                 }
                 next_poke += 1;
             }
         }
-        let wait_pending = started && g.ds.r16(a(0x273B9)) == 0;
+        let wait_pending = started && g.state().flow.clock.since_wait == 0;
         let use_sct = row.sct.len() == row.sc.len();
         let mut sc: Vec<u8> = Vec::new();
         while fed_n < row.sc.len() && (wait_pending || !use_sct || row.sct[fed_n] as usize <= polls) {
@@ -261,7 +263,7 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
                         diff = Some(format!("第 {} 筆：{e}", row.n));
                         return;
                     }
-                    diff = compare_row(rc, gg, cx, row, want, sink_ref);
+                    diff = compare_row(rc, gg, &m.dump(gg.state()), cx, row, want, sink_ref);
                     if diff.is_none() {
                         if let (Some(st), MonoKind::Mga, Some(stats)) = (gg.display_start(), rc.kind, &opts.stats) {
                             let v = sink_ref.vram();
@@ -327,7 +329,7 @@ pub fn replay_mono(inputs: &Inputs, assets: &Arc<MonoAssets>, rc: &MonoReceipt, 
             polls = 0;
             polls_for = done;
         }
-        if frame.exit.is_none() && g.ds.r16(a(0x273B9)) != 0 {
+        if frame.exit.is_none() && g.state().flow.clock.since_wait != 0 {
             polls += 1;
         }
         if done == last_done {

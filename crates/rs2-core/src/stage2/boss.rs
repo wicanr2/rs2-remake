@@ -5,7 +5,7 @@
 //! 頭目由第 34 項（272×161）與第 35 項（144×118）合成，幀 630 起。各層的腳本、起點與來源見下面三個函式。
 
 use crate::game::Core;
-use crate::mirror::BossScript;
+use crate::boss_scroll::BossScript;
 use crate::video::SCRATCH_B;
 
 /// 中頭目第一層：幀計數不超過 107h 時每幀重設起點，到 19Ah 為止；來源是暫存區 B 的第 0 列起 95 列。
@@ -60,7 +60,7 @@ impl Core {
             return;
         }
         if frame <= MID_A_RESET_UNTIL {
-            self.scenes.boss.layers[0].restart(0xC8, 0, BossScript::Stage2MidA);
+            self.restart_boss_layer(0, 0xC8, 0, BossScript::Stage2MidA);
             return;
         }
         self.step_boss_layer(0);
@@ -74,7 +74,7 @@ impl Core {
             return;
         }
         if frame <= MID_B_RESET_UNTIL {
-            self.scenes.boss.layers[1].restart(0xFFEC, 0x28, BossScript::Stage2MidB);
+            self.restart_boss_layer(1, 0xFFEC, 0x28, BossScript::Stage2MidB);
             return;
         }
         self.step_boss_layer(1);
@@ -84,7 +84,7 @@ impl Core {
     /// 頭目（原版 `sub_15A72`）：腳本 `13D1h`，起點 x = 40、y = 30，704 步。腳本走到 1Fh 就過關。
     fn draw_stage2_boss_layer(&mut self) {
         if self.stage_frame() <= BOSS_RESET_UNTIL {
-            self.scenes.boss.layers[2].restart(0x1E, 0x28, BossScript::Stage2Boss);
+            self.restart_boss_layer(2, 0x1E, 0x28, BossScript::Stage2Boss);
             return;
         }
         let byte = self.step_boss_layer(2);

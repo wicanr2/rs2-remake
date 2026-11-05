@@ -7,7 +7,7 @@
 use super::{BEAM_STEP, FACING_RIGHT, ROW_PIXELS, STYLES, YES};
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::PlayerShape;
+use crate::player::PlayerShape;
 use crate::pbullet::Facing;
 use crate::video::MyCopy;
 
@@ -103,8 +103,9 @@ impl Core {
     /// 把尾焰的髒格形狀（3 × 3）以 `or` 疊進 G3（原版 `sub_14A59`、`sub_15587`），左上角在本體的左邊 4 欄、上方 1 列。
     fn mark_flame_cells(&mut self, who: usize) {
         let p = self.pl.ship[who];
+        let tables = self.tables();
         self.stamp_shape(
-            PlayerShape::Flame.table_offset(who),
+            tables.player_shape(PlayerShape::Flame, who),
             p.col.wrapping_sub(FLAME_CELLS_DX),
             p.row.wrapping_sub(FLAME_CELLS_DY),
         );
@@ -233,7 +234,7 @@ mod tests {
     use super::super::test_support::{core, place, put_g1, set_shapes, stride};
     use super::super::{FACING_LEFT, NO};
     use super::*;
-    use crate::mirror::GRID3_START;
+    use crate::grid::GRID3_START;
     use crate::draw::{BlitCmd, DrawCmd, Op};
 
     fn blits(c: &mut Core) -> Vec<BlitCmd> {
@@ -317,9 +318,9 @@ mod tests {
         );
         // 尾焰的髒格：形狀 3 × 3 全 1，左上角欄 5、列 7。列 7 只有尾焰會蓋到（本體的髒格從列 8 起）。
         for col in 5u16..8 {
-            assert_eq!(c.ds.r8(GRID3_START + 0x50 * 7 + 2 * col + 2), 1, "列 7 欄 {col}");
+            assert_eq!(c.grids.peek8(GRID3_START + 0x50 * 7 + 2 * col + 2), 1, "列 7 欄 {col}");
         }
-        assert_eq!(c.ds.r8(GRID3_START + 0x50 * 7 + 2 * 8 + 2), 0, "欄 8 在 3 欄之外");
+        assert_eq!(c.grids.peek8(GRID3_START + 0x50 * 7 + 2 * 8 + 2), 0, "欄 8 在 3 欄之外");
         let mut c = fresh();
         place(&mut c, 0, 9, 8);
         c.pl.ship[0].flame = YES;

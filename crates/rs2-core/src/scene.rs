@@ -14,7 +14,7 @@
 
 use crate::draw::DrawCmd;
 use crate::game::Core;
-pub(crate) use crate::mirror::Palette;
+pub(crate) use crate::flow::Palette;
 use crate::video::{MyCopy, Page, RowCopy, SCRATCH_B};
 
 /// 整頁複製的列數：畫面 200 列。

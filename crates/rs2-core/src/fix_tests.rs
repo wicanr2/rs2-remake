@@ -1,37 +1,34 @@
 //! A2b：每個 `Fixes` 旗標一組合成情境。直接擺出觸發條件，關時重現原版結果，開時得到修正結果。
-//! 不用原版檔：資料段全 0，只擺這個情境需要的值。
+//! 不用原版檔：表格是空的，只擺這個情境需要的值。
 
 use crate::ebullet::Bullet;
 use crate::game::{Core, Fixes, Start};
-use crate::mirror::{enemy_record_link, pb_record_link};
-use crate::pbullet::{Facing, PlayerBullet};
+use crate::entity::enemy_record_link;
+use crate::grid::GRID2_START;
+use crate::pbullet::{Facing, PlayerBullet, pb_record_link};
 use crate::player::Pickup;
 
 fn game(fixes: Fixes) -> Core {
-    let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-    Core::new(&image, &[], Start::Demo, fixes)
+    Core::for_test(Start::Demo, fixes)
 }
 
-const G2: u16 = 0x2C1C;
+const G2: u16 = GRID2_START;
 
 /// 把敵彈槽 `slot` 的 1×1 形狀寫進 G2，回傳寫到的位址。走真正的 `stamp_grid2`。
 fn write_bullet_cell(g: &mut Core, slot: u8, shape: u8) -> u16 {
     let s = 0x7000u16;
-    g.ds.w16(s, 1);
-    g.ds.w16(s + 2, 1);
-    g.ds.w8(s + 4, shape);
+    g.tables_mut().put_shape(s, 1, 1, shape);
     // 列表 `列 × 28h`。
-    for r in 0..20u16 {
-        g.ds.w16(0x1B0A + r * 2, r * 0x28);
-    }
+    g.fill_row_tables();
     let bullet = Bullet { shape: s, col: 3, row: 5, ..Bullet::default() };
-    g.stamp_grid2(&bullet, 1, 1, slot);
+    let tables = g.tables();
+    g.stamp_grid2(&bullet, tables.shape(s), slot);
     G2 + 5 * 0x28 + 3
 }
 
 /// 玩家碰到 `di` 的格：刪掉那一顆敵彈。
 fn hit(g: &mut Core, di: u16) -> Option<u16> {
-    g.remove_hit_bullet(g.ds.r8(di), di)
+    g.remove_hit_bullet(g.grids.peek8(di), di)
 }
 
 #[test]
@@ -42,7 +39,7 @@ fn bullet_slot_carry_off_reproduces_wraparound() {
     }
     // 槽 16：格值 01 + 16 = 11h，and 0Fh 減 1 得槽 0。
     let di = write_bullet_cell(&mut g, 16, 0x01);
-    assert_eq!(g.ds.r8(di), 0x11);
+    assert_eq!(g.grids.peek8(di), 0x11);
     assert_eq!(hit(&mut g, di), Some(0), "原版把槽號 × 2 留在 bx");
     assert_eq!(g.eb.slots[0].link, 0, "原版刪掉槽 0");
     assert_eq!(g.eb.slots[16].link, 0x1234, "原版留下擊中的槽 16");
@@ -87,13 +84,13 @@ fn bullet_slot_carry_on_keeps_item_classification() {
     // 道具形狀 81h 配上槽號 15 以上，原版進位成 90h，判定落空變成傷害。
     let mut off = game(Fixes::NONE);
     let di = write_bullet_cell(&mut off, 16, 0x81);
-    let cell = off.ds.r8(di);
+    let cell = off.grids.peek8(di);
     assert_eq!(off.touch_bullet_cell(0, cell), None, "原版進位後判定落空");
     assert_eq!(off.pl.ship[0].hit, b'Y', "原版當成傷害");
 
     let mut on = game(Fixes::ALL);
     let di = write_bullet_cell(&mut on, 16, 0x81);
-    let cell = on.ds.r8(di);
+    let cell = on.grids.peek8(di);
     assert_eq!(on.touch_bullet_cell(0, cell), Some(Pickup::Laser), "修正後判定成道具");
     assert_ne!(on.pl.ship[0].hit, b'Y');
 }
@@ -110,21 +107,21 @@ fn bullet_slot_carry_on_clears_with_g2() {
 #[test]
 fn armor_cell_off_writes_dseg_0020() {
     let mut g = game(Fixes::NONE);
-    g.ds.w16(0x0020, 0x0165);
+    g.en.stray_damage = 0x0165;
     g.strike(&PlayerBullet::default(), 0xFE);
-    assert_eq!(g.ds.r16(0x0020), 0x0166, "原版以指標 0 加 20h 寫到 dseg:0020h");
+    assert_eq!(g.en.stray_damage, 0x0166, "原版以指標 0 加 20h 寫到 dseg:0020h");
 }
 
 #[test]
 fn armor_cell_on_leaves_dseg_0020() {
     let mut g = game(Fixes::ALL);
-    g.ds.w16(0x0020, 0x0165);
+    g.en.stray_damage = 0x0165;
     let bullet = PlayerBullet::default();
     g.strike(&bullet, 0xFE);
-    assert_eq!(g.ds.r16(0x0020), 0x0165);
+    assert_eq!(g.en.stray_damage, 0x0165);
     // 已釋放的槽（指標 0）也不寫。
     g.strike(&bullet, 0x03);
-    assert_eq!(g.ds.r16(0x0020), 0x0165);
+    assert_eq!(g.en.stray_damage, 0x0165);
     // 活著的敵人照常受傷。
     g.en.slots[1].link = enemy_record_link(1);
     g.strike(&bullet, 0x02);
@@ -135,14 +132,14 @@ fn armor_cell_on_leaves_dseg_0020() {
 fn armor_cell_pod_contact_path() {
     // 砲座接觸與玩家彈共用 `damage_entity_at_cell`；整條掃描路徑在 `player/contact.rs` 的測試。
     let mut off = game(Fixes::NONE);
-    off.ds.w16(0x0020, 0x0165);
+    off.en.stray_damage = 0x0165;
     off.damage_entity_at_cell(0xFE, 1);
-    assert_eq!(off.ds.r16(0x0020), 0x0166);
+    assert_eq!(off.en.stray_damage, 0x0166);
 
     let mut on = game(Fixes::ALL);
-    on.ds.w16(0x0020, 0x0165);
+    on.en.stray_damage = 0x0165;
     on.damage_entity_at_cell(0xFE, 1);
-    assert_eq!(on.ds.r16(0x0020), 0x0165);
+    assert_eq!(on.en.stray_damage, 0x0165);
 }
 
 /// 射一次 `B` 武器，池內先佔滿 `occupied` 個槽。回傳 `word_1F1A8` 增加量。

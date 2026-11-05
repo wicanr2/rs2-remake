@@ -19,7 +19,15 @@ use super::enhanced::DETACHED_POD_DAMAGE;
 use super::{BEAM_START, NO, YES};
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
-use crate::mirror::{Footprint, PlayerShape, ScanGrid};
+use crate::grid::ScanGrid;
+use crate::player::PlayerShape;
+
+/// 形狀表的寬與高。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Footprint {
+    pub width: u16,
+    pub height: u16,
+}
 
 /// 砲座碰到實體時造成的傷害。
 const POD_DAMAGE: u8 = 1;
@@ -198,8 +206,8 @@ impl Core {
 
     /// 形狀表的寬與高。
     pub(super) fn player_footprint(&self, who: usize, shape: PlayerShape) -> Footprint {
-        let at = shape.table_offset(who);
-        Footprint { width: self.table_word(at), height: self.table_word(at.wrapping_add(2)) }
+        let s = self.tables.player_shape(shape, who);
+        Footprint { width: s.width, height: s.height }
     }
 
     /// 從 (`row`, `col`) 起逐列逐格掃 `shape` 的矩形，對窗內的每一格呼叫 `visit(核心, 位址, 格值)`。
@@ -230,7 +238,7 @@ mod tests {
     use super::super::test_support::{core, place, put_g1, put_g2, set_shapes, stride};
     use super::*;
     use crate::game::Fixes;
-    use crate::mirror::GRID3_START;
+    use crate::grid::GRID3_START;
 
     fn shaped() -> Core {
         let mut c = core();
@@ -322,7 +330,7 @@ mod tests {
         let mut c = shaped();
         place(&mut c, 0, 7, 8);
         for slot in [0usize, 1] {
-            c.en.slots[slot].link = crate::mirror::enemy_record_link(slot);
+            c.en.slots[slot].link = crate::entity::enemy_record_link(slot);
         }
         // 砲座 2 × 2，位置 (欄 10, 列 5)：後掃到的覆蓋前面（列主序，最後是 (11, 6)）。
         put_g1(&mut c, 10, 5, 1);
@@ -346,11 +354,11 @@ mod tests {
         for (fixes, want) in [(Fixes::NONE, 0x0166u16), (Fixes::ALL, 0x0165)] {
             let mut c = shaped();
             c.fixes = fixes;
-            c.ds.w16(0x0020, 0x0165);
+            c.en.stray_damage = 0x0165;
             place(&mut c, 0, 7, 8);
             put_g1(&mut c, 10, 5, 0xFE);
             c.pod_touches_entities(0, 10, 5);
-            assert_eq!(c.ds.r16(0x0020), want, "裝甲格取到索引 FDh，指標 0 加 20h 是 dseg:0020h");
+            assert_eq!(c.en.stray_damage, want, "裝甲格取到索引 FDh，指標 0 加 20h 是 dseg:0020h");
         }
     }
 
@@ -397,7 +405,7 @@ mod tests {
         let mut c = shaped();
         place(&mut c, 0, 7, 8);
         let at = c.grid4_cell_addr(8, 7);
-        c.ds.w16(at + 2, 0x0102);
+        c.grids.poke16(at + 2, 0x0102);
         c.body_touches_terrain(0);
         assert_eq!(c.pl.ship[0].hit, NO, "不是第三關不檢查");
         assert_eq!(stride(&c), None, "也不寫形狀寬");
@@ -410,8 +418,8 @@ mod tests {
         place(&mut c, 0, 7, 8);
         c.set_stage_letter(b'C');
         let (above, below) = (c.grid4_cell_addr(7, 7), c.grid4_cell_addr(9, 7));
-        c.ds.w16(above, 0x0001);
-        c.ds.w16(below, 0x0001);
+        c.grids.poke16(above, 0x0001);
+        c.grids.poke16(below, 0x0001);
         c.body_touches_terrain(0);
         assert_eq!(c.pl.ship[0].hit, NO);
     }
@@ -424,9 +432,9 @@ mod tests {
         // 2 列 4 欄，每格一個字組 0001h，位址 = G3 起點 + 2 × (列 × 28h + 欄 + 1)。
         for (row, col) in [(8u16, 7u16), (8, 10), (9, 7), (9, 10)] {
             let at = GRID3_START + 2 * (row * 0x28 + col + 1);
-            assert_eq!(c.ds.r16(at), 1, "列 {row} 欄 {col}");
+            assert_eq!(c.grids.peek16(at), 1, "列 {row} 欄 {col}");
         }
-        assert_eq!(c.ds.r16(GRID3_START + 2 * (8 * 0x28 + 11 + 1)), 0, "第 5 欄不標");
+        assert_eq!(c.grids.peek16(GRID3_START + 2 * (8 * 0x28 + 11 + 1)), 0, "第 5 欄不標");
         assert!(c.fx.slots.iter().all(|s| !s.is_active()), "沒受擊不播特效");
         put_g1(&mut c, 8, 8, 1);
         c.collide_player(1);

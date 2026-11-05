@@ -7,13 +7,14 @@
 //! 內容見 `docs/re/03-game-logic.md`「選單」與 `docs/re/12-stages-presentation.md` 第 8.5 節。
 
 use crate::game::Core;
-use crate::mirror::{Key, PLAYER1_ACTIVE, PLAYER2_ACTIVE};
+use crate::flow::Key;
+use crate::player::{PLAYER1_ACTIVE, PLAYER2_ACTIVE};
 use crate::scene::{Palette, Placement};
 use crate::video::Page;
 
 /// 選單的三個欄位，照原版的字組寬度保存（`mirror.rs` 的 `Title` 對應表）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Menu {
+pub struct Menu {
     /// 選中的列：0 是 LEVEL，1 是 CTRL。
     pub row: u16,
     /// 難度：0 EASY、1 NORMAL、2 HARD、3 HARDEST。

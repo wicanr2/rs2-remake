@@ -34,11 +34,11 @@ use crate::draw::Pool;
 use crate::entity::ARMOR_CELL;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
-use crate::mirror::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end, pb_record_link};
+use crate::grid::{GRID1_END, GRID1_ROW_BYTES, GRID1_START, grid1_row_end};
 use crate::video::MyCopy;
 
 /// 池的槽數。
-pub(crate) const POOL_SIZE: usize = 20;
+pub const POOL_SIZE: usize = 20;
 
 /// 出界門檻（無符號）：列 >= 12h、欄 >= 27h。往上與往下共用同一個列門檻（敵彈往上是 13h，這裡不同）。
 const ROW_LIMIT: u16 = 0x12;
@@ -62,7 +62,7 @@ const BEAM_IMAGE: u16 = 4;
 const BEAM_IMAGE_ODD_PAGE: u16 = 0x19;
 
 /// 玩家機與砲座的朝向。原版以字組 `>`（3Eh）表示朝右，玩家朝左時是 `<`（3Ch），判斷只看是不是 3Eh。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Facing {
     Right,
     Left,
@@ -120,8 +120,8 @@ impl Weapon {
 }
 
 /// 樣板表裡的一筆記錄，生成時複製進池。每種有朝右與朝左兩份（掃射兩邊共用同一份向右的），
-/// 位址換算在 `mirror.rs`（[`Shot::table_offset`]）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 樣板的內容在 `tables.rs`。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Shot {
     /// 普通彈：每幀 4 欄，直線。
     Plain,
@@ -253,9 +253,14 @@ pub(crate) const WAVE_DAMAGE: [u8; 2] = [2, 3];
 /// 列 18 的形狀會讀到列 20，落在 G1 的越界列（見 [`Core::grid1_row_start`]）。
 const WAVE_FULL_ROWS: [u16; 7] = [0, 3, 6, 9, 12, 15, 17];
 
-/// 一顆玩家子彈的記錄。欄位是原版的 16 個字組，順序與位移對應見 `mirror.rs`，數值沿用原版字組寬度。
+/// 池指標：第 `slot` 槽記錄的記號，0 是空槽。記號只在遊戲裡用，不是原版的記錄位址。
+pub const fn pb_record_link(slot: usize) -> u16 {
+    slot as u16 + 1
+}
+
+/// 一顆玩家子彈的記錄。欄位是原版的 16 個字組，數值沿用原版字組寬度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct PlayerBullet {
+pub struct PlayerBullet {
     /// 行為字組：0 普通、`A` 追蹤、`L`、`l` 雷射、`S` 穿透，見 [`PlayerBullet::behavior`]。
     pub kind: u16,
     /// `MY.GO` 圖庫索引。
@@ -288,6 +293,49 @@ pub(crate) struct PlayerBullet {
 }
 
 impl PlayerBullet {
+    /// 記錄的欄位順序（原版 16 個字組）：`PlayerBullet` 的欄位依序對應 `w0` 至 `w15`。
+    pub fn from_words(w: [u16; 16]) -> PlayerBullet {
+        PlayerBullet {
+            kind: w[0],
+            image: w[1],
+            blit_x: w[2],
+            blit_y: w[3],
+            blit_dx: w[4],
+            blit_dy: w[5],
+            heading: w[6],
+            owner: w[7],
+            spare: w[8],
+            col: w[9],
+            row: w[10],
+            dcol: w[11],
+            drow: w[12],
+            script: w[13],
+            shape: w[14],
+            hit_effect: w[15],
+        }
+    }
+
+    pub fn to_words(&self) -> [u16; 16] {
+        [
+            self.kind,
+            self.image,
+            self.blit_x,
+            self.blit_y,
+            self.blit_dx,
+            self.blit_dy,
+            self.heading,
+            self.owner,
+            self.spare,
+            self.col,
+            self.row,
+            self.dcol,
+            self.drow,
+            self.script,
+            self.shape,
+            self.hit_effect,
+        ]
+    }
+
     pub(crate) fn behavior(&self) -> Behavior {
         Behavior::from_word(self.kind)
     }
@@ -340,9 +388,8 @@ impl PlayerBullet {
 
 /// 池的一槽。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Slot {
-    /// 池指標表的項：0 表示空槽，使用中等於這一槽記錄的資料段位址（只有生成會寫，見 `mirror.rs` 的 `pb_record_link`）。
-    /// 載入傾印時保留原值，只為了寫回時位元組相同；邏輯只看是否為 0。
+pub struct Slot {
+    /// 池指標表的項：0 表示空槽，使用中是這一槽的記號（只有生成會寫，見 [`pb_record_link`]）。邏輯只看是否為 0。
     pub link: u16,
     /// 記錄。空槽也保留舊內容：原版釋放只清指標，記錄原封不動，資料段比對會看到它。
     pub bullet: PlayerBullet,
@@ -355,12 +402,12 @@ impl Slot {
 }
 
 /// 玩家子彈領域的全部狀態。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct PlayerBullets {
-    pub(crate) slots: [Slot; POOL_SIZE],
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlayerBullets {
+    pub slots: [Slot; POOL_SIZE],
     /// 在飛的追蹤彈數（原版 `word_1F1A8`）。`B` 武器發射時加，型別 `A` 的子彈釋放時減；
     /// 關卡初始化歸零（`sub_10E33` 的 `10E9Fh`）。超過 [`SEEKER_LIMIT`] 就不再發射追蹤彈。
-    pub(crate) seekers_in_flight: u16,
+    pub seekers_in_flight: u16,
 }
 
 impl PlayerBullets {
@@ -517,7 +564,7 @@ impl Core {
     /// 改以該處位元組的低 4 位元為碼，指標不再前進，所以被跳回的那個位元組在跳回幀與下一幀連續生效兩次。
     /// 追蹤彈腳本最後的 `F5` 那一幀，追蹤判斷在跳回之前，所以跳回後的 0Ah 不會再選方向，該幀不移動。
     fn next_code(&mut self, bullet: &mut PlayerBullet) -> u8 {
-        let byte = self.table_byte(bullet.script);
+        let byte = self.tables.script_byte(bullet.script);
         bullet.script = bullet.script.wrapping_add(1);
         let (mut code, mut jump) = (byte & 0x0F, byte & 0xF0);
         if code == SEEK_CODE {
@@ -526,7 +573,7 @@ impl Core {
         }
         if jump == JUMP_BACK {
             bullet.script = bullet.script.wrapping_sub(u16::from(code));
-            code = self.table_byte(bullet.script) & 0x0F;
+            code = self.tables.script_byte(bullet.script) & 0x0F;
         }
         code
     }
@@ -592,7 +639,8 @@ impl Core {
         self.cut_my(MyCopy::PlayerShot);
         self.overlay_my(MyCopy::PlayerShot);
         // 形狀寬同時寫進繪製的每列位元組殘值，三段碰撞碼寫的是同一個值，只寫一次（見 `Core::stamp_shape`）。
-        self.stamp_shape(bullet.shape, bullet.col, bullet.row);
+        let tables = self.tables();
+        self.stamp_shape(tables.shape(bullet.shape), bullet.col, bullet.row);
         let mut impact = self.collide_entities(bullet);
         if self.collides_with_terrain(bullet) {
             impact = Impact { target: NO_ENTITY, vanishes: true };
@@ -609,13 +657,12 @@ impl Core {
     /// 其他記錄為目標（後掃到的覆蓋前面）。非 0、非 FFh 的格（含 FEh）都讓子彈消失，穿透彈除外。
     /// 列起點每一列重算，列號超過 13h 的列落在 [`Core::grid1_row_start`] 的越界規則。
     fn collide_entities(&self, bullet: &PlayerBullet) -> Impact {
-        let width = self.table_word(bullet.shape);
-        let height = self.table_word(bullet.shape.wrapping_add(2));
+        let shape = self.tables.shape(bullet.shape);
         let mut impact = Impact::default();
-        for k in 0..loop_count(height) {
+        for k in 0..loop_count(shape.height) {
             let start = self.grid1_row_start(bullet.row.wrapping_add(k as u16));
             let mut at = start.wrapping_add(bullet.col);
-            for _ in 0..loop_count(width) {
+            for _ in 0..loop_count(shape.width) {
                 if let Some(cell) = self.grid1_probe(start, at) {
                     if cell != 0 && cell != 0xFF {
                         if cell != ARMOR_CELL {
@@ -638,12 +685,11 @@ impl Core {
         if !self.on_terrain_stage() {
             return false;
         }
-        let width = self.table_word(bullet.shape);
-        let height = self.table_word(bullet.shape.wrapping_add(2));
+        let shape = self.tables.shape(bullet.shape);
         let mut hit = false;
-        for k in 0..loop_count(height) {
+        for k in 0..loop_count(shape.height) {
             let mut at = self.grid4_cell_addr(bullet.row.wrapping_sub(1).wrapping_add(k as u16), bullet.col);
-            for _ in 0..loop_count(width) {
+            for _ in 0..loop_count(shape.width) {
                 if self.grid4_contains(at) && self.grid4_word(at) != 0 {
                     hit = true;
                 }
@@ -716,11 +762,11 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::EntityLink;
     use crate::game::{Fixes, Start};
 
     fn core_with(fixes: Fixes) -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, fixes);
+        let mut c = Core::for_test(Start::Demo, fixes);
         c.fill_row_tables();
         c
     }
@@ -729,21 +775,14 @@ mod tests {
         core_with(Fixes::NONE)
     }
 
-    /// 測試擺實體記錄的位置（資料段內的空閒處）。
-    const ENTITY_AT: u16 = 0x7200;
-
     /// 在 `at` 擺一個 `w` × `h` 的形狀，格值全為 `cell`。
     fn put_shape(c: &mut Core, at: u16, w: u16, h: u16, cell: u8) {
-        c.ds.w16(at, w);
-        c.ds.w16(at + 2, h);
-        for i in 0..w * h {
-            c.ds.w8(at + 4 + i, cell);
-        }
+        c.tables_mut().put_shape(at, w, h, cell);
     }
 
     /// 在 G1 的 (`col`, `row`) 擺一個格值。
     fn put_g1(c: &mut Core, col: u16, row: u16, cell: u8) {
-        c.ds.w8(GRID1_START + row * GRID1_ROW_BYTES + col, cell);
+        c.grids.poke8(GRID1_START + row * GRID1_ROW_BYTES + col, cell);
     }
 
     /// 一顆在 (`col`, `row`) 的 1×1 子彈，形狀在 `0x7000`。
@@ -812,10 +851,7 @@ mod tests {
     #[test]
     fn spawn_copies_the_template_and_fills_the_five_words() {
         let mut c = core();
-        let at = Shot::Big.table_offset(Facing::Right);
-        for k in 0..16u16 {
-            c.ds.w16(at + 2 * k, 0x900 + k);
-        }
+        c.tables_mut().put_shot(Shot::Big, Facing::Right, PlayerBullet::from_words(std::array::from_fn(|k| 0x900 + k as u16)));
         c.fire_player_bullets(u16::from(b'K'), Facing::Right, 7, 3);
         let slot = c.pb.slots[0];
         assert_eq!(slot.link, pb_record_link(0));
@@ -865,7 +901,7 @@ mod tests {
             };
         }
         // 欄 0x30 >= 27h：這一幀出界。腳本碼 3（右）。
-        c.ds.w8(0x7100, 3);
+        c.tables_mut().put_bytes(0x7100, &[3]);
         c.update_player_bullets();
         assert!(!c.pb.slots[0].is_active() && !c.pb.slots[1].is_active());
         assert_eq!(c.pb.seekers_in_flight, 1, "只有型別 A 的釋放會減");
@@ -899,9 +935,7 @@ mod tests {
     fn script_jump_back_repeats_the_target_byte() {
         let mut c = core();
         // 腳本 03 04 F2：第三個位元組往回跳 2，指標 3 減 2 = 1，取位元組 04，指標不再前進。
-        for (i, b) in [0x03u8, 0x04, 0xF2].into_iter().enumerate() {
-            c.ds.w8(0x7100 + i as u16, b);
-        }
+        c.tables_mut().put_bytes(0x7100, &[0x03, 0x04, 0xF2]);
         let mut bullet = PlayerBullet { script: 0x7100, ..PlayerBullet::default() };
         assert_eq!(c.next_code(&mut bullet), 3);
         assert_eq!(c.next_code(&mut bullet), 4);
@@ -967,29 +1001,29 @@ mod tests {
         let b = bullet_at(&mut c, 5, 4);
         // G4 同列上一列（列 3）的奇數位址字組。
         let at = c.grid4_cell_addr(3, 5);
-        c.ds.w16(at, 0x0100);
+        c.grids.poke16(at, 0x0100);
         assert!(!c.collides_with_terrain(&b), "不是第三關不檢查");
         c.set_stage_letter(b'C');
         assert!(c.collides_with_terrain(&b));
-        c.ds.w16(at, 0);
+        c.grids.poke16(at, 0);
         assert!(!c.collides_with_terrain(&b));
         // 位址超出 95FCh 的格不測：列 19 的欄 30h 落在 G4 之後。
         let far = bullet_at(&mut c, 0x30, 20);
         let past = c.grid4_cell_addr(19, 0x30);
         assert!(!c.grid4_contains(past));
-        c.ds.w16(past, 0xFFFF);
+        c.grids.poke16(past, 0xFFFF);
         assert!(!c.collides_with_terrain(&far));
     }
 
     #[test]
     fn strike_adds_damage_to_the_entity_and_spawns_the_effect() {
         let mut c = core();
-        let ent = ENTITY_AT;
-        c.set_entity(1, ent, 0x0004);
+        let ent = EntityLink::Slot(1);
+        c.set_entity(1, 0x0004);
         let b = PlayerBullet { col: 7, row: 2, hit_effect: u16::from(b'B'), ..PlayerBullet::default() };
         c.strike(&b, 2);
         assert_eq!(c.entity_damage(ent), 0x0105, "高位元組設 1，低位元組加 1");
-        assert_eq!(c.fx.slots[0].script_pos, crate::fx::Script::BigExplosion.table_offset(), "特效字母 B");
+        assert_eq!(c.fx.slots[0].script_pos, c.tables.fx_start(crate::fx::Script::BigExplosion), "特效字母 B");
         assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (7, 2));
         c.strike(&PlayerBullet { kind: 0x41, ..b }, 2);
         assert_eq!(c.entity_damage(ent), 0x0108, "追蹤彈加 3");
@@ -999,24 +1033,24 @@ mod tests {
         c.strike(&b, NO_ENTITY);
         assert_eq!(c.fx.slots.iter().filter(|s| s.is_active()).count(), used + 1, "NO_ENTITY 仍播特效");
         assert_eq!(c.entity_damage(ent), 0x010B, "NO_ENTITY 不動實體");
-        assert_eq!(c.entity_damage(0), 0, "也不會落到 dseg:0020h");
+        assert_eq!(c.entity_damage(EntityLink::Stray(0)), 0, "也不會落到 dseg:0020h");
     }
 
     #[test]
     fn damage_byte_wraps_without_carrying_into_the_flag() {
         let mut c = core();
-        c.set_entity(0, ENTITY_AT, 0x01FF);
+        c.set_entity(0, 0x01FF);
         c.strike(&PlayerBullet::default(), 1);
-        assert_eq!(c.entity_damage(ENTITY_AT), 0x0100, "低位元組 8 位元相加，高位元組固定 1");
+        assert_eq!(c.entity_damage(EntityLink::Slot(0)), 0x0100, "低位元組 8 位元相加，高位元組固定 1");
     }
 
     #[test]
     fn armor_cell_writes_to_dseg_0020_unless_fixed() {
         for (fixes, want) in [(Fixes::NONE, 0x0166u16), (Fixes::ALL, 0x0165)] {
             let mut c = core_with(fixes);
-            c.set_entity(0xFD, 0, 0x0165);
+            c.en.stray_damage = 0x0165;
             c.strike(&PlayerBullet::default(), ARMOR_CELL);
-            assert_eq!(c.entity_damage(0), want);
+            assert_eq!(c.entity_damage(EntityLink::Stray(0)), want);
         }
     }
 
@@ -1083,12 +1117,12 @@ mod tests {
         let mut b = seeker_at(&mut c, 10, 8);
         b.heading = 4;
         b.script = 0x7100;
-        c.ds.w8(0x7100, 0x0A);
+        c.tables_mut().put_bytes(0x7100, &[0x0A]);
         put_g1(&mut c, 14, 8, 1);
         assert_eq!(c.next_code(&mut b), 3, "右邊最近，方向 3");
         assert_eq!(b.heading, 3);
         assert_eq!(b.script, 0x7101);
-        assert_eq!(c.fx.slots[0].script_pos, crate::fx::Script::SeekerTrail.table_offset(), "先播尾跡");
+        assert_eq!(c.fx.slots[0].script_pos, c.tables.fx_start(crate::fx::Script::SeekerTrail), "先播尾跡");
         assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (10, 8));
     }
 
@@ -1098,10 +1132,7 @@ mod tests {
         let mut c = core();
         let mut b = seeker_at(&mut c, 10, 8);
         b.script = 0x7105;
-        for i in 0..5 {
-            c.ds.w8(0x7100 + i, 0x0A);
-        }
-        c.ds.w8(0x7105, 0xF5);
+        c.tables_mut().put_bytes(0x7100, &[0x0A, 0x0A, 0x0A, 0x0A, 0x0A, 0xF5]);
         let code = c.next_code(&mut b);
         assert_eq!(code, 0x0A);
         assert_eq!(b.script, 0x7101, "指標 7106h 減 5");
@@ -1115,13 +1146,13 @@ mod tests {
     fn laser_scans_to_the_first_cell_and_extends_the_column() {
         let mut c = core();
         let mut b = PlayerBullet { kind: 0x4C, col: 3, row: 6, blit_x: 3, blit_y: 60, hit_effect: u16::from(b'>'), ..PlayerBullet::default() };
-        c.set_entity(4, ENTITY_AT, 0);
+        c.set_entity(4, 0);
         put_g1(&mut c, 9, 6, 5);
         c.draws.clear();
         c.fire_laser(&mut b, Facing::Right);
         // 欄 4、5、...、9：走 6 步，長度 = 1 + 6 = 7，欄前進 7。
         assert_eq!(b.col, 10, "欄跟著光束前進");
-        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101, "格值 5 是實體索引 4，傷害 1");
+        assert_eq!(c.entity_damage(EntityLink::Slot(4)), 0x0101, "格值 5 是實體索引 4，傷害 1");
         let beams = c.draws.iter().filter(|d| matches!(d, crate::draw::DrawCmd::Blit(b) if b.op == crate::draw::Op::S18C0A)).count();
         assert_eq!(beams, 7);
         assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (10, 6), "命中特效在光束末端");
@@ -1143,19 +1174,19 @@ mod tests {
         let mut c = core();
         let mut b = PlayerBullet { kind: 0x6C, col: 4, row: 6, blit_x: 4, blit_y: 60, ..PlayerBullet::default() };
         put_g1(&mut c, 1, 6, 3);
-        c.set_entity(2, ENTITY_AT, 0);
+        c.set_entity(2, 0);
         c.fire_laser(&mut b, Facing::Left);
         assert_eq!(b.col, 4 - 4, "欄 3、2、1 走 3 步，長度 4");
-        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101);
+        assert_eq!(c.entity_damage(EntityLink::Slot(2)), 0x0101);
         // 地形：G4 同列上一列的字組非 0 就停，在命中判斷之前，不限第三關。
         let mut c = core();
         let mut b = PlayerBullet { kind: 0x6C, col: 10, row: 6, blit_x: 10, blit_y: 60, ..PlayerBullet::default() };
         put_g1(&mut c, 6, 6, 3);
         let wall = c.grid4_cell_addr(5, 10).wrapping_sub(2 * 2);
-        c.ds.w16(wall, 1);
+        c.grids.poke16(wall, 1);
         c.fire_laser(&mut b, Facing::Left);
         assert_eq!(b.col, 10 - 3, "走 2 步在第 3 步的位置看到地形停下，長度 3");
-        assert_eq!(c.entity_damage(0), 0, "地形不扣實體血");
+        assert_eq!(c.entity_damage(EntityLink::Stray(0)), 0, "地形不扣實體血");
     }
 
     #[test]
@@ -1166,14 +1197,14 @@ mod tests {
         b.script = 0x7100;
         b.dcol = 1;
         b.blit_dx = 1;
-        c.ds.w8(0x7100, 3);
+        c.tables_mut().put_bytes(0x7100, &[3]);
         c.pb.slots[0] = Slot { link: pb_record_link(0), bullet: b };
         c.draws.clear();
         c.update_player_bullets();
         let blits: Vec<_> = c.draws.iter().filter_map(|d| if let crate::draw::DrawCmd::Blit(b) = d { Some(*b) } else { None }).collect();
         assert_eq!(blits.iter().map(|b| b.op).collect::<Vec<_>>(), vec![crate::draw::Op::S18E73, crate::draw::Op::S18EB6]);
         assert!(blits.iter().all(|b| b.x == 6 && b.y == 40 && b.index == 33), "移動後再畫");
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
         assert_eq!(c.pb.slots[0].bullet.col, 6);
         assert!(c.pb.slots[0].is_active());
     }
@@ -1185,13 +1216,13 @@ mod tests {
         b.script = 0x7100;
         b.dcol = 1;
         b.blit_dx = 1;
-        c.ds.w8(0x7100, 3);
-        c.set_entity(0, ENTITY_AT, 0);
+        c.tables_mut().put_bytes(0x7100, &[3]);
+        c.set_entity(0, 0);
         put_g1(&mut c, 6, 4, 1);
         c.pb.slots[3] = Slot { link: pb_record_link(3), bullet: b };
         c.update_player_bullets();
         assert!(!c.pb.slots[3].is_active());
-        assert_eq!(c.entity_damage(ENTITY_AT), 0x0101);
+        assert_eq!(c.entity_damage(EntityLink::Slot(0)), 0x0101);
     }
 
     #[test]

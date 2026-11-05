@@ -25,7 +25,7 @@ use super::{
     STYLES, YES,
 };
 use crate::game::{Core, Rules};
-use crate::mirror::FireFlag;
+use crate::flow::FireFlag;
 use crate::pbullet::Facing;
 
 // ---- 波動砲（初值，規格 005「未決定」）----
@@ -513,7 +513,7 @@ mod tests {
         set_shapes(&mut c);
         with_rules(&mut c, rules);
         // 零映像沒有樣板表：補上大掃射樣板的行為字組 `S`（真實映像在 `dseg:2B35h`），波動砲第三級沿用它。
-        c.ds.w16(crate::pbullet::Shot::Sweep.table_offset(Facing::Right), u16::from(b'S'));
+        c.tables_mut().put_shot(crate::pbullet::Shot::Sweep, Facing::Right, crate::pbullet::PlayerBullet { kind: u16::from(b'S'), ..Default::default() });
         c
     }
 
@@ -970,13 +970,13 @@ mod tests {
         }
         let pods = c.pl.ship[0].pods;
         // 實體：砲座 2×2，位置 (pods.col, pods.row)。
-        c.en.slots[3].link = crate::mirror::enemy_record_link(3);
+        c.en.slots[3].link = crate::entity::enemy_record_link(3);
         crate::player::test_support::put_g1(&mut c, pods.col, pods.row, 4);
         c.pod_touches_entities(0, pods.col, pods.row);
         assert_eq!(c.en.slots[3].enemy.damage & 0xFF, u16::from(DETACHED_POD_DAMAGE), "分離中的傷害");
         // 附著時是原版的 1。
         let mut d = armed(FORCE, 0, 5, 8);
-        d.en.slots[3].link = crate::mirror::enemy_record_link(3);
+        d.en.slots[3].link = crate::entity::enemy_record_link(3);
         crate::player::test_support::put_g1(&mut d, 5, 5, 4);
         d.pod_touches_entities(0, 5, 5);
         assert_eq!(d.en.slots[3].enemy.damage & 0xFF, 1);
@@ -1146,8 +1146,7 @@ mod tests {
                 // 不呼叫 update_player_bullets：測試用的零映像沒有子彈形狀表，寬高 0 在原版的 `loop` 語意是 65536 次。
                 c.update_player(0);
                 c.draw_player(0);
-                c.store_mirrors();
-                trace.push((c.ds.bytes().to_vec(), std::mem::take(&mut c.draws).len()));
+                trace.push((c.snapshot(), std::mem::take(&mut c.draws).len()));
             }
             trace
         };
@@ -1179,8 +1178,7 @@ mod tests {
                 press_split(&mut c, 0, step % 13 == 2 || step % 13 == 9);
                 c.update_player(0);
                 c.draw_player(0);
-                c.store_mirrors();
-                out.push(rs2_formats::sha256_hex(c.ds.bytes()));
+                out.push(format!("{:?}", c.snapshot()));
             }
             out
         };

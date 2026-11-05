@@ -21,11 +21,12 @@
 //! - PC 喇叭附帶音。原版只有 E 的特效 blit 驅動喇叭，CGA、MGA 沒有，所以單色模式不產生 `AudioMsg::Speaker`。
 
 use rs2_audio::{SfxKind, SpkEv};
-use rs2_core::{AudioCmd, DrawCmd, Entry, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Rules, Start, boot_ds_with_dm1};
+use rs2_core::{AudioCmd, DrawCmd, Exit, Fixes, Game, HudStatus, Input, MixFile, Pool, Rules, Start};
 use rs2_formats::sha256_hex;
 use rs2_gfx::speaker::speaker_events;
 use rs2_gfx::{Assets, HdAssets, LayerSink, MonoAssets, MonoHdSink, MonoKind, MonoSink, RenderOpts, VgaSink};
 use rs2_trace::Inputs;
+use rs2_trace::mirror::Mirror;
 use std::sync::Arc;
 
 use crate::feedback::{Feedback, FxEvent, Scanner};
@@ -171,6 +172,8 @@ impl EgaQuant {
 
 pub struct Session {
     game: Game,
+    /// 狀態與原版資料段的對應。只給 `dseg_hash`（對拍與 `--hash-out`）和測試用，遊戲與畫面都不讀它。
+    mirror: Mirror,
     vga: VgaSink,
     layer: LayerSink,
     /// 單色圖庫載入成功才有。沒有時 CGA、MGA 退回 VGA。
@@ -258,10 +261,7 @@ impl Session {
         view: ViewOpts,
     ) -> Session {
         let mut game = match begin {
-            Begin::Title => {
-                let ds = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
-                Game::from_snapshot(inputs.game_files(), ds.bytes(), Entry::Title, fixes)
-            }
+            Begin::Title => Game::boot(inputs.game_files(), fixes),
             Begin::Stage1(start) => Game::new(&inputs.image, &inputs.dm1, start, fixes),
         };
         let init = game.take_draws();
@@ -274,6 +274,7 @@ impl Session {
         };
         let mut s = Session {
             game,
+            mirror: inputs.mirror(),
             vga: VgaSink::new(assets.clone()),
             layer: LayerSink::new(assets.clone(), hd),
             mono: mono.map(MonoPair::new),
@@ -608,9 +609,27 @@ impl Session {
         self.view.hd && self.hd_available && (!self.mode.is_mono() || self.mono_hd.is_some())
     }
 
-    /// `Game` 資料段的 SHA-256（十六進位）。
+    /// `Game` 狀態對應的原版資料段（`rs2-trace` 的 `Mirror`）的 SHA-256（十六進位）。
+    /// 每次呼叫傾印一份 64 KB，只有 `--hash-out` 與測試用。
     pub fn dseg_hash(&self) -> String {
-        sha256_hex(self.game.state_hash_input())
+        sha256_hex(self.ds().bytes())
+    }
+
+    /// 狀態對應的資料段傾印。
+    pub(crate) fn ds(&self) -> rs2_trace::mirror::Dseg {
+        self.mirror.dump(self.game.state())
+    }
+
+    /// 測試用：在資料段位移寫一個位元組（寫進狀態，下一步套用）。
+    #[cfg(test)]
+    pub(crate) fn poke8(&mut self, offset: u16, value: u8) {
+        self.mirror.poke8(self.game.state_mut(), offset, value);
+    }
+
+    /// 測試用：寫一個字組。
+    #[cfg(test)]
+    pub(crate) fn poke16(&mut self, offset: u16, value: u16) {
+        self.mirror.poke16(self.game.state_mut(), offset, value);
     }
 
     /// 上次呼叫之後新出現的缺圖。
@@ -781,7 +800,7 @@ mod tests {
         let mut release: Vec<u8> = Vec::new();
         for n in 0..60_000u32 {
             // 不死（`word_273A5` 的作弊旗標），才量得到整關。
-            s.game.poke8(rs2_core::a(0x273A5), b'Y');
+            s.poke8(rs2_trace::mirror::a(0x273A5), b'Y');
             let before = s.game.player_status(0);
             let was_playable = s.playable(0);
             let mut sc: Vec<u8> = std::mem::take(&mut release);
@@ -853,7 +872,7 @@ mod tests {
                             "[d1] 第 {n} 步不符：x {} -> {}，方向 {dir:#x}，預期 {want}，實際 {moved}，幀 {}",
                             before.x,
                             after.x,
-                            u16::from_le_bytes([s.game.state_hash_input()[0x422], s.game.state_hash_input()[0x423]])
+                            s.ds().r16(0x422)
                         );
                     }
                 }
@@ -888,7 +907,7 @@ mod tests {
                 break;
             }
             let st = s.game.player_status(0);
-            let flag = s.game.state_hash_input()[rs2_core::a(0x1CFDC) as usize];
+            let flag = s.ds().r8(rs2_trace::mirror::a(0x1CFDC));
             if s.player_drawn[0] {
                 drawn_steps += 1;
                 if last.is_some_and(|l| l != (st.x, st.y)) {
@@ -938,12 +957,12 @@ mod tests {
                 if last.is_some_and(|l| l != pos) {
                     moves += 1;
                     if moves <= 4 {
-                        let d = s.game.state_hash_input();
-                        let k = |l: u32| d[rs2_core::a(l) as usize];
+                        let d = s.ds();
+                        let k = |l: u32| d.r8(rs2_trace::mirror::a(l));
                         eprintln!(
                             "[d6] 可控制第 {steps_in_play} 步移動到 ({},{})：274DA {:#x} 274DB {:#x} 274DC {:#x} 1CFDC {:#x} 1CFDD {:#x} 1CFAD {:#x} 幀 {}",
                             st.x, st.y, k(0x274DA), k(0x274DB), k(0x274DC), k(0x1CFDC), k(0x1CFDD), k(0x1CFAD),
-                            u16::from_le_bytes([d[0x422], d[0x423]])
+                            d.r16(0x422)
                         );
                     }
                 }
@@ -1005,7 +1024,7 @@ mod tests {
     #[test]
     #[ignore]
     fn d5_invincible_writes_the_cheat_flag_only_when_asked() {
-        let flag = |s: &Session| s.game.state_hash_input()[rs2_core::a(0x273A5) as usize];
+        let flag = |s: &Session| s.ds().r8(rs2_trace::mirror::a(0x273A5));
         let mut plain = new_game(VIEW);
         let mut god = new_game(VIEW);
         for _ in 0..20 {
@@ -1137,10 +1156,10 @@ mod tests {
     /// 玩家 1 的狀態：血量字組、武器字母、砲座數。
     fn set_p1(s: &mut Session, hp: u16, weapon: u8, pods: u8) {
         let yn = |n: u8, k: u8| if n > k { b'Y' } else { b'N' };
-        s.game.poke16(rs2_core::a(0x1CFDE), hp);
-        s.game.poke16(rs2_core::a(0x1DAA9), weapon as u16);
-        s.game.poke8(rs2_core::a(0x1DA8D), yn(pods, 0));
-        s.game.poke8(rs2_core::a(0x1DA8E), yn(pods, 1));
+        s.poke16(rs2_trace::mirror::a(0x1CFDE), hp);
+        s.poke16(rs2_trace::mirror::a(0x1DAA9), weapon as u16);
+        s.poke8(rs2_trace::mirror::a(0x1DA8D), yn(pods, 0));
+        s.poke8(rs2_trace::mirror::a(0x1DA8E), yn(pods, 1));
     }
 
     fn bottom_bar(img: &[u8]) -> Vec<u8> {
@@ -1296,11 +1315,11 @@ mod tests {
         shot(&mut g, "hud_stage1_fade_0ms.png", t);
         shot(&mut g, "hud_stage1_fade_100ms.png", t + 100);
         // 雙人：P2 在場，兩邊武器不同，標籤與幀計數都開。
-        g.game.poke8(rs2_core::a(0x1CFDD), 0x11);
-        g.game.poke16(rs2_core::a(0x1CFE0), 0x1F);
-        g.game.poke16(rs2_core::a(0x1DB0B), b'B' as u16);
-        g.game.poke8(rs2_core::a(0x1DAEF), b'Y');
-        g.game.poke8(rs2_core::a(0x1DAF0), b'N');
+        g.poke8(rs2_trace::mirror::a(0x1CFDD), 0x11);
+        g.poke16(rs2_trace::mirror::a(0x1CFE0), 0x1F);
+        g.poke16(rs2_trace::mirror::a(0x1DB0B), b'B' as u16);
+        g.poke8(rs2_trace::mirror::a(0x1DAEF), b'Y');
+        g.poke8(rs2_trace::mirror::a(0x1DAF0), b'N');
         set_p1(&mut g, 0xFF, b'L', 2);
         g.set_hud_flags(HudFlags { rules: true, god: true, charge_bar: true, counter: None });
         g.set_view(ViewOpts { counter: true, ..HD_VIEW });

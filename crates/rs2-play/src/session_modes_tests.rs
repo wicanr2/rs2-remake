@@ -15,7 +15,7 @@
 //! | `m8_*` | 有 HD 資料夾才跑：EGA 加 HD 量化到 EGA 色表，單色模式 HD 用 `MonoHdSink`（1280×800、只有黑白） |
 
 use super::*;
-use rs2_core::a as dseg;
+use rs2_trace::mirror::a as dseg;
 use rs2_formats::unrle;
 use rs2_trace::load_inputs;
 use std::path::PathBuf;
@@ -61,7 +61,7 @@ fn new_game() -> Begin {
 
 /// 目前的關卡字母（`byte_1CFDB`）：`A` 到 `D`。
 fn letter(s: &Session) -> u8 {
-    s.game.state_hash_input()[dseg(0x1CFDB) as usize]
+    s.ds().r8(dseg(0x1CFDB))
 }
 
 /// 這個模式與補間設定下 `render` 該有的尺寸（沒有 HD）。
@@ -75,7 +75,7 @@ fn size_of(mode: DisplayMode) -> (usize, usize) {
 
 /// 不死（`word_273A5` 的作弊旗標），整個流程才走得完。兩個 Session 都要寫。
 fn invincible(s: &mut Session) {
-    s.game.poke8(dseg(0x273A5), b'Y');
+    s.poke8(dseg(0x273A5), b'Y');
 }
 
 /// 從標題走完四關與片尾的輸入：可以控制時左右走並按住開火，走滿 `PLAY_STEPS` 步就用 Ctrl+C 過關，其餘時間隔一段時間按空白鍵。
@@ -350,7 +350,8 @@ fn m3_the_mode_at_stage3_entry_picks_the_terrain() {
         } else if first_div.is_none() {
             first_div = Some(n);
             // 分歧的位元組要落在 G4（dseg:900Ch 起 1,600 位元組）。
-            let (x, y) = (vga.game.state_hash_input(), cga.game.state_hash_input());
+            let (xd, yd) = (vga.ds(), cga.ds());
+            let (x, y) = (xd.bytes(), yd.bytes());
             let diff: Vec<usize> = (0..x.len()).filter(|&i| x[i] != y[i]).collect();
             let in_g4 = diff.iter().filter(|&&i| (0x900C..0x900C + 1600).contains(&i)).count();
             eprintln!("[m3] 第 {n} 步首次分歧（進場第 {} 步）：{} 個位元組不同，其中 {in_g4} 個在 G4", stage3_steps, diff.len());

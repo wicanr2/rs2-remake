@@ -45,9 +45,9 @@ pub(crate) const SCRATCH_A: u16 = 0;
 /// 暫存區 B 的選擇值。
 pub(crate) const SCRATCH_B: u16 = 0x8000;
 
-/// 繪製參數：下一個繪製命令帶走的狀態。欄位照原版字組的寬度，`Mirror` 的 `load` 與 `store` 互為反函數。
+/// 繪製參數：下一個繪製命令帶走的狀態。欄位照原版字組的寬度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DrawParams {
+pub struct DrawParams {
     /// `word_26880`：目的欄，單位是位元組（8 像素）。
     pub x: u16,
     /// `word_26882`：目的像素列。
@@ -69,7 +69,7 @@ pub(crate) struct DrawParams {
     /// `word_2687E`：形狀的寬，邏輯（敵人足跡、敵彈、特效、玩家彈、玩家接觸）寫進去。
     /// 繪製常式同一個字當每列位元組數用，載入圖庫項時由接收端改寫，核心不會更新。
     /// `Some` 是上一個繪製命令之後邏輯寫過的值，`None` 是沒寫過。下一個繪製命令把它記成 `stride_reg`，
-    /// 之後回到 `None`。資料段上的對應是 FFFFh（見 `mirror.rs`）。
+    /// 之後回到 `None`。
     pub shape_width: Option<u16>,
 }
 
@@ -221,9 +221,10 @@ impl Core {
     }
 
     /// 邏輯寫 `word_2687E`（形狀的寬）。下一個繪製命令把它記成 `stride_reg`。
-    /// FFFFh 是資料段上「沒寫過」的記號，形狀寬不會是這個值，寫了等於沒寫。
+    ///
+    /// FFFFh 是原版這個字組「沒寫過」的記號（轉成資料段時 `None` 寫成 FFFFh），形狀寬不會是這個值，寫了等於沒寫。
     pub(crate) fn set_shape_width(&mut self, width: u16) {
-        self.draw_params.shape_width = DrawParams::shape_width_from_word(width);
+        self.draw_params.shape_width = (width != 0xFFFF).then_some(width);
     }
 
     /// 繪製的暫存區選擇（原版 `word_2685C`），之後的繪製命令都帶這個值，直到有人再設。
@@ -509,8 +510,7 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut c = Core::for_test(Start::Demo, Fixes::NONE);
         c.draws.clear();
         c
     }

@@ -3,7 +3,8 @@
 //!
 //! 原版目錄由環境變數 `RS2_ORIG` 指定。比對遇到第一個不同的幀就停，回報欄位路徑。
 
-use rs2_core::{A0_EXEMPT, Fixes, Game, Input, Start};
+use rs2_core::{Fixes, Game, Input, Start};
+use rs2_trace::mirror::{A0_EXEMPT, Mirror};
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -36,16 +37,18 @@ fn run(args: &[String]) -> Result<(), String> {
         _ => Fixes::NONE,
     };
     let mut game = Game::new(&inputs.image, &inputs.dm1, start, fixes);
+    let mirror = inputs.mirror();
     match args.first().map(String::as_str) {
-        Some("a0") => a0(&game, &arg(args, "--dump").ok_or("缺 --dump")?),
-        Some("replay") => replay(&mut game, args),
+        Some("a0") => a0(&mirror, &game, &arg(args, "--dump").ok_or("缺 --dump")?),
+        Some("replay") => replay(&mirror, &mut game, args),
         _ => Err("子命令要是 replay 或 a0".into()),
     }
 }
 
-fn a0(game: &Game, dump: &str) -> Result<(), String> {
+fn a0(mirror: &Mirror, game: &Game, dump: &str) -> Result<(), String> {
     let want = std::fs::read(dump).map_err(|e| format!("讀不到 {dump}：{e}"))?;
-    let got = game.ds.bytes();
+    let got_dump = mirror.dump(game.state());
+    let got = got_dump.bytes();
     let mut bad = Vec::new();
     let mut exempt = 0usize;
     for i in 0..0x10000usize {
@@ -64,7 +67,7 @@ fn a0(game: &Game, dump: &str) -> Result<(), String> {
     if bad.is_empty() { Ok(()) } else { Err("A0 不通過".into()) }
 }
 
-fn replay(game: &mut Game, args: &[String]) -> Result<(), String> {
+fn replay(mirror: &Mirror, game: &mut Game, args: &[String]) -> Result<(), String> {
     let rows: u64 = arg(args, "--rows").ok_or("缺 --rows")?.parse().map_err(|_| "--rows 不是數字")?;
     let want: Option<Vec<String>> = match arg(args, "--compare") {
         Some(p) => Some(
@@ -83,7 +86,7 @@ fn replay(game: &mut Game, args: &[String]) -> Result<(), String> {
         let sc: Vec<u8> = want.as_ref().and_then(|w| w.get(n as usize)).map(|l| parse_sc(l)).unwrap_or_default();
         let mut sampled: Option<String> = None;
         let frame = game.step(&Input { scancodes: &sc }, &mut |g: &Game, pt: u32| {
-            sampled = Some(row_json(g, n, pt, &sc));
+            sampled = Some(row_json(mirror, g, n, pt, &sc));
         });
         let Some(line) = sampled else {
             if frame.exit.is_some() {

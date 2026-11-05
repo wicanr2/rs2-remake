@@ -3,14 +3,15 @@
 //! 池有 30 槽，每槽記一個位置與腳本讀取位置。腳本是一串「圖、dx、dy、形狀」，每幀走一格；
 //! 圖號為 [`END_OF_SCRIPT`] 時槽釋放。每格先畫遮罩與四平面（圖庫 `MY.GO`），再把形狀以 `or` 寫進格網 G3。
 //! 原版是 `sub_17A3A` 一族，語意見 `docs/re/11-entities-combat.md` 第 8.1 節。
-//! 狀態與資料段位移的對應在 `mirror.rs`，這個檔案不出現原版位移。
+//! 腳本與形狀是唯讀表格，在 `tables.rs`。
 
 use crate::draw::Pool;
 use crate::game::Core;
+use crate::tables::Shape;
 use crate::video::MyCopy;
 
 /// 特效池的槽數。
-pub(crate) const POOL_SIZE: usize = 30;
+pub const POOL_SIZE: usize = 30;
 
 /// 腳本結束的圖號。
 const END_OF_SCRIPT: u16 = 0x0F;
@@ -23,12 +24,12 @@ const ROW_PIXELS: u16 = 10;
 
 /// 一個特效槽。原版是三個平行陣列（x、y、腳本指標）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Effect {
+pub struct Effect {
     /// 水平位置，單位是位元組（8 像素）。
     pub x: u16,
     /// 垂直位置，單位是格列。釋放的槽保留舊的 `x`、`y`。
     pub y: u16,
-    /// 腳本下一格的讀取位置，原版為資料段指標。0 表示空槽。
+    /// 腳本下一格的讀取位置，原版為資料段指標，這裡是特效腳本表的鍵。0 表示空槽。
     pub script_pos: u16,
 }
 
@@ -39,14 +40,14 @@ impl Effect {
 }
 
 /// 特效領域的全部狀態。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct Effects {
-    pub(crate) slots: [Effect; POOL_SIZE],
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Effects {
+    pub slots: [Effect; POOL_SIZE],
     /// 位置游標（原版 `word_20B7C`、`word_20B7E`）。生成時當作新特效的位置，更新每一格時寫成該格的新位置。
     /// 單顆 `E` 的呼叫端不給位置，沿用游標上一次的值（見 [`Core::spawn_stage_clear_burst`]），所以它是狀態。
-    pub(crate) cursor: (u16, u16),
+    pub cursor: (u16, u16),
     /// 過關連爆的起點欄（原版 `word_20B7A`）。關卡初始化歸零，過關連爆每輪往左 3 欄。
-    pub(crate) chain_base_x: u16,
+    pub chain_base_x: u16,
 }
 
 impl Effects {
@@ -136,16 +137,6 @@ const CLEAR_CHAIN: [(u16, u16, Script); 10] = [
     (0x19, 0x07, Script::BigExplosion),
 ];
 
-/// 腳本的一格。
-#[derive(Clone, Copy)]
-struct ScriptFrame {
-    image: u16,
-    dx: u16,
-    dy: u16,
-    /// 形狀指標，指向 `寬, 高, 寬 × 高 位元組` 的格值。
-    shape: u16,
-}
-
 /// 8086 `loop` 先減後判，計數為 0 時跑 65536 圈。形狀的寬高來自表格，不會是 0，但照原版行為寫。
 pub(crate) fn loop_count(n: u16) -> u32 {
     if n == 0 { 0x1_0000 } else { n as u32 }
@@ -198,7 +189,7 @@ impl Core {
     fn start_script(&mut self, script: Script) {
         let Some(slot) = self.fx.first_free() else { return };
         let (x, y) = self.fx.cursor;
-        self.fx.slots[slot] = Effect { x, y, script_pos: script.table_offset() };
+        self.fx.slots[slot] = Effect { x, y, script_pos: self.tables.fx_start(script) };
         self.bump_gen(Pool::Effect, slot as u8);
     }
 
@@ -219,7 +210,7 @@ impl Core {
     fn step_effect(&mut self, slot: usize) {
         let Effect { x, y, script_pos } = self.fx.slots[slot];
         self.fx.cursor = (x, y);
-        let frame = self.script_frame(script_pos);
+        let frame = self.tables.fx_frame(script_pos);
         self.fx.slots[slot].script_pos = script_pos.wrapping_add(FRAME_BYTES);
         if frame.image == END_OF_SCRIPT {
             self.fx.slots[slot].script_pos = 0;
@@ -232,23 +223,22 @@ impl Core {
         self.set_blit_params(x, y.wrapping_mul(ROW_PIXELS), frame.image);
         self.cut_my(MyCopy::Effect);
         self.overlay_my(MyCopy::Effect);
-        self.stamp_shape(frame.shape, x, y);
+        let tables = self.tables();
+        self.stamp_shape(tables.shape(frame.shape), x, y);
     }
 
     /// 把形狀以 `or` 寫進 G3，左上角在 (`x`, `y`)（原版 `sub_17D2C`）。
     /// 形狀寬同時寫進繪製的每列位元組殘值（`word_2687E`），後面的繪製命令會記下它。
     /// 位址落在 G3 範圍之外的格略過，列號超過 13h 的列都落在越界列。
     /// 玩家子彈（原版 `sub_1698C`）用同一套規則，共用這個函式。
-    pub(crate) fn stamp_shape(&mut self, shape: u16, x: u16, y: u16) {
-        let width = self.table_word(shape);
-        let height = self.table_word(shape.wrapping_add(2));
-        self.set_shape_width(width);
-        let mut src = shape.wrapping_add(4);
+    pub(crate) fn stamp_shape(&mut self, shape: &Shape, x: u16, y: u16) {
+        self.set_shape_width(shape.width);
+        let mut src = 0u16;
         let mut row = y;
-        for _ in 0..loop_count(height) {
+        for _ in 0..loop_count(shape.height) {
             let mut cell = self.grid3_cell_addr(row, x);
-            for _ in 0..loop_count(width) {
-                let v = self.table_byte(src);
+            for _ in 0..loop_count(shape.width) {
+                let v = shape.cell(src);
                 self.grid3_or(cell, v);
                 cell = cell.wrapping_add(2);
                 src = src.wrapping_add(1);
@@ -256,43 +246,25 @@ impl Core {
             row = row.wrapping_add(1);
         }
     }
-
-    // ---- 唯讀表格：腳本與形狀。表格階段搬走，現在仍從資料段讀（`Core::table_word`、`Core::table_byte` 在 `mirror.rs`）----
-
-    fn script_frame(&self, pos: u16) -> ScriptFrame {
-        ScriptFrame {
-            image: self.table_word(pos),
-            dx: self.table_word(pos.wrapping_add(2)),
-            dy: self.table_word(pos.wrapping_add(4)),
-            shape: self.table_word(pos.wrapping_add(6)),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dseg::Dseg;
     use crate::game::{Fixes, Start};
-    use crate::mirror::Mirror;
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::Demo, Fixes::NONE)
+        Core::for_test(Start::Demo, Fixes::NONE)
     }
 
     /// 在 `ptr` 擺一格腳本。
     fn put_frame(c: &mut Core, ptr: u16, image: u16, dx: u16, dy: u16, shape: u16) {
-        for (i, v) in [image, dx, dy, shape].into_iter().enumerate() {
-            c.ds.w16(ptr + 2 * i as u16, v);
-        }
+        c.tables_mut().put_fx_frame(ptr, image, dx, dy, shape);
     }
 
     /// 在 `ptr` 擺一個 1 x 1 的形狀。
     fn put_shape(c: &mut Core, ptr: u16, cell: u8) {
-        c.ds.w16(ptr, 1);
-        c.ds.w16(ptr + 2, 1);
-        c.ds.w8(ptr + 4, cell);
+        c.tables_mut().put_shape(ptr, 1, 1, cell);
     }
 
     #[test]
@@ -318,8 +290,8 @@ mod tests {
         let mut c = core();
         c.spawn_effect(EffectKind::Trail, 7, 9);
         c.spawn_effect(EffectKind::SparkLeft, 1, 2);
-        assert_eq!(c.fx.slots[0], Effect { x: 7, y: 9, script_pos: Script::Trail.table_offset() });
-        assert_eq!(c.fx.slots[1], Effect { x: 1, y: 2, script_pos: Script::SparkLeft.table_offset() });
+        assert_eq!(c.fx.slots[0], Effect { x: 7, y: 9, script_pos: c.tables.fx_start(Script::Trail) });
+        assert_eq!(c.fx.slots[1], Effect { x: 1, y: 2, script_pos: c.tables.fx_start(Script::SparkLeft) });
         assert_eq!(c.fx.cursor, (1, 2));
         c.fx.slots[0].script_pos = 0;
         c.spawn_effect(EffectKind::BigExplosion, 3, 4);
@@ -353,7 +325,7 @@ mod tests {
         c.fx.chain_base_x = 100;
         c.spawn_effect_at_cursor(EffectKind::ClearChain);
         for (i, (dx, y, script)) in CLEAR_CHAIN.into_iter().enumerate() {
-            assert_eq!(c.fx.slots[i], Effect { x: 100 + dx, y, script_pos: script.table_offset() });
+            assert_eq!(c.fx.slots[i], Effect { x: 100 + dx, y, script_pos: c.tables.fx_start(script) });
         }
         assert!(!c.fx.slots[10].is_active());
         assert_eq!(c.fx.cursor, (100 + 0x19, 7));
@@ -369,7 +341,7 @@ mod tests {
         let mut c = core();
         c.fx.cursor = (4, 6);
         c.spawn_stage_clear_burst(0x8000);
-        assert_eq!(c.fx.slots[0], Effect { x: 4, y: 6, script_pos: Script::Trail.table_offset() }, "頁不為 0：單顆 E，位置沿用游標");
+        assert_eq!(c.fx.slots[0], Effect { x: 4, y: 6, script_pos: c.tables.fx_start(Script::Trail) }, "頁不為 0：單顆 E，位置沿用游標");
         assert!(!c.fx.slots[1].is_active());
         c.spawn_stage_clear_burst(0);
         assert!(c.fx.slots[10].is_active(), "頁為 0：連爆");
@@ -378,7 +350,7 @@ mod tests {
     #[test]
     fn step_advances_draws_and_stamps_shape() {
         let mut c = core();
-        let (script, shape) = (Script::Trail.table_offset(), 0x7000u16);
+        let (script, shape) = (c.tables.fx_start(Script::Trail), 0x7000u16);
         put_frame(&mut c, script, 24, 2, 3, shape);
         put_frame(&mut c, script + FRAME_BYTES, END_OF_SCRIPT, 0, 0, 0);
         put_shape(&mut c, shape, 0x05);
@@ -396,7 +368,7 @@ mod tests {
         assert_eq!(blits.len(), 2, "遮罩與四平面各一次");
         assert!(blits.iter().all(|b| b.x == 6 && b.y == 90 && b.index == 24));
         let cell = c.grid3_cell_addr(9, 6);
-        assert_eq!(c.ds.r8(cell), 0x05, "形狀寫進 G3");
+        assert_eq!(c.grids.peek8(cell), 0x05, "形狀寫進 G3");
 
         c.update_effects();
         assert!(!c.fx.slots[0].is_active(), "結束格釋放槽");
@@ -408,7 +380,7 @@ mod tests {
     fn cursor_is_left_on_the_last_stepped_slot() {
         // 更新一輪後，游標是最後一個使用中的槽的新位置；單顆 `E` 沿用它。
         let mut c = core();
-        let (a, b) = (Script::SparkRight.table_offset(), Script::SparkLeft.table_offset());
+        let (a, b) = (c.tables.fx_start(Script::SparkRight), c.tables.fx_start(Script::SparkLeft));
         put_shape(&mut c, 0x7000, 1);
         put_frame(&mut c, a, 2, 1, 1, 0x7000);
         put_frame(&mut c, b, 2, 5, 7, 0x7000);
@@ -417,30 +389,6 @@ mod tests {
         c.update_effects();
         assert_eq!(c.fx.cursor, (25, 27));
         c.spawn_stage_clear_burst(8000);
-        assert_eq!(c.fx.slots[2], Effect { x: 25, y: 27, script_pos: Script::Trail.table_offset() });
-    }
-
-    #[test]
-    fn mirror_is_the_inverse_of_load_for_any_dump() {
-        // 偽亂數填滿資料段：讀進再寫回，位元組不變。
-        let mut image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut s = 0x1234_5678u32;
-        for b in image[rs2_formats::DSEG_IMAGE_OFFSET..].iter_mut() {
-            s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            *b = (s >> 24) as u8;
-        }
-        let ds = Dseg::from_image(&image);
-        let mut fx = Effects::default();
-        fx.load(&ds);
-        let mut same = ds.clone();
-        fx.store(&mut same);
-        assert_eq!(same.bytes(), ds.bytes(), "store(load(ds)) 要等於 ds");
-        // 寫進全 0 的資料段再讀回，結構相同：store 真的寫了每個欄位。
-        let mut blank = Dseg::from_image(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET]);
-        fx.store(&mut blank);
-        let mut back = Effects::default();
-        back.load(&blank);
-        assert_eq!((back.slots, back.cursor, back.chain_base_x), (fx.slots, fx.cursor, fx.chain_base_x));
-        assert_ne!(fx.slots, Effects::default().slots, "測試資料不該全 0");
+        assert_eq!(c.fx.slots[2], Effect { x: 25, y: 27, script_pos: c.tables.fx_start(Script::Trail) });
     }
 }

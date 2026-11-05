@@ -2,10 +2,12 @@
 //! 欄位定義見 `docs/re/10-dynamic-receipts.md` 第 8.3 節，順序與 `cmd/rs2dyn/trace_full.go` 相同。
 //! 全流程對拍（等待點收據）在 [`wait`]。
 
+pub mod mirror;
 pub mod mono;
 pub mod wait;
 
-use rs2_core::{Game, GameFiles, a};
+use mirror::{Dseg, Mirror, a};
+use rs2_core::{Game, GameFiles, State, Tables};
 use rs2_formats::{EXPECTED, UNPACKED_SHA256, check_hash, unpack_s_exe};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -20,7 +22,18 @@ pub struct Inputs {
 }
 
 impl Inputs {
-    /// 交給 `Game::from_snapshot` 的檔案：解包映像、兩份展示錄影、第三關地圖。
+    /// 原版映像的資料段對應。
+    pub fn mirror(&self) -> Mirror {
+        Mirror::new(&self.image)
+    }
+
+    /// 正式遊戲的開機狀態（標題入口，載入展示錄影）。映像不是已知的原版就 `panic`。
+    pub fn boot_state(&self) -> State {
+        let tables = Tables::parse(&self.image).expect("解包映像已驗過雜湊");
+        rs2_core::boot_state(std::rc::Rc::new(tables), &self.dm1)
+    }
+
+    /// 交給 `Game::from_state` 的檔案：解包映像、兩份展示錄影、第三關地圖。
     pub fn game_files(&self) -> GameFiles {
         let get = |n: &str| self.files.get(n).cloned().unwrap_or_default();
         GameFiles { image: self.image.clone(), dm1: get("DM1.LCK"), dm2: get("DM2.LCK"), scn: get("SHT.SCN"), scr: get("SHT.SCR") }
@@ -79,36 +92,36 @@ const PLAYER2: [(&str, u32, bool); 14] = [
     ("chg", 0x1DAED, true),
 ];
 
-fn player(s: &mut String, g: &Game, fields: &[(&str, u32, bool)]) {
+fn player(s: &mut String, d: &Dseg, fields: &[(&str, u32, bool)]) {
     s.push('{');
     for (i, (k, addr, word)) in fields.iter().enumerate() {
         if i > 0 {
             s.push(',');
         }
-        let v = if *word { g.ds.r16(a(*addr)) as u32 } else { g.ds.r8(a(*addr)) as u32 };
+        let v = if *word { d.r16(a(*addr)) as u32 } else { d.r8(a(*addr)) as u32 };
         kv(s, k, v);
     }
     s.push('}');
 }
 
-fn words(s: &mut String, g: &Game, key: &str, off: u16, n: u16) {
+fn words(s: &mut String, g: &Dseg, key: &str, off: u16, n: u16) {
     let _ = write!(s, "\"{key}\":[");
     for i in 0..n {
         if i > 0 {
             s.push(',');
         }
-        let _ = write!(s, "{}", g.ds.r16(off.wrapping_add(i * 2)));
+        let _ = write!(s, "{}", g.r16(off.wrapping_add(i * 2)));
     }
     s.push(']');
 }
 
 /// 指標表與每個非 0 指標指向的記錄。記錄從指標讀，不是從槽號算。
-fn pool(s: &mut String, g: &Game, tkey: &str, rkey: &str, tbl: u16, slots: u16, wc: u16) {
+fn pool(s: &mut String, g: &Dseg, tkey: &str, rkey: &str, tbl: u16, slots: u16, wc: u16) {
     words(s, g, tkey, tbl, slots);
     let _ = write!(s, ",\"{rkey}\":[");
     let mut first = true;
     for i in 0..slots {
-        let p = g.ds.r16(tbl.wrapping_add(i * 2));
+        let p = g.r16(tbl.wrapping_add(i * 2));
         if p == 0 {
             continue;
         }
@@ -121,7 +134,7 @@ fn pool(s: &mut String, g: &Game, tkey: &str, rkey: &str, tbl: u16, slots: u16, 
             if k > 0 {
                 s.push(',');
             }
-            let _ = write!(s, "{}", g.ds.r16(p.wrapping_add(k * 2)));
+            let _ = write!(s, "{}", g.r16(p.wrapping_add(k * 2)));
         }
         s.push_str("]}");
     }
@@ -129,8 +142,10 @@ fn pool(s: &mut String, g: &Game, tkey: &str, rkey: &str, tbl: u16, slots: u16, 
 }
 
 /// 一筆逐幀紀錄，不含 `emu`。`emu` 是模擬器專屬欄位，比對時忽略。
-pub fn row_json(g: &Game, n: u64, pt: u32, sc: &[u8]) -> String {
-    let d = &g.ds;
+pub fn row_json(m: &Mirror, g: &Game, n: u64, pt: u32, sc: &[u8]) -> String {
+    let dump = m.dump(g.state());
+    let d = &dump;
+    let g = d;
     let mut s = String::with_capacity(2048);
     s.push('{');
     let _ = write!(s, "\"n\":{n},");

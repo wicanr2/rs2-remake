@@ -16,7 +16,8 @@
 
 use super::*;
 use crate::ui::hud::HudFlags;
-use rs2_core::{Rules, a as dseg};
+use rs2_core::Rules;
+use rs2_trace::mirror::a as dseg;
 use rs2_trace::load_inputs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -71,17 +72,17 @@ fn until_playable(s: &mut Session) {
 
 /// 玩家 1 的裝備：兩座砲座與武器字母。
 fn arm(s: &mut Session, weapon: u8) {
-    s.game.poke16(dseg(0x1DAA9), u16::from(weapon));
-    s.game.poke8(dseg(0x1DA8D), b'Y');
-    s.game.poke8(dseg(0x1DA8E), b'Y');
+    s.poke16(dseg(0x1DAA9), u16::from(weapon));
+    s.poke8(dseg(0x1DA8D), b'Y');
+    s.poke8(dseg(0x1DA8E), b'Y');
 }
 
 /// 玩家 2 在場，帶兩座砲座與散彈。
 fn bring_player_two(s: &mut Session) {
-    s.game.poke8(dseg(0x1CFDD), 0x11);
-    s.game.poke16(dseg(0x1DB0B), u16::from(b'S'));
-    s.game.poke8(dseg(0x1DAEF), b'Y');
-    s.game.poke8(dseg(0x1DAF0), b'Y');
+    s.poke8(dseg(0x1CFDD), 0x11);
+    s.poke16(dseg(0x1DB0B), u16::from(b'S'));
+    s.poke8(dseg(0x1DAEF), b'Y');
+    s.poke8(dseg(0x1DAF0), b'Y');
 }
 
 /// 腳本輸入：只看步數 `n`，所以兩次執行吃到的輸入完全相同。每 17 步換一組方向，每 40 步一輪開火

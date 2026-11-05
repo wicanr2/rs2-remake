@@ -8,7 +8,6 @@
 
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::BossScript;
 use crate::video::RowCopy;
 
 /// 腳本的結束位元組：讀到它不前進、不移動，每幀停在最後一個位置。
@@ -17,9 +16,24 @@ pub(crate) const SCRIPT_END: u8 = 0x0F;
 const STEP_ROWS: u16 = 0x0A;
 const STEP_COLS: u16 = 1;
 
+/// 頭目合成圖的捲動腳本（唯讀表格）。腳本是八向指令的位元組串，結束碼見 [`SCRIPT_END`]。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BossScript {
+    /// 第一關頭目，714 步，起點 x = −20、y = 200。
+    Stage1 = 0,
+    /// 第二關中頭目第一層，148 步。
+    Stage2MidA = 1,
+    /// 第二關中頭目第二層，189 步。
+    Stage2MidB = 2,
+    /// 第二關頭目，704 步，以 1Fh 結束。
+    Stage2Boss = 3,
+    /// 第三關頭目，758 步。
+    Stage3 = 4,
+}
+
 /// 一層頭目合成圖。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BossLayer {
+pub struct BossLayer {
     /// 畫到顯示頁的起始像素列（會是負數，位元組補數）。
     pub y: u16,
     /// 水平位置，單位是位元組；繪製時以 `-x` 當水平位移。
@@ -30,7 +44,7 @@ pub(crate) struct BossLayer {
 
 /// 三層合成圖。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BossLayers {
+pub struct BossLayers {
     pub layers: [BossLayer; 3],
 }
 
@@ -59,9 +73,9 @@ impl Heading {
 }
 
 impl BossLayer {
-    /// 從頭開始：位置與腳本。
-    pub(crate) fn restart(&mut self, y: u16, x: u16, script: BossScript) {
-        *self = BossLayer { y, x, script: script.start() };
+    /// 從頭開始：位置與腳本起點（`start` 是腳本表的鍵）。
+    pub(crate) fn restart(&mut self, y: u16, x: u16, start: u16) {
+        *self = BossLayer { y, x, script: start };
     }
 
     /// 腳本走一步（原版 `sub_15BB0`、`sub_15BCB`）。`read` 讀資料段的腳本位元組，`cleared` 是過關旗標：
@@ -97,11 +111,17 @@ impl BossLayer {
 }
 
 impl Core {
+    /// 第 `layer` 層從頭開始：位置與腳本。
+    pub(crate) fn restart_boss_layer(&mut self, layer: usize, y: u16, x: u16, script: BossScript) {
+        let start = self.tables.boss_start(script as usize);
+        self.scenes.boss.layers[layer].restart(y, x, start);
+    }
+
     /// 第 `layer` 層走一步，回傳腳本位元組（原版放在 `byte_1DB5A`）。
     pub(crate) fn step_boss_layer(&mut self, layer: usize) -> u8 {
         let cleared = self.stage_cleared();
         let mut l = self.scenes.boss.layers[layer];
-        let byte = l.step(cleared, |at| self.table_byte(at));
+        let byte = l.step(cleared, |at| self.tables.script_byte(at));
         self.scenes.boss.layers[layer] = l;
         byte
     }

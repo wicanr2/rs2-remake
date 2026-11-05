@@ -16,8 +16,9 @@
 //! 要改就直接改預設值）。狀態逐筆等待都比對，取樣只影響縮成 320x200 的畫面比對與統計。
 //! 比對筆數為 0、任何一份收據缺少、真 HD 載入 0 張都算失敗。
 
-use rs2_core::{DrawCmd, Exit, Fixes, Game, Input, a};
+use rs2_core::{DrawCmd, Exit, Fixes, Game, Input};
 use rs2_gfx::{MonoAssets, MonoHdSink, MonoKind, MonoSink};
+use rs2_trace::mirror::{Mirror, a};
 use rs2_trace::mono::{MonoReceipt, load_mono_receipt};
 use rs2_trace::wait::entry_of;
 use rs2_trace::{Inputs, load_inputs};
@@ -353,7 +354,8 @@ impl Run {
 fn replay(inputs: &Inputs, rc: &MonoReceipt, run: &mut Run) -> Result<usize, String> {
     let total = rc.rows.len();
     let entry = entry_of(rc.name.strip_prefix("wm_").map(|s| format!("wt_{s}")).as_deref().unwrap_or(&rc.name))?;
-    let mut g = Game::from_snapshot(inputs.game_files(), &rc.entry_ds, entry, Fixes::NONE);
+    let m = Mirror::from_dump(&rc.entry_ds);
+    let mut g = Game::from_state(inputs.game_files(), m.load_bytes(&rc.entry_ds), entry, Fixes::NONE);
     g.set_terrain_scr(true);
     run.apply(&g.take_draws());
     let mut done = 0usize;
@@ -367,14 +369,14 @@ fn replay(inputs: &Inputs, rc: &MonoReceipt, run: &mut Run) -> Result<usize, Str
             while next_poke < rc.pokes.len() && rc.pokes[next_poke].row <= done {
                 let p = rc.pokes[next_poke];
                 if p.width == 1 {
-                    g.poke8(a(p.addr), p.val as u8);
+                    m.poke8(g.state_mut(), a(p.addr), p.val as u8);
                 } else {
-                    g.poke16(a(p.addr), p.val);
+                    m.poke16(g.state_mut(), a(p.addr), p.val);
                 }
                 next_poke += 1;
             }
         }
-        let wait_pending = started && g.ds.r16(a(0x273B9)) == 0;
+        let wait_pending = started && g.state().flow.clock.since_wait == 0;
         let use_sct = row.sct.len() == row.sc.len();
         let mut sc: Vec<u8> = Vec::new();
         while fed_n < row.sc.len() && (wait_pending || !use_sct || row.sct[fed_n] as usize <= polls) {
@@ -417,7 +419,7 @@ fn replay(inputs: &Inputs, rc: &MonoReceipt, run: &mut Run) -> Result<usize, Str
             polls = 0;
             polls_for = done;
         }
-        if frame.exit.is_none() && g.ds.r16(a(0x273B9)) != 0 {
+        if frame.exit.is_none() && g.state().flow.clock.since_wait != 0 {
             polls += 1;
         }
         if done == last_done {

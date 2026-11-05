@@ -24,7 +24,7 @@ pub(crate) const MUSIC_OFF: u8 = b'N';
 
 /// 音效開關與喇叭參數。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Sound {
+pub struct Sound {
     /// `byte_1CBCE`：[`MUSIC_ON`] 才播放、停止音樂。沒有 AdLib 時原版把 `10AD4h`、`10B12h` 改成 `retn`，重製一律當作有。
     /// 靜音時 [`Core::sync_sound_switch`] 改成 [`MUSIC_OFF`]。
     pub music: u8,
@@ -37,7 +37,7 @@ pub(crate) struct Sound {
 
 /// 喇叭參數式引擎的五個字組（`docs/re/13-audio-and-misc.md` 第 4.2 節的表）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SpeakerParams {
+pub struct SpeakerParams {
     /// `word_26850`。
     pub duration: u16,
     /// `word_26852`。
@@ -127,8 +127,7 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut c = Core::for_test(Start::Demo, Fixes::NONE);
         c.audio.clear();
         c
     }

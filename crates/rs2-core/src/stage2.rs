@@ -16,7 +16,7 @@ use crate::entity::Timetable;
 use crate::flow::{ChainShift, STAGE_2, STAGE_RUNNING};
 use crate::game::{Core, Exit, sample};
 use crate::loader::DemoFile;
-use crate::mirror::{Palette, StageBuffers};
+use crate::flow::{Palette, StageBuffers};
 use crate::video::{Page, SCRATCH_A, SCRATCH_B};
 
 /// 第一段的最後一幀（遞增前的計數）。這一幀同時把中頭目合成圖寫進暫存區 B。
@@ -32,7 +32,7 @@ const FADE_AFTER_FRAME: u16 = 0xA0;
 
 /// 近景條的相位與起點：每幀相位減 1，用完起點左移一位元組。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Strip {
+pub struct Strip {
     pub phase: u16,
     pub start: u16,
 }
@@ -44,7 +44,7 @@ const FADE_FIRST: usize = 24;
 
 /// 第二關背景的狀態。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Backdrop {
+pub struct Backdrop {
     /// `word_1D7BE`、`word_1D7C0`：火焰面底端與頂端的像素列。
     pub flame_bottom: u16,
     pub flame_top: u16,
@@ -229,16 +229,15 @@ impl Core {
 
     /// 淡出工作表回到 `stage2` 調色盤的樣子（原版 `sub_132AB`）。
     fn reset_fade(&mut self) {
-        let table = Palette::Stage2.table_offset();
-        self.scenes.stage2.fade = self.table_bytes::<FADE_BYTES>(table);
+        let dac = self.tables.palette(Palette::Stage2).dac;
+        self.scenes.stage2.fade = std::array::from_fn(|k| dac[k]);
     }
 
     /// 用工作表設調色盤，再把色號 8 到 14 的 21 個位元組各減 1，到 0 為止（原版 `sub_13894`）。
     fn fade_out_one_step(&mut self) {
-        let table = Palette::Stage2Fade.table_offset();
         let fade = self.scenes.stage2.fade;
-        self.set_dac_overlay(0, table, &fade);
-        self.set_dac_overlay(0x30, table, &fade);
+        self.set_dac_overlay(0, Palette::Stage2Fade, &fade);
+        self.set_dac_overlay(0x30, Palette::Stage2Fade, &fade);
         for level in &mut self.scenes.stage2.fade[FADE_FIRST..] {
             *level = level.saturating_sub(1);
         }
@@ -252,17 +251,14 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::Demo, Fixes::NONE)
+        Core::for_test(Start::Demo, Fixes::NONE)
     }
 
     #[test]
     fn the_fade_table_is_the_first_45_bytes_of_the_stage2_palette() {
         let mut c = core();
-        let table = Palette::Stage2.table_offset();
-        for k in 0..48u16 {
-            c.ds.w8(table + k, k as u8 + 1);
-        }
+        let dac: Vec<u8> = (1..=48).collect();
+        c.tables_mut().put_dac(Palette::Stage2, 0, &dac);
         c.reset_fade();
         assert_eq!(c.scenes.stage2.fade[0], 1);
         assert_eq!(c.scenes.stage2.fade[44], 45);
@@ -282,12 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn the_fade_palette_takes_its_last_three_bytes_from_the_data_segment() {
+    fn the_fade_palette_takes_its_last_three_bytes_from_the_table() {
         let mut c = core();
-        let table = Palette::Stage2Fade.table_offset();
-        for k in 45..48u16 {
-            c.ds.w8(table + k, 0x80 + k as u8);
-        }
+        c.tables_mut().put_dac(Palette::Stage2Fade, 45, &[0x80 + 45, 0x80 + 46, 0x80 + 47]);
         c.scenes.stage2.fade = [7; FADE_BYTES];
         c.draws.clear();
         c.fade_out_one_step();

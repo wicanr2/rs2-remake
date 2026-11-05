@@ -14,7 +14,7 @@
 //! | 負對照 | 改收據一個掃描碼，雜湊必須不同，且不同的第一步不早於被改的那一步 |
 //! | HD | 有 `RS2_HD` 才跑：HD 圖開關與中途切換，雜湊相同 |
 
-use rs2_core::{Entry, Fixes, Game, Input, Start, boot_ds_with_dm1};
+use rs2_core::{Fixes, Game, Input, Start};
 use rs2_formats::sha256_hex;
 use rs2_gfx::Assets;
 use rs2_trace::wait::{ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
@@ -115,13 +115,14 @@ fn four_combos(name: &str, base: &[&str], steps: usize) -> usize {
 /// 以 `rs2-core` 直接重播收據，每步整段 `Dseg` 的雜湊。
 fn core_replay_hashes(start: Start, fixes: Fixes, receipt: &Path, steps: usize) -> Vec<String> {
     let inputs = load_inputs(&env_path("RS2_ORIG")).unwrap();
+    let m = inputs.mirror();
     let mut g = Game::new(&inputs.image, &inputs.dm1, start, fixes);
     let text = std::fs::read_to_string(receipt).unwrap();
     let mut out = Vec::new();
     for line in text.lines().filter(|l| !l.trim().is_empty()).take(steps) {
         let sc = parse_sc(line);
         g.step(&Input { scancodes: &sc }, &mut |_g: &Game, _pt: u32| {});
-        out.push(sha256_hex(g.state_hash_input()));
+        out.push(sha256_hex(m.dump(g.state()).bytes()));
     }
     out
 }
@@ -371,11 +372,11 @@ fn b7_title_matches_core() {
     let r = run("title-core", &["--original-bugs", "--headless-steps", &steps]);
     assert_eq!(r.hashes.len(), TITLE_STEPS);
     let inputs = load_inputs(&env_path("RS2_ORIG")).unwrap();
-    let boot = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
-    let mut g = Game::from_snapshot(inputs.game_files(), boot.bytes(), Entry::Title, Fixes::NONE);
+    let m = inputs.mirror();
+    let mut g = Game::boot(inputs.game_files(), Fixes::NONE);
     for (i, want) in r.hashes.iter().enumerate() {
         g.step(&Input { scancodes: &[] }, &mut |_g: &Game, _pt: u32| {});
-        assert_eq!(&sha256_hex(g.state_hash_input()), want, "第 {} 步", i + 1);
+        assert_eq!(&sha256_hex(m.dump(g.state()).bytes()), want, "第 {} 步", i + 1);
     }
     println!("B7 標題：{} 筆與 rs2-core 相同", r.hashes.len());
 }

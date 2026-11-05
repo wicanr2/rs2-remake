@@ -1,36 +1,40 @@
-//! RS-2 第一關的決定性模擬。照機器碼逐函式移植，不碰時間、檔案、亂數源或繪圖。
-//! 規格：`docs/spec/001-rust-first-stage.md`。
+//! RS-2 的決定性模擬。不碰時間、檔案、亂數源或繪圖，所以固定輸入就能逐幀重播。
+//! 規格：`docs/spec/001-rust-first-stage.md`、`docs/spec/004-rewrite-and-delivery.md`。
+//!
+//! 遊戲的狀態是 [`State`]，唯讀表格是 [`Tables`]（啟動時從 `S.EXE` 解包映像解析，雜湊不符就拒絕）。
+//! 遊戲不認識原版的 64 KB 資料段，資料段與狀態之間的對應在 `rs2-trace` 的 `Mirror`。
 
 mod ai;
-mod boss_scroll;
+pub mod boss_scroll;
 mod cards;
 pub mod draw;
-pub mod dseg;
-mod ebullet;
-mod entity;
+pub mod ebullet;
 mod ending;
-mod flow;
+pub mod entity;
 #[cfg(test)]
 mod fix_tests;
-mod fx;
+pub mod flow;
+pub mod fx;
 pub mod game;
+pub mod grid;
 mod intro;
-mod loader;
-mod menu;
-mod mirror;
-mod pbullet;
-mod player;
+pub mod loader;
+pub mod menu;
+pub mod pbullet;
+pub mod player;
 mod scene;
-mod scenery;
-mod sound;
-mod stage1;
-mod stage2;
-mod stage3;
-mod stage4;
-mod title;
-mod video;
+pub mod scenery;
+pub mod sound;
+pub mod stage1;
+pub mod stage2;
+pub mod stage3;
+pub mod stage4;
+pub mod tables;
+pub mod title;
+pub mod video;
 
 pub use draw::{AudioCmd, BegGroup, BlitCmd, DrawCmd, MixFile, ObjId, Op, Pool, ShtGroup};
-pub use dseg::{Dseg, a};
-pub use game::{A0_EXEMPT, Core, DS_EXEMPT, Entry, Exit, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Rules, Start, boot_ds, boot_ds_with_dm1, ds_exempt};
+pub use game::{Core, Entry, Exit, Fixes, Frame, Game, GameFiles, HudStatus, Input, PlayerStatus, Rules, Start, State, boot_state};
+pub use grid::Grids;
 pub use player::{WAVE_CHARGE_FULL, WAVE_LEVEL_1, WAVE_LEVEL_2, WAVE_LEVEL_3};
+pub use tables::Tables;

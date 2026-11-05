@@ -12,9 +12,10 @@
 //! | L8 全流程等價 | 全部 `wt_*` 收據，原版圖、不補間，與 `VgaSink::render_page(畫頁)` 逐像素相同；L8b 是補間版（alpha 0.5 渲染後 alpha 1.0 仍相同） |
 //! | L9 全流程 HD | 全部 `wt_*` 收據用 HD 圖跑，`missing_hd()` 為空 |
 
-use rs2_core::{BlitCmd, DrawCmd, Dseg, Fixes, Game, Input, ObjId, Op, Pool, Start};
+use rs2_core::{BlitCmd, DrawCmd, Fixes, Game, Input, ObjId, Op, Pool, Start};
 use rs2_gfx::pal::{PALETTES, fingerprint};
 use rs2_gfx::{Assets, HdAssets, LayerSink, RenderOpts, VgaSink, png};
+use rs2_trace::mirror::Dseg;
 use rs2_trace::{load_inputs, parse_sc};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -754,7 +755,7 @@ fn l7_hd_files_decode_and_match_original_sizes() {
 // 兩個接收端都不設 `set_bank_dump`：片尾的越界圖號兩邊都不畫（各記一次異常，數量要相同）。
 // 環境變數 `RS2_WAIT=子字串` 只跑名稱含它的收據（同 `tools/dos/wait_test.sh`）。
 
-use rs2_core::a as ds_addr;
+use rs2_trace::mirror::a as ds_addr;
 use rs2_trace::wait::{Receipt, ReplayEvent, ReplayOpts, Verdict, load_receipt, replay_observed};
 use rs2_trace::Inputs;
 use std::collections::BTreeMap;

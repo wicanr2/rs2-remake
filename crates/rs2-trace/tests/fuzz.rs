@@ -14,7 +14,8 @@
 //! 比對筆數為 0、收據缺 `.end`、收據筆數與 `.end` 不符，都算失敗。
 //! 環境變數：`RS2_FUZZ` 給子字串時只跑名稱含它的收據；`RS2_DS_REPORT` 有值時資料段差異改為印出（含豁免）不判失敗，供探索用。
 
-use rs2_core::{A0_EXEMPT, Exit, Fixes, Game, Input, Start, a};
+use rs2_core::{Exit, Fixes, Game, Input, Start};
+use rs2_trace::mirror::{A0_EXEMPT, a};
 use rs2_trace::{describe_diff, load_inputs, parse_sc, row_json, strip_emu, Inputs};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -127,7 +128,7 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     (0x9CCA, 0x9CCA, "繪製參數"),
     // byte_26890：sub_1890D、18993、189C1、162B1 寫，sub_18A1F、18A61（數字繪製）讀。
     (0x9CD0, 0x9CD0, "數字繪製暫存"),
-    // 特效領域重寫（規格 004）：工作變數與參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名四項相同。
+    // 特效領域重寫（規格 004）：工作變數與參數改成區域變數、函式參數，與 `rs2_trace::mirror::DS_EXEMPT` 的同名四項相同。
     // word_20B74：只有 sub_17C6C 寫後讀。
     (0x3FB4, 0x3FB5, "特效腳本指標暫存"),
     // word_20B76：sub_17CB6 寫，sub_17D2C 讀。
@@ -136,7 +137,7 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     (0x3FB8, 0x3FB9, "特效字母"),
     // word_20B80：只有 sub_17CB6 寫，沒有指令讀。
     (0x3FC0, 0x3FC1, "特效腳本指標備份（只寫不讀）"),
-    // 敵彈領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名六項相同。
+    // 敵彈領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_trace::mirror::DS_EXEMPT` 的同名六項相同。
     // word_1F7C2 起 8 個字組：sub_1744A 一族（8 張轉向表）寫，只有 sub_175EA 讀。
     (0x2C02, 0x2C11, "敵彈轉向表"),
     // byte_1F7D2：sub_17631 寫，只有 sub_1779B 讀。
@@ -149,14 +150,14 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     (0x32AD, 0x32B2, "敵彈開火起點與釋放旗標"),
     // word_200F3 與工作區 3535h 起 15 個字組：sub_1739B 寫滿後才由 sub_173C5 一族讀；word_200F3 另是 sub_16D3B 一族寫、sub_16CEA 讀的樣板位址。
     (0x3533, 0x3552, "敵彈樣板位址與工作區"),
-    // 玩家彈領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名三項相同。
+    // 玩家彈領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_trace::mirror::DS_EXEMPT` 的同名三項相同。
     // word_1F1AA 至 1F1B6：追蹤彈四向格距與掃描範圍，只有 sub_16BA8 一族讀寫。
     (0x25EA, 0x25F7, "玩家彈追蹤彈格距與掃描範圍"),
     // word_1F1BC、1F1BE、byte_1F1C0、word_1F1C1、1F1C3、1F1C5：發射參數、命中格值、釋放旗標。
     (0x25FC, 0x2606, "玩家彈發射參數、命中格值與釋放旗標"),
     // word_1F46F 與 28B1h 起 16 個字組：記錄位址、樣板位址與每槽工作區。
     (0x28AF, 0x28D0, "玩家彈記錄位址與工作區"),
-    // 敵人領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名四項相同。
+    // 敵人領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_trace::mirror::DS_EXEMPT` 的同名四項相同。
     // word_1CFEA：sub_10E33 寫 0，sub_1617A 先寫後讀，sub_110A4 讀寫。
     (0x042A, 0x042B, "敵人亂數索引傳遞字"),
     // word_1E6B6：sub_15F8D 寫，sub_15E44 讀，sub_164F3 寫後讀。
@@ -165,7 +166,7 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     (0x1B06, 0x1B09, "敵人圖框、移動碼與槽號"),
     // word_1F174 與 25B6h 起 24 個字組：記錄位址與每槽工作區。
     (0x25B4, 0x25E5, "敵人記錄位址與工作區"),
-    // 玩家領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_core::DS_EXEMPT` 的同名六項相同。
+    // 玩家領域重寫（規格 004）：工作變數與呼叫參數改成區域變數、函式參數，與 `rs2_trace::mirror::DS_EXEMPT` 的同名六項相同。
     // byte_1DA8A、byte_1DAEC：砲座接觸的格值，掃描函式先歸零再寫，只有它呼叫的 sub_14C18、sub_15746 讀。
     (0x0ECA, 0x0ECA, "玩家 1 砲座接觸的格值"),
     (0x0F2C, 0x0F2C, "玩家 2 砲座接觸的格值"),
@@ -175,10 +176,10 @@ const DS_EXTRA_EXEMPT: &[(u16, u16, &str)] = &[
     // byte_1DAA8、byte_1DB0A：本幀撿到的道具，sub_14C85、sub_157B3 先設 N，只有它們呼叫的升級函式讀。
     (0x0EE8, 0x0EE8, "玩家 1 本幀撿到的道具"),
     (0x0F4A, 0x0F4A, "玩家 2 本幀撿到的道具"),
-    // 標題與片尾領域重寫（規格 004）：過場字樣的位置暫存改成區域結構，與 `rs2_core::DS_EXEMPT` 的同名一項相同。
+    // 標題與片尾領域重寫（規格 004）：過場字樣的位置暫存改成區域結構，與 `rs2_trace::mirror::DS_EXEMPT` 的同名一項相同。
     // word_1D148 至 1D156：sub_117BF、11C6B、11E46、121DD、12379 各自先寫初值，只有各卡的步驟函式讀寫。
     (0x0588, 0x0597, "過場與開場的字樣位置暫存"),
-    // 流程與關卡領域重寫（規格 004），與 `rs2_core::DS_EXEMPT` 的同名三項相同，理由寫在那裡。
+    // 流程與關卡領域重寫（規格 004），與 `rs2_trace::mirror::DS_EXEMPT` 的同名三項相同，理由寫在那裡。
     // byte_1DB5A、word_1DB5B、word_1DB5D：頭目合成圖腳本直譯器的工作變數，每次由該層的位置複製進來。
     (0x0F9A, 0x0F9E, "頭目合成圖腳本位元組與位置的工作變數"),
     // word_1DB6B：腳本讀取位置的工作變數。
@@ -246,6 +247,7 @@ fn replay_one(inputs: &Inputs, trace: &Path, pokes: &[Poke], end: &End, dumps: &
     if lines.len() != end.rows {
         return Err(format!("收據有 {} 筆，但 .end 記 rows={}（收據被截斷或 settle 之後又有取樣）", lines.len(), end.rows));
     }
+    let m = inputs.mirror();
     let mut g = Game::new(&inputs.image, &inputs.dm1, Start::NewGame { difficulty: None }, Fixes::NONE);
     let mut st = Stats { pokes_total: pokes.len(), ..Stats::default() };
     let mut next_poke = 0;
@@ -254,16 +256,17 @@ fn replay_one(inputs: &Inputs, trace: &Path, pokes: &[Poke], end: &End, dumps: &
         while next_poke < pokes.len() && pokes[next_poke].row == n {
             let p = &pokes[next_poke];
             if p.width == 1 {
-                g.poke8(a(p.addr), p.val as u8);
+                m.poke8(g.state_mut(), a(p.addr), p.val as u8);
             } else {
-                g.poke16(a(p.addr), p.val);
+                m.poke16(g.state_mut(), a(p.addr), p.val);
             }
             st.pokes_applied += 1;
             next_poke += 1;
         }
         let sc = parse_sc(want);
         // 按著 Esc 走到一輪結尾就進暫停，這一筆的掃描碼是暫停之後才送的（腳本用 untilpc 10ED8h 等它）。
-        if g.ds.r8(0xA8CC) == 1 && g.at_round_end() {
+        // 鍵表的 Esc 項（掃描碼 1）是 1：按著。
+        if g.state().flow.controls.keys.0[1] == 1 && g.at_round_end() {
             let f = g.step(&Input { scancodes: &[] }, &mut |_g: &Game, _pt: u32| {});
             if !f.paused {
                 return Err(format!("第 {n} 筆前應該進暫停"));
@@ -273,9 +276,9 @@ fn replay_one(inputs: &Inputs, trace: &Path, pokes: &[Poke], end: &End, dumps: &
         let mut snap: Option<Vec<u8>> = None;
         let want_snap = dumps.contains_key(&n);
         let f = g.step(&Input { scancodes: &sc }, &mut |g: &Game, pt: u32| {
-            got = Some(row_json(g, n as u64, pt, &sc));
+            got = Some(row_json(&m, g, n as u64, pt, &sc));
             if want_snap {
-                snap = Some(g.ds.bytes().to_vec());
+                snap = Some(m.dump(g.state()).bytes().to_vec());
             }
         });
         let Some(got) = got else {

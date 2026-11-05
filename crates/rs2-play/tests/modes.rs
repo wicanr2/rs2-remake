@@ -190,7 +190,7 @@ fn full_flow_with_mode_switches_keeps_every_hash() {
             let codes: Vec<String> = sc.iter().map(|c| c.to_string()).collect();
             lines.push_str(&format!("{{\"sc\":[{}]}}\n", codes.join(",")));
             want.push(rs2_formats::sha256_hex(ds));
-            letters.push(ds[rs2_core::a(0x1CFDB) as usize]);
+            letters.push(ds[rs2_trace::mirror::a(0x1CFDB) as usize]);
         }
     });
     assert!(matches!(v, Verdict::Pass { .. }), "全流程收據沒有通過");

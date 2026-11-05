@@ -5,14 +5,14 @@
 
 mod background;
 
-pub(crate) use background::Backdrop;
+pub use background::Backdrop;
 
 use crate::draw::{MixFile, ShtGroup};
 use crate::entity::Timetable;
 use crate::flow::{ChainShift, FRAME_TICKS, STAGE_1, STAGE_RUNNING};
 use crate::game::{Core, Exit, Req, sample};
 use crate::loader::DemoFile;
-use crate::mirror::Palette;
+use crate::flow::Palette;
 use crate::video::Page;
 
 /// 計數 1：換成第一關的調色盤。

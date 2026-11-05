@@ -8,8 +8,8 @@
 //! 結果分三類：通過（全部筆數相同）、未移植（比到某一筆之後遇到 `unimplemented!`）、不同（有一筆不同或重製 panic）。
 //! 有「不同」才失敗；比對筆數合計為 0 也失敗（缺收據或全部尚未移植時不能看起來像通過）。
 
-use rs2_core::{boot_ds_with_dm1, ds_exempt};
 use rs2_gfx::Assets;
+use rs2_trace::mirror::{Mirror, ds_exempt};
 use rs2_trace::wait::{Receipt, ReplayOpts, Verdict, ds_diff, load_receipt, replay, replay_with};
 use rs2_trace::{Inputs, load_inputs};
 use std::path::PathBuf;
@@ -87,7 +87,7 @@ fn wait_replay() {
     assert!(compared > 0, "比對筆數為 0（全部收據都在第一筆之前就遇到未移植的函式？）");
 }
 
-/// 正式遊戲的路徑：資料段從 `boot_ds_with_dm1` 開始，不用入口傾印，四份從標題開始的收據每筆仍要相同。
+/// 正式遊戲的路徑：狀態從 `boot_state` 開始，不用入口傾印，四份從標題開始的收據每筆仍要相同。
 /// `DS_EXEMPT` 裡如果有邏輯真的會讀的狀態，這裡會變成不同或 panic。
 #[test]
 #[ignore]
@@ -166,12 +166,13 @@ fn wait_negative_controls() {
     println!("負對照 5 項都變成不同（正對照比對 {want_at_least} 筆）");
 }
 
-/// B1：`boot_ds` 與標題入口傾印相同，差異只在 `DS_EXEMPT`。標題入口的收據都從同一個入口開始，逐份比。
+/// B1：`boot_state` 與標題入口傾印相同，差異只在 `DS_EXEMPT`。標題入口的收據都從同一個入口開始，逐份比。
 #[test]
 #[ignore]
 fn b1_boot_state() {
     let inputs = load_inputs(&env_path("RS2_ORIG")).expect("載入原版");
-    let boot = boot_ds_with_dm1(&inputs.image, &inputs.dm1);
+    let mirror = Mirror::new(&inputs.image);
+    let boot = mirror.dump(&inputs.boot_state());
     // 分類用的傾印（不進版控）：RS2_OUT/boot_ds.bin，tools/dos 的分析腳本拿它和 entry.ds、映像三方比。
     if let Some(o) = std::env::var_os("RS2_OUT") {
         let _ = std::fs::write(PathBuf::from(o).join("boot_ds.bin"), boot.bytes());
@@ -192,8 +193,8 @@ fn b1_boot_state() {
     assert!(bad.is_empty(), "{}", bad.join("\n"));
     assert!(checked > 0, "比對筆數為 0：找不到任何標題入口的 entry.ds");
     println!("B1 比對 {checked} 份標題入口傾印");
-    // boot_ds 不碰標題寫的四個值（Core::new 為了直接進第一關而設）：維持映像值。
-    let img = rs2_core::Dseg::from_image(&inputs.image);
+    // boot_state 不碰標題寫的四個值（Core::new 為了直接進第一關而設）：維持映像值。
+    let img = mirror.base();
     for o in [0x041Cu16, 0x041D, 0x03EC, 0x03EB] {
         assert_eq!(boot.r8(o), img.r8(o), "dseg:{o:04X} 應維持映像值");
     }

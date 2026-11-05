@@ -11,16 +11,22 @@
 //! | `flow/palette.rs` | 調色盤 |
 
 mod clock;
+mod dos;
 mod hud;
 mod keyboard;
 mod palette;
 
-pub(crate) use clock::Clock;
-pub(crate) use keyboard::{Cheat, Controls, FLAG_OFF, FLAG_ON, FireFlags};
+pub use clock::Clock;
+pub use dos::DosBook;
+pub(crate) use dos::StageBuffers;
+pub use keyboard::{Cheat, Controls, FireFlags, KeyTable};
+pub(crate) use keyboard::{FireFlag, Key};
+#[cfg(test)]
+pub(crate) use keyboard::{FLAG_OFF, FLAG_ON};
+pub(crate) use palette::Palette;
 
 use crate::boss_scroll::BossLayers;
 use crate::game::{Core, Exit, Req};
-use crate::mirror::Key;
 use crate::stage1::Backdrop as Stage1Backdrop;
 use crate::stage2::Backdrop as Stage2Backdrop;
 use crate::stage3::MapScroll;
@@ -48,9 +54,18 @@ pub(crate) const STAGE_CLEARED: u8 = b'F';
 const TAMPER_START: u16 = 0x10E;
 const TAMPER_FLOOR: u16 = 0xD2;
 
+/// 難度加成：`word_1E6B2` 加在敵人的耐久上，`word_1E6B4` 加在開火亂數上（文件第 9.1 節）。選單的四段難度設定它們。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DifficultyBonus {
+    /// 對敵人耐久的加成（原版 `word_1E6B2`，0 或 1）。
+    pub hp: u16,
+    /// 對開火亂數的加成（原版 `word_1E6B4`，0、2 或 3）。
+    pub fire: u16,
+}
+
 /// 關卡流程的狀態。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Flow {
+pub struct Flow {
     /// `byte_1CFDB`：目前的關卡字母。
     pub stage: u8,
     /// `byte_1CFAD`：過關旗標。
@@ -61,13 +76,30 @@ pub(crate) struct Flow {
     pub integrity_mark: u8,
     /// `word_1B02`：進關卡時設 10Eh，第一關每輪減 1 到 D2h。沒有人讀它的值，只在自己的函式裡比較。
     pub tamper_countdown: u16,
+    /// `word_1CFE2`：關卡的幀計數。
+    pub frame: u16,
+    /// `byte_1CFDC`：展示旗標，標題寫（`Y` 是示範，`N` 是正式遊戲），關卡與玩家讀。`N` 以外的值都當示範。
+    pub demo: u8,
+    /// `byte_1CFAB`：標題迴圈每圈寫 `Y`。進第一關見到不是 `N` 就換 `B.MIX` 開音樂。
+    pub from_title: u8,
+    /// `byte_1CFAC`：初值 `N`，啟動見到 `N` 轉入標題迴圈；標題迴圈第一行改 `Y`。
+    pub title_entered: u8,
+    /// `byte_1D3A2`：密碼檢查通過旗標，映像是 `N`，通過時寫 `Y`。第二關不是 `Y` 就停在無限迴圈。
+    pub password_accepted: u8,
+    /// `word_1D3B0`：密碼檢查未通過的旗標。破解組補丁讓檢查恆通過，重製裡沒有人寫它，恆為 0。
+    pub password_rejected: u16,
+    /// `byte_274EC`：讀檔失敗時換磁片提示的磁碟號字元。標題在第二關起設成 `'2'`，重製沒有人讀。
+    pub disk_hint: u8,
+    pub difficulty: DifficultyBonus,
+    /// 各關入口向 DOS 配置十塊圖庫緩衝區的簿記。
+    pub dos: DosBook,
     pub clock: Clock,
     pub controls: Controls,
 }
 
 /// 各關背景的狀態。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Scenes {
+pub struct Scenes {
     pub stage1: Stage1Backdrop,
     pub stage2: Stage2Backdrop,
     pub map: MapScroll,
@@ -90,6 +122,136 @@ impl Flow {
 }
 
 impl Core {
+    /// 目前是不是第三關（有 G4 地形格）。頭目段關卡字母改成小寫 `c`，不算。
+    pub(crate) fn on_terrain_stage(&self) -> bool {
+        self.flow.stage == STAGE_3
+    }
+
+    /// 是不是第一關（原版 `byte_1CFDB` = `A`）。
+    pub(crate) fn on_first_stage(&self) -> bool {
+        self.flow.stage == STAGE_1
+    }
+
+    /// 關卡的幀計數（原版 `word_1CFE2`）。
+    pub(crate) fn stage_frame(&self) -> u16 {
+        self.flow.frame
+    }
+
+    /// 幀計數歸零（原版 `word_1CFE2`）。進關卡與片尾重播用。
+    pub(crate) fn reset_stage_frame(&mut self) {
+        self.flow.frame = 0;
+    }
+
+    /// 幀計數加 1。
+    pub(crate) fn advance_stage_frame(&mut self) {
+        self.flow.frame = self.flow.frame.wrapping_add(1);
+    }
+
+    /// 幀計數設成 `frame`：第一關釘在 288h、第三關釘在 474h、第四關進場設 1。
+    pub(crate) fn set_stage_frame(&mut self, frame: u16) {
+        self.flow.frame = frame;
+    }
+
+    /// 設過關旗標（原版 `byte_1CFAD` = `F`）。
+    pub(crate) fn mark_stage_cleared(&mut self) {
+        self.flow.clear = STAGE_CLEARED;
+    }
+
+    /// 過關旗標是不是已設（原版 `byte_1CFAD` = `F`）：主迴圈改播連爆，玩家邏輯與頭目背景停止。
+    pub(crate) fn stage_cleared(&self) -> bool {
+        self.flow.is_cleared()
+    }
+
+    /// 是不是在播放展示錄影（原版 `byte_1CFDC` = `Y`）。
+    pub(crate) fn demo_playing(&self) -> bool {
+        self.flow.demo == b'Y'
+    }
+
+    /// 是不是示範模式：只有 `N` 是一般模式（原版 `cmp byte_1CFDC, 4Eh`）。
+    pub(crate) fn in_demo_mode(&self) -> bool {
+        self.flow.demo != b'N'
+    }
+
+    /// 示範模式的旗標（原版 `byte_1CFDC`）：`on` 寫 `Y`，否則寫 `N`。
+    pub(crate) fn set_demo_mode(&mut self, on: bool) {
+        self.flow.demo = if on { b'Y' } else { b'N' };
+    }
+
+    /// 標題迴圈來的（原版 `byte_1CFAB` 不是 `N`）：第一關要換 `B.MIX` 開音樂。
+    pub(crate) fn started_from_title(&self) -> bool {
+        self.flow.from_title != b'N'
+    }
+
+    /// 標題迴圈開始（原版 `byte_1CFAC` = `Y`）。
+    pub(crate) fn mark_title_entered(&mut self) {
+        self.flow.title_entered = b'Y';
+    }
+
+    /// 通知第一關：玩家是從標題進來的，要換 `B.MIX` 開音樂（原版 `byte_1CFAB` = `Y`）。
+    pub(crate) fn request_stage_music(&mut self) {
+        self.flow.from_title = b'Y';
+    }
+
+    /// 密碼檢查通過了（原版 `byte_1D3A2` 是 `Y`）。
+    pub(crate) fn password_accepted(&self) -> bool {
+        self.flow.password_accepted == b'Y'
+    }
+
+    /// 密碼檢查是不是沒通過（原版 `word_1D3B0` 非 0）。
+    pub(crate) fn password_rejected(&self) -> bool {
+        self.flow.password_rejected != 0
+    }
+
+    /// 難度對敵人耐久的加成（原版 `word_1E6B2`，0 或 1）。
+    pub(crate) fn hp_bonus(&self) -> u16 {
+        self.flow.difficulty.hp
+    }
+
+    /// 難度對開火亂數的加成（原版 `word_1E6B4`，0、2 或 3）。
+    pub(crate) fn fire_bonus(&self) -> u16 {
+        self.flow.difficulty.fire
+    }
+
+    /// 難度加成（原版 `word_1E6B2` 耐久、`word_1E6B4` 開火），敵人領域從 [`Core::hp_bonus`]、[`Core::fire_bonus`] 讀。
+    pub(crate) fn set_difficulty_bonuses(&mut self, hp: u16, fire: u16) {
+        self.flow.difficulty = DifficultyBonus { hp, fire };
+    }
+
+    /// 換磁片提示的磁碟號字元（原版 `byte_274EC`）。
+    pub(crate) fn set_disk_hint(&mut self, disk: u8) {
+        self.flow.disk_hint = disk;
+    }
+
+    /// 測試用：設關卡字母。
+    #[cfg(test)]
+    pub(crate) fn set_stage_letter(&mut self, letter: u8) {
+        self.flow.stage = letter;
+    }
+
+    /// 測試用：設展示旗標。
+    #[cfg(test)]
+    pub(crate) fn set_demo_playing(&mut self, on: bool) {
+        self.set_demo_mode(on);
+    }
+
+    /// 測試用：設無敵秘技旗標。
+    #[cfg(test)]
+    pub(crate) fn set_invincible_cheat(&mut self, on: bool) {
+        self.flow.controls.cheat.invincible = u16::from(if on { FLAG_ON } else { FLAG_OFF });
+    }
+
+    /// 測試用：密碼檢查通過旗標。
+    #[cfg(test)]
+    pub(crate) fn set_password_accepted(&mut self, on: bool) {
+        self.flow.password_accepted = if on { b'Y' } else { b'N' };
+    }
+
+    /// 測試用：設難度加成。
+    #[cfg(test)]
+    pub(crate) fn set_difficulty(&mut self, hp: u16, fire: u16) {
+        self.set_difficulty_bonuses(hp, fire);
+    }
+
     /// 進關卡的重設（原版 `sub_10E33`）：清地形格、地圖位置、幀計數、三個池，放開捲動與熱鍵，玩家回起點。
     pub(crate) fn reset_stage(&mut self) {
         self.clear_terrain_grid();
@@ -239,12 +401,32 @@ impl Core {
 
 #[cfg(test)]
 mod tests {
+    use super::keyboard::Key;
     use crate::game::{Core, Exit, Fixes, Start};
-    use crate::mirror::Key;
-
+    
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE)
+        Core::for_test(Start::NewGame { difficulty: None }, Fixes::NONE)
+    }
+
+    #[test]
+    fn demo_flag_is_normal_only_for_the_letter_n() {
+        let mut c = core();
+        c.set_demo_mode(false);
+        assert!(!c.in_demo_mode());
+        c.set_demo_mode(true);
+        assert!(c.in_demo_mode());
+        c.flow.demo = b'x';
+        assert!(c.in_demo_mode(), "N 以外的值都當示範，照原版 cmp byte_1CFDC, 4Eh");
+    }
+
+    #[test]
+    fn terrain_stage_is_the_stage_letter_c() {
+        let mut c = core();
+        assert!(!c.on_terrain_stage());
+        c.set_stage_letter(b'C');
+        assert!(c.on_terrain_stage());
+        c.set_stage_letter(b'c');
+        assert!(!c.on_terrain_stage(), "只有大寫 C（43h）算，小寫 c（63h）不算");
     }
 
     #[test]

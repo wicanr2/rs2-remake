@@ -2,17 +2,17 @@
 
 use crate::ai::AiState;
 use crate::draw::{AudioCmd, DrawCmd, ObjId, Pool};
-use crate::dseg::{Dseg, a};
 use crate::ebullet::EnemyBullets;
 use crate::entity::Enemies;
-use crate::flow::{Flow, Scenes};
+use crate::flow::{Cheat, Controls, DosBook, FireFlags, Flow, Palette, Scenes};
 use crate::fx::Effects;
-use crate::loader::{Banks, DemoFile};
-use crate::mirror::{demo_playing, stage_cleared};
+use crate::grid::Grids;
+use crate::loader::{Banks, DemoFile, DemoTape};
 use crate::pbullet::PlayerBullets;
-use crate::player::{Enhanced, Players, ShootView};
+use crate::player::{Enhanced, Player, Players, Pods, ShootView};
 use crate::scenery::Scenery;
 use crate::sound::Sound;
+use crate::tables::Tables;
 use crate::title::Title;
 use crate::video::{DrawParams, Page};
 use std::cell::RefCell;
@@ -36,7 +36,7 @@ impl Fixes {
     pub const ALL: Fixes = Fixes { bullet_slot_carry: true, armor_cell_index: true, seeker_spawn_leak: true, no_hit_hang: true };
 }
 
-/// 改變規則的強化選項（規格 005）。全關等於原版，對拍永遠全關。不屬於原版狀態，不進資料段。
+/// 改變規則的強化選項（規格 005）。全關等於原版，對拍永遠全關。不屬於原版狀態，不進 `State`。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rules {
     pub wave_charge: bool,
@@ -120,192 +120,114 @@ pub struct Frame {
     pub ticks: u16,
 }
 
-/// 第一幀的 `dseg` 差異豁免範圍（規格 001「初始狀態」），閉區間。
-pub const A0_EXEMPT: &[(u16, u16)] = &[
-    (0x000E, 0x000E),
-    (0x0018, 0x0020),
-    (0x0336, 0x034A),
-    (0x0386, 0x03AF),
-    (0x03D5, 0x03E3),
-    (0x0586, 0x0592),
-    (0x07E2, 0x07EE),
-    (0x0EED, 0x0EFC),
-    (0x9CB0, 0x9CB3),
-    (0x9CBC, 0x9CC8),
-    (0x9CE1, 0x9CE5),
-    (0xA7DA, 0xA7DC),
-    (0xA7F7, 0xA7F8),
-    (0xA852, 0xA858),
-    (0xA92A, 0xA931),
-    (0xA94B, 0xA94C),
-    (0xA9AB, 0xA9AB),
-    (0xA8E7, 0xA8E7),
-    (0xA8FA, 0xA8FA),
-    (0xA904, 0xA904),
-    (0xE340, 0xFFFF),
-];
-
-/// 全流程對拍（規格 002）的資料段豁免範圍，閉區間。起始內容是規格 001 的 `A0_EXEMPT`、
-/// 差分模糊測試另外發現的三處、等待計時器。每一項寫明哪些函式讀寫它；新增的項目也要寫理由。
-/// 收據（`wt_*`）與 B1 都沒有出現差異的 A0 項目已刪（`000Eh`、`0586h`～`0592h` 標題動畫計數、按鍵表 `A8E7h`、`A8FAh`、`A904h`），
-/// `0336h`～`034Ah` 收成實際會變的兩段。`RS2_DS_REPORT=1` 跑 `tests/wait.rs` 會列出含豁免的全部差異，可重新檢查。
-pub const DS_EXEMPT: &[(u16, u16, &str)] = &[
-    // ---- A0_EXEMPT（規格 001「初始狀態」）----
-    (0x0018, 0x0020, "文字畫面的游標與屬性；啟動函式專用"),
-    (0x0336, 0x0338, "sub_113B2、sub_1149F 的工作變數；載入專用"),
-    (0x0348, 0x034A, "sub_113B2、sub_1149F 的工作變數；載入專用"),
-    (0x0386, 0x03AF, "sub_10162 的列位址；只有 MGA 分支 sub_1117F 讀"),
-    (0x03D5, 0x03E3, "屬性暫存器工作表；調色盤由 vram／dac 雜湊比對涵蓋"),
-    (0x07E2, 0x07EE, "密碼函式與 INT 8 的 word_1D3A8、word_1D3AE；byte_1D3A2 第二關才讀（130AFh），其餘屬密碼"),
-    (0x0EED, 0x0EFC, "JOYMOUSE 輪詢值；byte_1DAAC = N 時不進按鍵表"),
-    (0x9CB0, 0x9CB3, "圖庫指標與頁；繪製路徑先寫再讀"),
-    (0x9CBC, 0x9CC8, "繪製參數；繪製路徑先寫再讀"),
-    (0x9CE1, 0x9CE5, "數字緩衝；sub_1890D 先寫再讀"),
-    (0xA7DA, 0xA7DC, "音樂驅動與 INT 8 的 word_2739B；音樂不在範圍"),
-    (0xA7F7, 0xA7F8, "word_273B7，見下方計時器"),
-    (0xA852, 0xA858, "舊中斷向量；啟動與離開專用"),
-    (0xA92A, 0xA931, "檔名工作區；載入專用"),
-    (0xA94B, 0xA94C, "檔名工作區；載入專用"),
-    (0xA9AB, 0xA9AB, "檔名工作區；載入專用"),
-    (0xE340, 0xFFFF, "堆疊殘值；映像外，邏輯不讀"),
-    // ---- 差分模糊測試另外發現的（tests/fuzz.rs DS_EXTRA_EXEMPT）----
-    (0x9C9E, 0x9CA3, "word_2685E、26860、26862 blit 暫存；只有 sub_19DA8、19E66、19F3B、19FF9、1A09F、1A144、1A1E6 讀寫"),
-    (0x9CCA, 0x9CCA, "word_2688A 繪製參數；sub_1100A、1117F、162B1 等寫，sub_18993 與 sub_19A0B（blit）讀"),
-    (0x9CD0, 0x9CD0, "byte_26890 數字繪製暫存；sub_1890D、18993、189C1、162B1 寫，sub_18A1F、18A61（數字繪製）讀"),
-    // ---- 全流程對拍發現的（規格 002）----
-    (0xAA2C, 0xAA2C, "檔名緩衝 SHT4.GO（AA25h，7 個字元加結尾）的第 8 個位元組。sub_1AEBC 經 sub_1C738（1C738h 起，加 3 後 mov [bx], dl）\
-                      把它改成 'T' 以開 SHT4.GOT；只有檔案載入（sub_1C82C）讀。重製不碰檔名緩衝（檔案在啟動時已驗過）"),
-    // ---- 等待計時器（規格 002）----
-    (0xA7F7, 0xA7FA, "word_273B7、word_273B9 的 tick 計數。INT 8（1A7CEh、1A7D2h）加 1，只有 sub_11097（11097h、1109Dh）讀寫。\
-                      原版在 1109Dh 取樣時 273B9 還沒歸零（值 >= cx），重製在 WaitDone 已歸零；輪詢迴圈裡 tick 數也不同"),
-    // ---- 特效領域重寫（規格 004）：函式內先寫後讀的工作變數與參數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh refs word_20B74／20B76／20B78／20B80，另 grep 反組譯裡所有 3FB4h 至 3FC1h 的位移形式，沒有其他讀寫。
-    (0x3FB4, 0x3FB5, "word_20B74 腳本指標暫存；只有 sub_17C6C 寫（17C6Ch）後讀（17C92h）"),
-    (0x3FB6, 0x3FB7, "word_20B76 形狀指標；只有 sub_17CB6 寫（17D01h）、sub_17D2C 讀（17D2Ch）"),
-    (0x3FB8, 0x3FB9, "word_20B78 特效字母；呼叫端（sub_10CD0、13205、13A51、13DAF、14679、147E1、151A7、1530F、15F8D、167E9、16946、173E1）寫，\
-                      只有 sub_17A3A 讀（17A3Ah 起的比較）。重製改成 EffectKind 參數"),
-    (0x3FC0, 0x3FC1, "word_20B80 只有 sub_17CB6 寫（17CC8h），沒有任何指令讀"),
-    // ---- 敵彈領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-ebullet.md）。
-    // 池指標表 32B3h、記錄區 32DBh 是狀態，走 Mirror，不在這裡。
-    (0x2C02, 0x2C11, "word_1F7C2 起 8 個字組的轉向表；sub_1744A、1747E、174B2、174E6、1751A、1754E、17582、175B6 寫，只有 sub_175EA 讀。\
-                      重製改成 TURN_TABLES 常數與 turn_toward 參數"),
-    (0x2C12, 0x2C12, "byte_1F7D2 移動碼；sub_17631 寫（17634h），只有 sub_1779B 讀（177A1h）。重製改成 step_bullet 的區域變數"),
-    (0x2C13, 0x2C16, "word_1F7D3、word_1F7D5 瞄準目標的欄與列；sub_172DE 寫，只有 sub_16F9F 讀（sub_171E5 的 1724Ch 起是 retn 之後無跳入的碼）。\
-                      重製改成 aim_target 的回傳值"),
-    (0x2C1B, 0x2C1B, "byte_1F7DB 槽號；sub_17361 歸零並每槽加 1（17367h、17394h），只有 sub_17855 讀（17888h）。重製改成 stamp_grid2 的參數"),
-    (0x32AD, 0x32B2, "word_1FE6D、word_1FE6F 開火起點的欄與列：呼叫端（sub_15DBE、15E68、15FD9、1606A、1617A）寫，只有 sub_16D3B 一族（sub_16CEA、16F9F、172DE）\
-                      讀寫。word_1FE71 本槽釋放旗標：sub_17631 一族（sub_176D0、176F6、1771C、17742、17955、1798E、179C7、17A00）寫，\
-                      只有它們與 sub_17361 讀。重製改成 fire_enemy_bullets 的參數與 move_bullet 的回傳值"),
-    (0x3533, 0x3552, "word_200F3 與工作區 3535h 起 15 個字組（word_200F5 至 word_20111）。sub_1739B 寫滿 15 字組後才由 sub_173C5 一族讀（17631、176B5、\
-                      176D0、176F6、1771C、17742、17768、1779B、177D2、17821、17855、17898、173E1、17955、1798E、179C7、17A00），sub_173B0 複製回記錄；\
-                      word_200F3 另是 sub_16D3B 一族寫、sub_16CEA 讀的樣板位址。重製改成 step_bullet 的區域 Bullet 與 spawn_bullet 的 Template 參數"),
-    // ---- 玩家彈領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-pbullet.md）。
-    // 池指標表 2607h、記錄區 262Fh、追蹤彈計數 25E8h 是狀態，走 Mirror，不在這裡。
-    // 命中計數器 word_1F1B8、1F1BA（25F8h 至 25FBh）只在不可達的碼裡寫，內容不變，所以不豁免。
-    (0x25EA, 0x25F7, "word_1F1AA、1F1AC、1F1AE、1F1B0 四向格距與 word_1F1B2、1F1B4、1F1B6 掃描起點與範圍；sub_16BA8 先寫 1F1B2、1F1B4、1F1B6，\
-                      sub_16BF5、16C18、16C3B、16C5C 讀它們並各寫一個格距，格距只有 sub_16BA8 讀。重製改成 distance_to_wall 的參數與回傳值"),
-    (0x25FC, 0x2606, "word_1F1BC 武器字母、1F1BE 朝向、byte_1F1C0 命中格值、word_1F1C1 欄、1F1C3 列、1F1C5 釋放旗標。\
-                      1F1BC、1F1BE、1F1C1、1F1C3 由呼叫端（sub_14501、1480A、1502F、15338）寫，只有 sub_16578、165CF、1669F 讀，\
-                      165CF 一族就地改 1F1C1、1F1C3。1F1C0 由 sub_16B49 歸零、169BF 與雷射 16A4E、16ACA 設值，只有 sub_167A3、1691A、16946 讀。\
-                      1F1C5 由 sub_16817 歸 N、移動與碰撞設 Y，只有 sub_1673E 讀。重製改成 fire_player_bullets 的參數、Impact 與回傳值"),
-    (0x28AF, 0x28D0, "word_1F46F 記錄位址與 28B1h 起 16 個字組的工作區（word_1F471 至 word_1F48F）。sub_16779 把記錄複製進工作區並寫 1F46F，\
-                      之後才由 sub_167A3 一族讀寫，sub_1678E 複製回 1F46F 指的記錄；sub_165CF 一族寫樣板位址進 1F46F，只有 sub_16578 讀。\
-                      重製改成 update_player_bullets 的區域 PlayerBullet 與 spawn_player_bullet 的 Shot 參數"),
-    // ---- 敵人領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-entity.md）。
-    // 池指標表 2294h、記錄區 22B4h、每槽繪製值 21ECh 至 228Bh、最近繪製值 228Ch、景物池 198Ch 至 19DBh 是狀態，走 Mirror，不在這裡。
-    // 死亡旗標 word_1EDAA（21EAh）看似工作變數，其實不能豁免：它的位址是 G3、G4 列起點表的越界列，格網位址函式與玩家領域
-    // （尚未搬走）會從資料段直接讀，所以留在資料段，由 `Core::set_enemy_death_flag`（mirror.rs）寫。
-    (0x042A, 0x042B, "word_1CFEA 亂數索引的傳遞字：sub_10E33 寫 0（10E4Eh、10E8Dh），sub_1617A 先寫（1617Dh）後讀（16183h），\
-                      sub_110A4 讀寫（110A4h、110B0h）。重製改成 rolls_to_fire 的區域變數"),
-    (0x1AF6, 0x1AF7, "word_1E6B6 閃白旗標：sub_15F8D 寫（15F8Dh、15FB6h），sub_15E44 讀（15E60h），sub_164F3 寫（1650Ch）後讀（1652Eh），\
-                      每次使用前都在同一個敵人的處理裡寫過。重製改成 Step::flashing 與 Slot::flash"),
-    (0x1B06, 0x1B09, "word_1E6C6 圖框、byte_1E6C8 移動碼、byte_1E6C9 槽號。1E6C6：sub_15F4C 寫（15F63h、15F6Bh）並讀（15F7Bh），sub_16167 讀（16173h）。\
-                      1E6C8：sub_15E68（15E84h、15EB4h）與 sub_15ECD（15EE4h、15F2Dh）寫，只有 sub_15F4C 讀（15F52h）。\
-                      1E6C9：sub_15D8C 歸零並每槽加 1（15D92h、15DB7h），只有 sub_16233 讀（16278h）。\
-                      重製改成 select_frame 的回傳值、step_enemy 的 code 與 stamp_footprint_g1 的 slot 參數"),
-    (0x25B4, 0x25E5, "word_1F174 記錄位址與 25B6h 起 24 個字組的工作區（word_1F176 至 word_1F1A4）。sub_15E1A 與 sub_15ECD 的變身（15F06h）\
-                      用 rep movsw 寫滿 24 字組，之後才由 sub_15E68 一族與 sub_15DBE 讀寫，sub_15E2F 複製回 1F174 指的記錄；\
-                      sub_15D1C 寫 1F174 的樣板位址，只有 sub_15D41 讀；sub_164F3、16541 另把渲染陣列的 kind 寫進 w18（1F19A），之後沒有人讀。\
-                      重製改成 update_enemies 的區域 Enemy 與 spawn_enemy 的樣板參數"),
-    // ---- 玩家領域重寫（規格 004）：函式內先寫後讀的工作變數與呼叫參數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh refs 與 dsrefs 列出每個變數的全部讀寫，並用 tools/q.sh callers 確認讀取端只在同一個呼叫鏈裡
-    // （結果記在 workspace/progress/rewrite-player.md）。其餘玩家變數（血量、位置、圖、旗標、砲座、光柱、輸入位元、存活位元組）
-    // 是狀態，走 Mirror，不在這裡。
-    (0x0ECA, 0x0ECA, "byte_1DA8A 玩家 1 砲座接觸的格值：sub_14B63 先歸零（14B63h）、掃描中寫（14B9Fh），只有它呼叫的 sub_14C18 讀（14C18h）。\
-                      重製改成 pod_touches_entities 的區域變數"),
-    (0x0F2C, 0x0F2C, "byte_1DAEC 玩家 2 砲座接觸的格值：sub_15691 先歸零（15691h）、掃描中寫（156CDh），只有它呼叫的 sub_15746 讀（15746h）。\
-                      重製改成 pod_touches_entities 的區域變數"),
-    (0x0EDC, 0x0EDF, "word_1DA9C、word_1DA9E 玩家 1 砲座掃描的欄與列：sub_1480A 每次掃描前寫（14815h、1481Bh、14855h、1485Eh），\
-                      只有 sub_14B63（14B78h）、sub_14BAE（14BBFh）、sub_14BF4（14C0Bh）、sub_14C3D（14C54h）讀。重製改成 pod_collide 的參數"),
-    (0x0F3E, 0x0F41, "word_1DAFE、word_1DB00 玩家 2 砲座掃描的欄與列：sub_15338 每次掃描前寫（15343h、15349h、15383h、1538Ch），\
-                      只有 sub_15691（156A6h）、sub_156DC（156EDh）、sub_15722（15739h）、sub_1576B（15782h）讀。重製改成 pod_collide 的參數"),
-    (0x0EE8, 0x0EE8, "byte_1DAA8 玩家 1 本幀撿到的道具：sub_14C85 先設 N（14C8Ch）、sub_14CD4 寫（14CF9h），只有 sub_14C85 呼叫的 sub_14D04 讀（14D04h）。\
-                      重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
-    (0x0F4A, 0x0F4A, "byte_1DB0A 玩家 2 本幀撿到的道具：sub_157B3 先設 N（157BAh）、sub_15802 寫（15827h），只有 sub_157B3 呼叫的 sub_15832 讀（15832h）。\
-                      重製改成 body_touches_bullets 的區域變數與 upgrade 的參數"),
-    // ---- 標題與片尾領域重寫（規格 004）：過場字樣的位置暫存，改成每張卡的區域結構 ----
-    // 查證：tools/q.sh refs word_1D148 至 word_1D156（十個符號）列出全部讀寫，另 grep 反組譯裡所有 580h 至 597h 的位移形式，
-    // 除了 word_1D140 至 word_1D146（走 Mirror）沒有其他存取，也沒有 [bx+位移] 的表格式存取。
-    // 選單的列、難度、角色（580h 至 585h）與示範輪播（586h）是狀態，走 Mirror，不在這裡。
-    (0x0588, 0x0597, "word_1D148 至 word_1D156 過場與開場的字樣位置。每個寫入它們的函式都先寫初值再讀：sub_117BF 寫 1D148、1D14A（117BFh、117C5h）後讀；\
-                      sub_11C6B 寫 1D148、1D152、1D14C（11C71h、11C77h、11C7Dh）與 1D14E（11CD0h）；sub_11E46 寫 1D148 至 1D14E、1D156（11E4Ch 至 11E64h）\
-                      與 1D152、1D154（11EB7h、11EE2h）；sub_121DD 寫 1D150 至 1D156（121E0h 至 121F2h）；sub_12379 寫 1D148 至 1D14E（1237Ch 至 1238Eh）。\
-                      讀者只有各自卡片的步驟函式（sub_11CFC、11D58、11DAC、11F58、11FB3、1200A、12062、120B6、12132、1221E、123BD）。\
-                      重製改成 cards.rs 的 Stage1Letters 至 Stage4Letters 與 intro.rs 的區域變數"),
-    // ---- 流程與關卡領域重寫（規格 004）：函式內先寫後讀的工作變數，改成區域變數與函式參數，不再寫回資料段 ----
-    // 查證：tools/q.sh refs 列出每個變數的全部讀寫（結果記在 workspace/progress/rewrite-flow.md）。
-    // 各關的背景位置、頭目合成圖的三層位置、流程旗標、輸入與計時是狀態，走 Mirror，不在這裡。
-    (0x0F9A, 0x0F9E, "byte_1DB5A 腳本位元組、word_1DB5B 與 word_1DB5D 頭目合成圖的位置：第一、二、三關的 sub_15930、15983、159D6、15A24、15A72 \
-                      先從該層的位置（1DB5F 一族）複製進來才呼叫 sub_15BB0（直譯器）與 sub_15AC5、15AF4、15B23、15B52、15B81（繪製），\
-                      byte_1DB5A 只在 sub_15930、15983、15A72 呼叫 sub_15BB0 之後立刻讀。重製改成 BossLayer::step 直接更新那一層"),
-    (0x0FAB, 0x0FAC, "word_1DB6B 腳本讀取位置：同上，每次由 sub_15930、15983、159D6、15A24、15A72 複製進來，sub_15BB0 就地前進後複製回去。\
-                      重製改成 BossLayer::script"),
-    (0x900A, 0x900B, "word_25BCA 第三關地圖的索引游標：sub_17DF9 開頭先寫（17E13h）、迴圈內讀寫（17E3Ah、17E4Eh、17E5Eh），sub_182CD 同樣先寫（182F4h）\
-                      再讀寫（18310h、18325h）。其他寫入者都不在 E 模式的可達路徑：sub_17DB2 的 17DBEh 起（`17DBDh` retn 之後）、\
-                      sub_1840E 的 18430h 起（retn 之後）、單色分支 sub_185AA、sub_18613、sub_1812E、sub_181E1。\
-                      重製改成 draw_initial_map 與 scroll_map_second_page 的區域變數"),
-];
-
-/// `off` 是否落在 [`DS_EXEMPT`]。
-pub fn ds_exempt(off: u16) -> bool {
-    DS_EXEMPT.iter().any(|&(lo, hi, _)| lo <= off && off <= hi)
+/// 遊戲的全部狀態，依領域分組。每個欄位都是有型別的結構，欄位名是遊戲語意，沒有原版位移。
+///
+/// 對拍與快照靠它：[`Game::state`] 是模擬在上一次交回控制權時的狀態，[`Game::state_mut`] 與 [`Game::from_state`]
+/// 是寫回的入口。原版的資料段版面在 `rs2-trace` 的 `Mirror`，遊戲不認識它。
+/// 不屬於原版的狀態（強化選項、AI、圖庫組、修正模式的槽號）留在 `Core`，不在這裡。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct State {
+    pub fx: Effects,
+    pub eb: EnemyBullets,
+    pub pb: PlayerBullets,
+    pub en: Enemies,
+    pub sc: Scenery,
+    pub pl: Players,
+    pub title: Title,
+    pub flow: Flow,
+    pub scenes: Scenes,
+    pub draw_params: DrawParams,
+    pub sound: Sound,
+    pub grids: Grids,
+    pub tape: DemoTape,
 }
 
-/// 正式遊戲的開機資料段：原版在 `sub_11556` 入口（標題迴圈）的狀態，減去啟動選單、密碼與 DOS 記憶體配置的影響。
+impl State {
+    /// 程式還沒執行時的狀態：原版映像裡各變數的初值。`rs2-trace` 的測試逐欄對過映像。
+    ///
+    /// 唯一的例外是 G4 地形格：映像裡是 800 個 `0002h`，每個關卡進場（`reset_stage`）第一件事就清掉它，
+    /// 清之前沒有人讀，所以這裡是 0。第二關的淡出工作表一開始是第二關調色盤的複本，取自表格。
+    pub fn power_on(tables: &Tables) -> State {
+        const NO: u8 = b'N';
+        const YES: u8 = b'Y';
+        let mut s = State::default();
+        s.en.death_flag = u16::from(YES);
+        s.en.stray_damage = 0x2300;
+        let ship = Player {
+            hp: 0xFF,
+            col: 20,
+            row: 10,
+            blit_x: 20,
+            blit_y: 100,
+            hit: NO,
+            flame: NO,
+            fired: NO,
+            beam_y: 2,
+            pods: Pods { first: NO, second: NO, facing: u16::from(b'<'), image: 30, ..Pods::default() },
+            ..Player::default()
+        };
+        s.pl.ship = [ship; 2];
+        s.title.menu.level = 1;
+        s.flow = Flow {
+            stage: b'A',
+            clear: NO,
+            integrity_mark: NO,
+            demo: YES,
+            from_title: NO,
+            title_entered: NO,
+            password_accepted: NO,
+            disk_hint: b'1',
+            dos: DosBook {
+                message_a: *b" 0 ",
+                message_b: *b" 0 ",
+                segments: [0x5A00, 0x6000, 0x6800, 0x7000, 0x7800, 0x3000, 0x3800, 0x4000, 0x4800, 0x4800],
+            },
+            controls: Controls {
+                fire: FireFlags { new_press: [YES; 2], event: [YES; 2], turn: [NO; 2] },
+                cheat: Cheat { unlocked: u16::from(NO), invincible: u16::from(NO), ..Cheat::default() },
+                joymouse: NO,
+                sound_key: NO,
+                ..Controls::default()
+            },
+            ..Flow::default()
+        };
+        s.scenes.stage2.flame_bottom = 156;
+        s.scenes.stage2.strip_a.phase = 7;
+        let fade = tables.palette(Palette::Stage2Fade).dac;
+        s.scenes.stage2.fade = std::array::from_fn(|k| fade[k]);
+        s.scenes.tunnel.ceiling_phase = 7;
+        s.draw_params.shape_width = Some(0);
+        s.sound.music = NO;
+        s
+    }
+}
+
+/// 正式遊戲的開機狀態：原版在 `sub_11556` 入口（標題迴圈）的狀態，減去啟動選單、密碼與 DOS 記憶體配置的影響。
 /// 原版從 `sub_10CD0` 進來：`10CD0h` 至 `10D11h` 的關卡初始化（`Core::init_stage1`），第一輪 `10D29h` 的 `sub_19A37`，
 /// 然後 `sub_10FEA`：`word_1B02` 減 1（10FEAh 至 10FF2h），`byte_1CFAC` 仍是 `N` 才呼叫 `sub_11556`。
-/// 所以標題入口的資料段是映像加上這些初始化的寫入。標題之前沒有寫過 `byte_1CFDC`、`byte_1CFDD`、`byte_1CFAC`、
+/// 所以標題入口的狀態是映像加上這些初始化的寫入。標題之前沒有寫過 `byte_1CFDC`、`byte_1CFDD`、`byte_1CFAC`、
 /// `byte_1CFAB`（`Core::new` 為了直接進第一關而設），這四個維持映像值。
-/// 差異只在 [`DS_EXEMPT`]（B1，`rs2-trace` 的 `tests/wait.rs`）。展示錄影 `DM1.LCK` 不在這裡：映像只有程式，
-/// 資料由 `GameFiles` 提供，標題移植在示範開始前自己載入（`sub_1BED5`）。
-pub fn boot_ds(image: &[u8]) -> Dseg {
-    boot_ds_with_dm1(image, &[])
-}
-
-/// [`boot_ds`] 加上 `sub_10CD0` 在 `10CF9h` 用 `sub_1BED5` 載入的 `DM1.LCK`（`dseg:AAE2h` 起 3000 位元組）。
-/// 另外三個值是啟動時最後按的鍵留下的：密碼畫面最後一個 Enter，`byte_27422`（`A862h`）= 0Dh、按鍵表 Enter（`A8E7h`）= 2
-/// 已放開；啟動選單按過的 V（`A8FAh`）= 2。`sub_11556` 在 `1157Dh` 先把 `byte_27422` 清 0 才讀，所以這三個值不影響標題，
-/// 但全流程對拍逐位元組比，補上它們才不必把 `A862h` 這種標題實際會讀的位元組列進 [`DS_EXEMPT`]。
-pub fn boot_ds_with_dm1(image: &[u8], dm1: &[u8]) -> Dseg {
-    let base = Dseg::from_image(image);
-    let mut core = Core::new(image, dm1, Start::NewGame { difficulty: None }, Fixes::NONE);
-    for o in [0x041Cu16, 0x03EC, 0x03EB] {
-        core.ds.w8(o, base.r8(o));
-    }
-    // 存活位元組（041Dh，原版 byte_1CFDD）在玩家領域的結構裡。
-    core.set_players_present(base.r8(0x041D));
+/// 差異只在 `rs2-trace` 的 `DS_EXEMPT`（B1，`tests/wait.rs`）。展示錄影 `DM1.LCK` 在這裡載入：標題移植在示範開始前
+/// 自己載入（`sub_1BED5`），但 `sub_10CD0` 在 `10CF9h` 已載過一次。
+///
+/// 另外三個值是啟動時最後按的鍵留下的：密碼畫面最後一個 Enter，`byte_27422` = 0Dh、按鍵表 Enter = 2
+/// 已放開；啟動選單按過的 V = 2。`sub_11556` 在 `1157Dh` 先把 `byte_27422` 清 0 才讀，所以這三個值不影響標題，
+/// 但全流程對拍逐位元組比，補上它們才不必把標題實際會讀的位元組列進豁免。
+pub fn boot_state(tables: Rc<Tables>, dm1: &[u8]) -> State {
+    let base = State::power_on(&tables);
+    let mut core = Core::new(tables, dm1, Start::NewGame { difficulty: None }, Fixes::NONE);
+    core.flow.demo = base.flow.demo;
+    core.flow.title_entered = base.flow.title_entered;
+    core.flow.from_title = base.flow.from_title;
+    core.set_players_present(base.pl.alive);
     core.show_page(Page::Zero);
     core.count_down_tamper_timer();
-    core.ds.w8(0xA862, 0x0D);
-    core.ds.w8(0xA8E7, 2);
-    core.ds.w8(0xA8FA, 2);
+    core.flow.controls.last_key = 0x0D;
+    core.flow.controls.keys.0[0x1C] = 2;
+    core.flow.controls.keys.0[0x2F] = 2;
     // byte_1D3A2：密碼檢查通過時寫 Y，映像是 N。第二關 130AFh 不是 Y 就停在無限迴圈。
-    core.ds.w8(0x07E2, b'Y');
-    core.store_mirrors();
-    core.ds
+    core.flow.password_accepted = b'Y';
+    core.snapshot()
 }
 
 const POOLS: usize = 9;
@@ -344,8 +266,10 @@ pub(crate) enum Req {
 pub(crate) struct Port {
     req: Option<Req>,
     input: Vec<u8>,
-    pokes: Vec<(u16, u16, bool)>,
-    ds: Dseg,
+    /// 外面（`Game::state_mut`）改過的狀態，協程恢復時套用。
+    pending: Option<State>,
+    /// 協程上一次交回控制權時的狀態。
+    state: State,
     draws: Vec<DrawCmd>,
     /// 下一次恢復會走到一輪結尾的檢查（第二頁的等待之後）。
     pub(crate) at_round_end: bool,
@@ -359,7 +283,7 @@ pub(crate) struct Port {
     /// 砲座分離鍵按著（規格 005「砲座像 Force」）。沒有原版掃描碼，不走按鍵表。
     pub(crate) split_held: [bool; 2],
     /// 玩家的強化狀態（`Core::enh`）在上一次交回控制權時的複本，給 `Game::player_status`、`Game::hud_status` 讀。
-    /// 不屬於原版狀態，不進資料段。
+    /// 不屬於原版狀態，不進 `State`。
     pub(crate) shoot: [ShootView; 2],
 }
 
@@ -379,10 +303,9 @@ impl Future for YieldOnce {
 
 /// 模擬狀態。逐函式移植的程式都掛在這裡，只有協程摸得到。
 pub struct Core {
-    /// 還沒搬走的領域的狀態。已搬走的領域住在下面有型別的欄位，這裡對應的位元組只在
-    /// `store_mirrors`（交回控制權）與 `load_mirrors`（載入、poke）時同步，見 `mirror.rs`。
-    pub ds: Dseg,
     pub fixes: Fixes,
+    /// 唯讀表格，啟動時從 `S.EXE` 解析。
+    pub(crate) tables: Rc<Tables>,
     /// 特效池。
     pub(crate) fx: Effects,
     /// 敵方子彈池。
@@ -395,7 +318,7 @@ pub struct Core {
     pub(crate) sc: Scenery,
     /// 兩位玩家與存活位元組。
     pub(crate) pl: Players,
-    /// 玩家的強化狀態（規格 005 的射擊與操控選項）。不屬於原版狀態，不進 `Mirror`、不寫資料段。
+    /// 玩家的強化狀態（規格 005 的射擊與操控選項）。不屬於原版狀態，不進 `State`。
     pub(crate) enh: Enhanced,
     /// 標題：選單與示範輪播。
     pub(crate) title: Title,
@@ -407,6 +330,10 @@ pub struct Core {
     pub(crate) draw_params: DrawParams,
     /// 音樂與靜音開關、喇叭參數。
     pub(crate) sound: Sound,
+    /// 戰場格網。
+    pub(crate) grids: Grids,
+    /// 展示錄影區。
+    pub(crate) tape: DemoTape,
     /// 完整性檢查（原版 `sub_11375`）通過後把自己改成 `retn`，之後不再檢查。
     pub(crate) integrity_checked: bool,
     /// CRTC 顯示起點，只有 `sub_19A37`、`sub_19A88` 會寫。第一次翻頁之前不知道。
@@ -422,7 +349,7 @@ pub struct Core {
     pub(crate) gens: [[u32; 40]; POOLS],
     /// `bullet_slot_carry` 開啟時，G2 每格真正的敵彈槽號加 1，0 表示沒有。不屬於原版狀態。
     pub(crate) g2_slots: Vec<u8>,
-    /// 敵人 AI 強化的狀態（規格 005）。不屬於原版狀態，不進資料段，全關時不影響模擬。
+    /// 敵人 AI 強化的狀態（規格 005）。不屬於原版狀態，不進 `State`，全關時不影響模擬。
     pub(crate) ai: AiState,
     pub(crate) port: Rc<RefCell<Port>>,
 }
@@ -434,13 +361,18 @@ impl Core {
         if self.demo_playing() { Rules::ORIGINAL } else { self.port.borrow().rules }
     }
 
-    pub(crate) fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Core {
-        let ds = Dseg::from_image(image);
+    pub(crate) fn new(tables: Rc<Tables>, dm1: &[u8], start: Start, fixes: Fixes) -> Core {
+        let initial = State::power_on(&tables);
+        Core::from_initial(tables, initial, dm1, start, fixes)
+    }
+
+    /// `initial` 是程式還沒執行時的狀態：正式遊戲用 [`State::power_on`]，單元測試用全 0 的狀態。
+    fn from_initial(tables: Rc<Tables>, initial: State, dm1: &[u8], start: Start, fixes: Fixes) -> Core {
         let port = Port {
             req: None,
             input: Vec::new(),
-            pokes: Vec::new(),
-            ds: ds.clone(),
+            pending: None,
+            state: State::default(),
             draws: Vec::new(),
             at_round_end: false,
             integrity_checked: false,
@@ -451,21 +383,24 @@ impl Core {
             split_held: [false; 2],
             shoot: [ShootView::default(); 2],
         };
+        let State { fx, eb, pb, en, sc, pl, title, flow, scenes, draw_params, sound, grids, tape } = initial;
         let mut g = Core {
-            ds,
             fixes,
-            fx: Effects::default(),
-            eb: EnemyBullets::default(),
-            pb: PlayerBullets::default(),
-            en: Enemies::default(),
-            sc: Scenery::default(),
-            pl: Players::default(),
+            tables,
+            fx,
+            eb,
+            pb,
+            en,
+            sc,
+            pl,
             enh: Enhanced::default(),
-            title: Title::default(),
-            flow: Flow::default(),
-            scenes: Scenes::default(),
-            draw_params: DrawParams::default(),
-            sound: Sound::default(),
+            title,
+            flow,
+            scenes,
+            draw_params,
+            sound,
+            grids,
+            tape,
             integrity_checked: false,
             display_start: None,
             audio: Vec::new(),
@@ -479,15 +414,13 @@ impl Core {
             ai: AiState::default(),
             port: Rc::new(RefCell::new(port)),
         };
-        g.load_mirrors();
         // 兩個入口都載入展示錄影（10CF9h 的 sub_1BED5）。
         g.load_demo(DemoFile::Dm1);
         // 標題流程設定的值。
-        let demo = matches!(start, Start::Demo);
-        g.ds.w8(0x041C, if demo { b'Y' } else { b'N' });
+        g.set_demo_mode(matches!(start, Start::Demo));
         g.set_players_present(0x01);
-        g.ds.w8(0x03EC, b'Y');
-        g.ds.w8(0x03EB, b'Y');
+        g.mark_title_entered();
+        g.request_stage_music();
         if let Start::NewGame { difficulty: Some(d) } = start {
             let (hp, fire) = match d {
                 0 => (0, 0),
@@ -495,21 +428,74 @@ impl Core {
                 2 => (1, 2),
                 _ => (1, 3),
             };
-            g.ds.w16(a(0x1E6B2), hp);
-            g.ds.w16(a(0x1E6B4), fire);
+            g.set_difficulty_bonuses(hp, fire);
         }
         g.init_stage1();
         g
     }
 
+    /// 單元測試用：沒有原版檔，表格是空的、狀態全為 0（測試自己擺需要的項目）。
+    #[cfg(test)]
+    pub(crate) fn for_test(start: Start, fixes: Fixes) -> Core {
+        Core::from_initial(Rc::new(Tables::for_test()), State::default(), &[], start, fixes)
+    }
+
+    /// 單元測試用：改表格。
+    #[cfg(test)]
+    pub(crate) fn tables_mut(&mut self) -> &mut Tables {
+        Rc::make_mut(&mut self.tables)
+    }
+
+    /// 單元測試用：擺上原版的兩張列表（`列 × 28h`、`列 × 50h + 1`），不用原版檔的測試要它才能算格位址。
+    #[cfg(test)]
+    pub(crate) fn fill_row_tables(&mut self) {
+        let t = std::mem::take(self.tables_mut());
+        *self.tables_mut() = t.with_row_tables();
+    }
+
+    /// 目前的狀態，給 [`Game::state`] 與對拍。
+    pub(crate) fn snapshot(&self) -> State {
+        State {
+            fx: self.fx.clone(),
+            eb: self.eb.clone(),
+            pb: self.pb.clone(),
+            en: self.en.clone(),
+            sc: self.sc.clone(),
+            pl: self.pl.clone(),
+            title: self.title.clone(),
+            flow: self.flow,
+            scenes: self.scenes.clone(),
+            draw_params: self.draw_params,
+            sound: self.sound,
+            grids: self.grids.clone(),
+            tape: self.tape.clone(),
+        }
+    }
+
+    /// 以 `state` 取代全部領域的狀態。載入快照、[`Game::state_mut`] 的修改在協程恢復時套用。
+    pub(crate) fn apply_state(&mut self, state: State) {
+        let State { fx, eb, pb, en, sc, pl, title, flow, scenes, draw_params, sound, grids, tape } = state;
+        self.fx = fx;
+        self.eb = eb;
+        self.pb = pb;
+        self.en = en;
+        self.sc = sc;
+        self.pl = pl;
+        self.title = title;
+        self.flow = flow;
+        self.scenes = scenes;
+        self.draw_params = draw_params;
+        self.sound = sound;
+        self.grids = grids;
+        self.tape = tape;
+    }
+
     /// 把控制權交回外面，恢復時處理這段期間送達的掃描碼。
     pub(crate) async fn suspend(&mut self, req: Req) {
-        // 已搬走的領域先寫回 `self.ds`，外面看到的資料段才是完整的，之後的 poke 也套在完整的資料段上。
-        self.store_mirrors();
         {
             let mut p = self.port.borrow_mut();
             p.req = Some(req);
-            p.ds.copy_from(&self.ds);
+            p.state = self.snapshot();
             p.draws.append(&mut self.draws);
             p.integrity_checked = self.integrity_checked;
             p.display_start = self.display_start;
@@ -517,21 +503,13 @@ impl Core {
             p.shoot = self.enh.view();
         }
         YieldOnce(false).await;
-        let (input, pokes) = {
+        let (input, pending) = {
             let mut p = self.port.borrow_mut();
-            (std::mem::take(&mut p.input), std::mem::take(&mut p.pokes))
+            (std::mem::take(&mut p.input), p.pending.take())
         };
-        let poked = !pokes.is_empty();
-        for (o, v, word) in pokes {
-            if word {
-                self.ds.w16(o, v);
-            } else {
-                self.ds.w8(o, v as u8);
-            }
-        }
-        if poked {
-            // poke 可能落在已搬走的領域，讓結構看到新值。
-            self.load_mirrors();
+        if let Some(state) = pending {
+            // `Game::state_mut` 改過狀態：協程從這個狀態接著跑。
+            self.apply_state(state);
         }
         for sc in input {
             self.handle_scancode(sc);
@@ -555,8 +533,7 @@ impl Core {
     }
 }
 
-/// 對外的遊戲物件：一個跑在協程裡的 `Core`。
-/// HD 介面要顯示的玩家狀態，見 `Game::hud_status`。
+/// HUD 介面要顯示的玩家狀態，見 `Game::hud_status`。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HudStatus {
     /// 在場上。
@@ -593,10 +570,14 @@ pub struct PlayerStatus {
     pub pods_detached: bool,
 }
 
+/// 對外的遊戲物件：一個跑在協程裡的 `Core`。
 pub struct Game {
-    /// 上一次交回控制權時的資料段複本。要改值用 `poke8`、`poke16`。
-    pub ds: Dseg,
+    /// 上一次交回控制權時的狀態。要改值用 [`Game::state_mut`]。
+    state: State,
+    /// `state` 被改過，下一次恢復時要套用。
+    dirty: bool,
     fixes: Fixes,
+    tables: Rc<Tables>,
     port: Rc<RefCell<Port>>,
     fut: Pin<Box<dyn Future<Output = Exit>>>,
     finished: Option<Exit>,
@@ -625,50 +606,64 @@ async fn run_entry(mut core: Core, entry: Entry) -> Exit {
     }
 }
 
+/// 解析表格。映像雜湊不符就拒絕（fail-closed）。
+fn parse_tables(image: &[u8]) -> Rc<Tables> {
+    match Tables::parse(image) {
+        Ok(t) => Rc::new(t),
+        Err(e) => panic!("S.EXE 解包映像不是已知的原版：{e}"),
+    }
+}
+
 impl Game {
-    /// 從一份資料段快照開始跑。`ds` 是原版在該入口的傾印，或正式遊戲的開機狀態。
-    pub fn from_snapshot(files: GameFiles, ds_snapshot: &[u8], entry: Entry, fixes: Fixes) -> Game {
+    /// 從一份狀態開始跑。`state` 是原版在該入口的狀態（`rs2-trace` 從傾印讀出），或正式遊戲的開機狀態（[`boot_state`]）。
+    /// `files.image` 不是已知的原版解包映像就 `panic`。
+    pub fn from_state(files: GameFiles, state: State, entry: Entry, fixes: Fixes) -> Game {
+        let tables = parse_tables(&files.image);
         let files = Rc::new(files);
-        let mut core = Core::new(&files.image, &[], Start::NewGame { difficulty: None }, fixes);
+        let mut core = Core::new(Rc::clone(&tables), &[], Start::NewGame { difficulty: None }, fixes);
         core.draws.clear();
-        core.ds.load(ds_snapshot);
-        core.load_mirrors();
+        core.apply_state(state);
         core.files = files;
         // sub_11375 通過時把 dl（`Y`）寫進 byte_1CFAA，並把自己改成 retn。快照要帶上這個狀態。
         core.integrity_checked = core.flow.integrity_mark != b'N';
-        let ds = core.ds.clone();
+        let state = core.snapshot();
         let port = core.port.clone();
-        port.borrow_mut().ds.copy_from(&ds);
-        Game { ds, fixes, port, fut: Box::pin(run_entry(core, entry)), finished: None }
+        port.borrow_mut().state = state.clone();
+        Game { state, dirty: false, fixes, tables, port, fut: Box::pin(run_entry(core, entry)), finished: None }
+    }
+
+    /// 正式遊戲從標題開始：開機狀態加上全部原版檔案。
+    pub fn boot(files: GameFiles, fixes: Fixes) -> Game {
+        let tables = parse_tables(&files.image);
+        let state = boot_state(tables, &files.dm1);
+        Game::from_state(files, state, Entry::Title, fixes)
     }
 
     pub fn new(image: &[u8], dm1: &[u8], start: Start, fixes: Fixes) -> Game {
-        let mut core = Core::new(image, dm1, start, fixes);
-        core.store_mirrors();
-        let ds = core.ds.clone();
+        let tables = parse_tables(image);
+        let mut core = Core::new(Rc::clone(&tables), dm1, start, fixes);
+        let state = core.snapshot();
         let port = core.port.clone();
         port.borrow_mut().draws.append(&mut core.draws);
-        Game { ds, fixes, port, fut: stage1(core), finished: None }
+        Game { state, dirty: false, fixes, tables, port, fut: stage1(core), finished: None }
     }
 
-    /// 重新開始：沿用同一份 `Dseg`，只重跑進入關卡的初始化，殘值行為與原版相同。
+    /// 重新開始：沿用同一份狀態，只重跑進入關卡的初始化，殘值行為與原版相同。
     pub fn restart(&mut self, start: Start) {
         // 強化選項、分離鍵與第三關地形來源屬於前端的設定，不屬於一局的狀態，重新開始要帶到新的埠。
         let (checked, rules, split_held, terrain_scr) = {
             let p = self.port.borrow();
             (p.integrity_checked, p.rules, p.split_held, p.terrain_scr)
         };
-        let image_free = self.ds.clone();
-        let mut core = Core::new(&vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET], &[], start, self.fixes);
-        core.ds = image_free;
-        core.load_mirrors();
+        let mut core = Core::new(Rc::clone(&self.tables), &[], start, self.fixes);
+        core.apply_state(self.state.clone());
         core.integrity_checked = checked;
-        core.ds.w8(0x041C, if matches!(start, Start::Demo) { b'Y' } else { b'N' });
+        core.set_demo_mode(matches!(start, Start::Demo));
         core.set_players_present(0x01);
         core.draws.clear();
         core.init_stage1();
-        core.store_mirrors();
-        self.ds.copy_from(&core.ds);
+        self.state = core.snapshot();
+        self.dirty = false;
         let port = core.port.clone();
         {
             let mut p = port.borrow_mut();
@@ -682,22 +677,24 @@ impl Game {
         self.finished = None;
     }
 
-    /// 這一步之前累積的繪製命令（進入關卡時的初始化命令也在這裡）。
+    /// 上一次交回控制權時的狀態。
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// 改上一次交回控制權時的狀態：修改在下一次恢復時套用（測試與對拍的 poke、快照用）。
+    pub fn state_mut(&mut self) -> &mut State {
+        self.dirty = true;
+        &mut self.state
+    }
+
     fn take_audio(&mut self) -> Vec<AudioCmd> {
         std::mem::take(&mut self.port.borrow_mut().audio)
     }
 
+    /// 這一步之前累積的繪製命令（進入關卡時的初始化命令也在這裡）。
     pub fn take_draws(&mut self) -> Vec<DrawCmd> {
         std::mem::take(&mut self.port.borrow_mut().draws)
-    }
-
-    /// 在下一次恢復時寫入資料段，測試用。
-    pub fn poke8(&mut self, offset: u16, value: u8) {
-        self.port.borrow_mut().pokes.push((offset, value as u16, false));
-    }
-
-    pub fn poke16(&mut self, offset: u16, value: u16) {
-        self.port.borrow_mut().pokes.push((offset, value, true));
     }
 
     /// 第三關的地形資料來源（`docs/spec/006-display-modes.md`「第三關地形」）：原版 E（VGA、EGA）讀 `SHT.SCN`，
@@ -720,9 +717,12 @@ impl Game {
     }
 
     fn poll_once(&mut self) -> Poll<Exit> {
+        if std::mem::take(&mut self.dirty) {
+            self.port.borrow_mut().pending = Some(self.state.clone());
+        }
         let mut cx = Context::from_waker(Waker::noop());
         let r = self.fut.as_mut().poll(&mut cx);
-        self.ds.copy_from(&self.port.borrow().ds);
+        self.state.clone_from(&self.port.borrow().state);
         r
     }
 
@@ -772,13 +772,9 @@ impl Game {
         self.port.borrow().display_start
     }
 
-    pub fn state_hash_input(&self) -> &[u8] {
-        self.ds.bytes()
-    }
-
-    /// HD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。
+    /// HUD 介面要顯示的玩家狀態。`player` 是 0 或 1。只讀，不影響模擬。
     pub fn hud_status(&self, player: usize) -> HudStatus {
-        let players = Players::from_dseg(&self.ds);
+        let players = &self.state.pl;
         let p = &players.ship[player];
         // 波動砲充能（規格 005）開著時，充能是強化狀態的計數（0 至 `WAVE_CHARGE_FULL`），不是原版的鍵盤事件計數。
         let port = self.port.borrow();
@@ -790,7 +786,7 @@ impl Game {
     /// 玩家領域的 `take_hit` 讀它）。
     /// 原版的 Alt 鍵會把旗標清成 `N`，所以開著的時候呼叫端每步都要呼叫一次。從沒開過就不寫，模擬和原版相同。
     pub fn set_invincible(&mut self, on: bool) {
-        self.poke16(a(0x273A5), if on { 0x59 } else { 0x4E });
+        self.state_mut().flow.controls.cheat.invincible = if on { 0x59 } else { 0x4E };
     }
 
     /// 玩家機的狀態，給前端的顯示層預測用。`player` 是 0 或 1。
@@ -798,14 +794,15 @@ impl Game {
     /// 啟用位元與界限來自 `sub_14501`、`sub_1502F` 與各方向的移動函式，位置與列欄是它們更新的變數。
     /// 界限用玩家領域移動函式的同一組條件（`Player::can_move_up` 一族）。
     pub fn player_status(&self, player: usize) -> PlayerStatus {
-        let players = Players::from_dseg(&self.ds);
+        let players = &self.state.pl;
         let p = &players.ship[player];
         let (rules, view) = {
             let port = self.port.borrow();
             (port.rules, port.shoot[player.min(1)])
         };
+        let demo = self.state.flow.demo == b'Y';
         // 展示錄影不套用強化規則（`Core::rules`）。
-        let fine = rules.fine_step && !demo_playing(&self.ds);
+        let fine = rules.fine_step && !demo;
         let reach = if fine {
             // 細步移動：同樣的邊界，垂直用繪製位置 y（原版的列界限 0 至 16 換成 0 至 160 像素）。
             (
@@ -822,14 +819,14 @@ impl Game {
             y: p.blit_y as i16,
             // 玩家位元：還在場上。血量 0：死亡動畫中，`die_step` 自己往下往右走，不接受輸入。
             // `byte_1CFDC` 是 `Y`：示範，方向來自錄影。`byte_1CFAD` 是 `F`：不跑玩家邏輯。
-            controllable: players.is_alive(player) && p.hp != 0 && !demo_playing(&self.ds) && !stage_cleared(&self.ds),
+            controllable: players.is_alive(player) && p.hp != 0 && !demo && !self.state.flow.is_cleared(),
             can_up: reach.0,
             can_down: reach.1,
             can_left: reach.2,
             can_right: reach.3,
             fine_step: fine,
             last_move: if fine { view.last_move } else { (0, 0) },
-            pods_detached: view.pods_detached && !demo_playing(&self.ds),
+            pods_detached: view.pods_detached && !demo,
         }
     }
 
@@ -870,10 +867,18 @@ impl Game {
 mod tests {
     use super::*;
 
+    /// 沒有原版檔：表格是空的，只測 `Core` 的接線。
+    fn blank_game(start: Start) -> Game {
+        let mut core = Core::for_test(start, Fixes::NONE);
+        let state = core.snapshot();
+        let port = core.port.clone();
+        port.borrow_mut().draws.append(&mut core.draws);
+        Game { state, dirty: false, fixes: Fixes::NONE, tables: Rc::new(Tables::default()), port, fut: stage1(core), finished: None }
+    }
+
     #[test]
     fn restart_keeps_the_enhanced_rules() {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut g = Game::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut g = blank_game(Start::Demo);
         assert_eq!(g.port.borrow().rules, Rules::ORIGINAL);
         let rules = Rules { ai_aim: true, ai_boss: true, ..Rules::ORIGINAL };
         g.set_rules(rules);

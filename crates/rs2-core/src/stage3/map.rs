@@ -10,7 +10,7 @@
 
 use crate::draw::Pool;
 use crate::game::Core;
-use crate::mirror::GRID_COLS;
+use crate::grid::GRID_COLS;
 use crate::video::{SCRATCH_A, SCRATCH_B, ScrollOp};
 
 /// 地圖每列的欄數。戰場加大（規格 005）時地圖欄數與畫面欄數（`GRID_COLS`）、新欄生成位置要一起改。
@@ -34,7 +34,7 @@ const NEW_COLUMN_STRIDE: u16 = MAP_ROW_BYTES;
 
 /// 地圖視窗的位置。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MapScroll {
+pub struct MapScroll {
     /// `word_25BC4`：視窗在 80 位元組寬的暫存區內的欄偏移，0 到 39，每個捲動步加 1，到 40 歸零並把暫存區整個左移。
     pub window: u16,
     /// `word_25BC6`：地圖左緣欄，每個捲動步加 1。
@@ -187,11 +187,10 @@ mod tests {
     use super::*;
     use crate::draw::Op;
     use crate::game::{Fixes, Start};
-    use crate::mirror::{GRID3_START, GRID4_START, TERRAIN_ROW_BYTES};
+    use crate::grid::{GRID3_START, GRID4_START, TERRAIN_ROW_BYTES};
 
     fn core_with_map() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        let mut c = Core::new(&image, &[], Start::Demo, Fixes::NONE);
+        let mut c = Core::for_test(Start::Demo, Fixes::NONE);
         // 圖塊索引 = 1 + 欄 + 7 × 列（用小數字，不碰地圖的真實內容）。
         let mut map = vec![0u8; 20 * usize::from(MAP_COLUMNS) * 2];
         for row in 0..20usize {
@@ -207,7 +206,7 @@ mod tests {
     }
 
     fn g4(c: &Core, row: u16, col: u16) -> u16 {
-        c.ds.r16(GRID4_START + 2 + row * TERRAIN_ROW_BYTES + 2 * col)
+        c.grids.peek16(GRID4_START + 2 + row * TERRAIN_ROW_BYTES + 2 * col)
     }
 
     #[test]
@@ -225,7 +224,7 @@ mod tests {
         let mut c = core_with_map();
         c.scenes.map.left_col = 1;
         c.draw_initial_map();
-        let at = |row: u16, col: u16| c.ds.r16(GRID4_START + 2 + 0x54 * row + 2 * col);
+        let at = |row: u16, col: u16| c.grids.peek16(GRID4_START + 2 + 0x54 * row + 2 * col);
         assert_eq!(at(0, 0), 2, "視窗左緣是地圖第 1 欄");
         assert_eq!(at(0, 41), 43);
         assert_eq!(at(1, 0), 2 + 7, "下一列接在 42 個字組之後");
@@ -249,7 +248,7 @@ mod tests {
         // 新欄寫在 (列 r + 1, 欄 0) 的位置，線性位址上緊接 (列 r, 欄 39)，下一步左移才進到欄 38。
         // 地圖欄 = 左緣 + 40 = 41，列 r 的索引是 1 + 41 + 7r。
         for row in 0..19u16 {
-            assert_eq!(c.ds.r16(GRID4_START + TERRAIN_ROW_BYTES * (row + 1)), 42 + 7 * row, "新欄的列 {row}");
+            assert_eq!(c.grids.peek16(GRID4_START + TERRAIN_ROW_BYTES * (row + 1)), 42 + 7 * row, "新欄的列 {row}");
         }
     }
 
@@ -257,12 +256,12 @@ mod tests {
     fn the_grid_shift_pulls_g3s_first_word_into_g4_and_the_write_cursor_into_g3() {
         let mut c = core_with_map();
         let g3_last_word = GRID3_START + 0x63E;
-        c.ds.w16(GRID3_START, 0x1234);
+        c.grids.poke16(GRID3_START, 0x1234);
         c.set_terrain_cursor(0x0640);
-        c.ds.w16(g3_last_word, 0xBEEF);
+        c.grids.poke16(g3_last_word, 0xBEEF);
         c.scroll_terrain_grids();
-        assert_eq!(c.ds.r16(GRID4_START + 0x63E), 0x1234, "G4 的最後一個字組取自 G3 的第一個，在 G3 左移之前讀");
-        assert_eq!(c.ds.r16(g3_last_word), 0x0640, "G3 的最後一個字組取自 word_2684C");
+        assert_eq!(c.grids.peek16(GRID4_START + 0x63E), 0x1234, "G4 的最後一個字組取自 G3 的第一個，在 G3 左移之前讀");
+        assert_eq!(c.grids.peek16(g3_last_word), 0x0640, "G3 的最後一個字組取自 word_2684C");
         assert_eq!(c.terrain_cursor(), 0x0600, "word_2684C 的低位元組被清 0");
     }
 
@@ -302,32 +301,32 @@ mod tests {
     #[ignore]
     fn stage3_smoke() {
         use crate::game::{Entry, Game, GameFiles, Input};
-        use crate::mirror::probe;
         let dir = std::path::PathBuf::from(std::env::var("RS2_ORIG").expect("缺 RS2_ORIG，用 tools/rust.sh test 跑"));
         let exe = std::fs::read(dir.join("S.EXE")).unwrap();
         let image = rs2_formats::unpack_s_exe(&exe).unwrap();
         let scn = std::fs::read(dir.join("SHT.SCN")).unwrap();
         assert_eq!(rs2_formats::unrle(&scn, 0).len(), 24005);
         let start = Game::new(&image, &[], Start::NewGame { difficulty: None }, Fixes::NONE);
+        let state = start.state().clone();
         let map = rs2_formats::unrle(&scn, 0);
         let files = GameFiles { image, scn, ..GameFiles::default() };
-        let mut g = Game::from_snapshot(files, start.ds.bytes(), Entry::Stage3, Fixes::NONE);
+        let mut g = Game::from_state(files, state, Entry::Stage3, Fixes::NONE);
         let mut samples = Vec::new();
         let mut cache_checked = 0usize;
         for _ in 0..2600 {
             // 玩家不死（沒有輸入，機體會被地形擠壓），才跑得到頭目段。
-            g.poke16(probe::PLAYER_1_HP, 0xFF);
+            g.state_mut().pl.ship[0].hp = 0xFF;
             let f = g.step(&Input::default(), &mut |g: &Game, pt: u32| {
                 samples.push(pt);
-                let frame = g.ds.r16(probe::STAGE_FRAME);
+                let frame = g.state().flow.frame;
                 if pt == crate::game::sample::STAGE3_NORMAL && (100..1100).contains(&frame) {
                     // 捲動 40 步之後，G4 快取的 (列 r, 欄 c) 等於地圖 (r, 左緣欄 + c)。
                     // 例外是欄 0 的第 1 列起：新欄寫在 (r+1, 0)，線性位址上緊接 (r, 39)，下一步左移才進到 (r, 39)，
                     // 所以那 19 格是最新的一欄（地圖 (r-1, 左緣欄 + 40)）。
-                    let l = usize::from(g.ds.r16(probe::MAP_LEFT_COL));
+                    let l = usize::from(g.state().scenes.map.left_col);
                     for r in 0..19usize {
                         for c in 0..40usize {
-                            let got = g.ds.r16(GRID4_START + (r * usize::from(TERRAIN_ROW_BYTES) + c * 2) as u16);
+                            let got = g.state().grids.peek16(GRID4_START + (r * usize::from(TERRAIN_ROW_BYTES) + c * 2) as u16);
                             let (mr, mc) = if c == 0 && r >= 1 { (r - 1, l + 40) } else { (r, l + c) };
                             let o = (mr * usize::from(MAP_COLUMNS) + mc) * 2;
                             let want = u16::from_le_bytes([map[o], map[o + 1]]);
@@ -338,13 +337,14 @@ mod tests {
                 }
             });
             if f.exit.is_some() {
-                println!("離開 {:?}，計數 {}，hp {} {}，存活 {}", f.exit, g.ds.r16(probe::STAGE_FRAME), g.ds.r16(probe::PLAYER_1_HP), g.ds.r16(probe::PLAYER_2_HP), g.ds.r8(probe::PLAYERS_ALIVE));
+                let st = g.state();
+                println!("離開 {:?}，計數 {}，hp {} {}，存活 {}", f.exit, st.flow.frame, st.pl.ship[0].hp, st.pl.ship[1].hp, st.pl.alive);
                 break;
             }
         }
         let normal = samples.iter().filter(|&&p| p == crate::game::sample::STAGE3_NORMAL).count();
         let boss = samples.iter().filter(|&&p| p == crate::game::sample::STAGE3_BOSS).count();
-        println!("取樣 普通段 {normal} 頭目段 {boss}，最後地圖左緣 {}", g.ds.r16(probe::MAP_LEFT_COL));
+        println!("取樣 普通段 {normal} 頭目段 {boss}，最後地圖左緣 {}", g.state().scenes.map.left_col);
         println!("G4 快取檢查 {cache_checked} 個取樣");
         assert!(normal > 1000 && boss > 100 && cache_checked > 900);
     }

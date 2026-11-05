@@ -27,10 +27,12 @@
 use crate::draw::Pool;
 use crate::fx::{EffectKind, loop_count};
 use crate::game::Core;
+use crate::grid::GRID3_ROW_BYTES;
+use crate::tables::Shape;
 use crate::video::MyCopy;
 
 /// 池的槽數。
-pub(crate) const POOL_SIZE: usize = 20;
+pub const POOL_SIZE: usize = 20;
 
 /// 記錄裡的 `Y` 字組。
 const YES: u16 = b'Y' as u16;
@@ -53,7 +55,7 @@ const AIM_TOP_BAND: u16 = 20;
 
 /// 八個方向，編號同移動碼 1 至 8。腳本的斜向會交錯斜走與橫走（例如 [`Heading::NE`] 是 02 03 交替），
 /// 所以實際軌跡是偏平的，細節見文件第 7.2 節。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Heading {
     N = 1,
     NE,
@@ -78,7 +80,7 @@ impl Heading {
 }
 
 /// 道具球的種類。生成時格值高四位為 80h、40h、C0h、20h，玩家撿到換成對應武器。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Capsule {
     L,
     B,
@@ -87,7 +89,7 @@ pub(crate) enum Capsule {
 }
 
 /// 寬彈（5×1）的三種腳本：往西，微偏西北，微偏西南。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Tilt {
     /// 腳本 07 07 07 08 07 07 08：微偏西北。
     NorthWest = 0,
@@ -98,7 +100,7 @@ pub(crate) enum Tilt {
 }
 
 /// 五連彈的五個方向，依生成順序。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Spread {
     W = 0,
     NW,
@@ -108,7 +110,7 @@ pub(crate) enum Spread {
 }
 
 /// 敵彈樣板：資料段裡一筆唯讀的記錄，生成時複製進池。位址換算在 `mirror.rs`（[`Template::table_offset`]）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Template {
     /// 八向瞄準彈，1×1。依瞄準朝向選。
     Aimed(Heading),
@@ -348,9 +350,9 @@ impl FirePattern {
     }
 }
 
-/// 一顆敵彈的記錄。欄位是原版的 15 個字組，順序與位移對應見 `mirror.rs`，數值沿用原版字組寬度。
+/// 一顆敵彈的記錄。欄位是原版的 15 個字組，數值沿用原版字組寬度。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Bullet {
+pub struct Bullet {
     /// 反彈球的移動朝向（2、4、6、8）；0 表示不反彈。腳本碼 9 在繪製頁不為 0（8000h）時依它移動，出界時依它反彈。
     pub heading: u16,
     /// 圖框表（9 個字組）在資料段的指標，以移動碼索引，碼大於 8 取第 0 項。
@@ -401,7 +403,53 @@ impl Edge {
     }
 }
 
+/// 池指標：第 `slot` 槽記錄的記號，0 是空槽。記號只在遊戲裡用，不是原版的記錄位址。
+pub const fn record_link(slot: usize) -> u16 {
+    slot as u16 + 1
+}
+
 impl Bullet {
+    /// 記錄的欄位順序（原版 15 個字組）：`Bullet` 的欄位依序對應 `w0` 至 `w14`。
+    pub fn from_words(w: [u16; 15]) -> Bullet {
+        Bullet {
+            heading: w[0],
+            frames: w[1],
+            blit_x: w[2],
+            blit_y: w[3],
+            blit_dx: w[4],
+            blit_dy: w[5],
+            spare: w[6],
+            trail: w[7],
+            library: w[8],
+            col: w[9],
+            row: w[10],
+            dcol: w[11],
+            drow: w[12],
+            script: w[13],
+            shape: w[14],
+        }
+    }
+
+    pub fn to_words(&self) -> [u16; 15] {
+        [
+            self.heading,
+            self.frames,
+            self.blit_x,
+            self.blit_y,
+            self.blit_dx,
+            self.blit_dy,
+            self.spare,
+            self.trail,
+            self.library,
+            self.col,
+            self.row,
+            self.dcol,
+            self.drow,
+            self.script,
+            self.shape,
+        ]
+    }
+
     /// 出界（原版 `sub_17955`、`sub_1798E`、`sub_179C7`、`sub_17A00`）：預設釋放；反彈球（`heading` 非 0）
     /// 朝向在轉換表內就改朝向並留下，不在表內仍釋放。原版這四個函式開頭還檢查旗標是否為 `Y`，
     /// 呼叫端剛設成 `Y`，所以那個檢查恆成立，不移植。
@@ -461,9 +509,8 @@ impl Bullet {
 
 /// 池的一槽。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Slot {
-    /// 池指標表的項：0 表示空槽，使用中等於這一槽記錄的資料段位址（只有生成會寫，見 `mirror.rs` 的 `record_link`）。
-    /// 載入傾印時保留原值，只為了寫回時位元組相同；邏輯只看是否為 0。
+pub struct Slot {
+    /// 池指標表的項：0 表示空槽，使用中是這一槽的記號（只有生成會寫，見 [`record_link`]）。邏輯只看是否為 0。
     pub link: u16,
     /// 記錄。空槽也保留舊內容：原版釋放只清指標，記錄原封不動，資料段比對會看到它。
     pub bullet: Bullet,
@@ -476,12 +523,27 @@ impl Slot {
 }
 
 /// 敵方子彈領域的全部狀態。
-#[derive(Clone, Debug, Default)]
-pub(crate) struct EnemyBullets {
-    pub(crate) slots: [Slot; POOL_SIZE],
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnemyBullets {
+    pub slots: [Slot; POOL_SIZE],
 }
 
 impl EnemyBullets {
+    /// 原版刪除敵彈寫的是「池指標表第 `idx` 項」（`mov [bx+32B3h], 0`，`bx` = 槽號 × 2），沒有檢查 `idx` < 20。
+    /// 記錄區緊接在指標表之後，超出的項就是記錄區的字組：項 20 是槽 0 的 `w0`，之後每 15 項換一槽。
+    /// 玩家碰到格值低四位為 0 的敵彈格時槽號減 1 繞回 FFh，落在項 255，也就是槽 15 的 `w10`（`row`）。
+    pub(crate) fn clear_link_word(&mut self, idx: usize) {
+        if idx < POOL_SIZE {
+            self.slots[idx].link = 0;
+            return;
+        }
+        let word = idx - POOL_SIZE;
+        let Some(slot) = self.slots.get_mut(word / 15) else { return };
+        let mut w = slot.bullet.to_words();
+        w[word % 15] = 0;
+        slot.bullet = Bullet::from_words(w);
+    }
+
     /// 第一個空槽，只找槽號小於 `limit` 的。原版 `limit` 是 [`POOL_SIZE`]；強化規則（`ai.rs`）為了
     /// 不讓格值低四位進位（槽號 15 起，見 [`Core::stamp_grid2`]），在沒有修正時把它壓到 15。
     fn first_free_below(&self, limit: usize) -> Option<usize> {
@@ -591,7 +653,7 @@ impl Core {
         bullet.blit_x = col;
         bullet.row = row;
         bullet.blit_y = row.wrapping_mul(10);
-        self.eb.slots[slot] = Slot { link: crate::mirror::record_link(slot), bullet };
+        self.eb.slots[slot] = Slot { link: record_link(slot), bullet };
         self.bump_gen(Pool::EnemyBullet, slot as u8);
         Some(slot)
     }
@@ -701,14 +763,14 @@ impl Core {
     /// 高 4 位元為 Fh 時，低 4 位元是往回跳的位元組數：指標（已前進）減去它，改以該處位元組的低 4 位元為碼，
     /// 指標不再前進，所以腳本尾端的 `F7` 會讓最後 7 格循環。
     fn read_script_code(&self, bullet: &mut Bullet) -> u8 {
-        let byte = self.table_byte(bullet.script);
+        let byte = self.tables.script_byte(bullet.script);
         bullet.script = bullet.script.wrapping_add(1);
         let code = byte & 0x0F;
         if byte & 0xF0 != 0xF0 {
             return code;
         }
         bullet.script = bullet.script.wrapping_sub(code as u16);
-        self.table_byte(bullet.script) & 0x0F
+        self.tables.script_byte(bullet.script) & 0x0F
     }
 
     /// 依移動碼移動（原版 `sub_17631`）。回傳要不要釋放。
@@ -758,7 +820,7 @@ impl Core {
     /// `MY.GO` 圖庫先畫遮罩再畫四平面，四平面的 y 加 1；舞台圖庫先遮罩再四平面，y 不變。
     fn draw_bullet(&mut self, bullet: &Bullet, code: u8) {
         let frame = if code > 8 { 0 } else { code as u16 };
-        let index = self.table_word(bullet.frames.wrapping_add(2 * frame));
+        let index = self.tables.table_word(bullet.frames, 2 * frame);
         if bullet.library == MY_LIBRARY {
             self.set_blit_params(bullet.blit_x, bullet.blit_y, index);
             self.cut_my(MyCopy::General);
@@ -774,11 +836,11 @@ impl Core {
     /// 把形狀寫進 G3 與 G2。形狀寬同時寫進繪製的每列位元組殘值（`Core::set_shape_width`），
     /// 下一個繪製命令會記下它；寫兩次的值相同，所以只寫一次。
     fn stamp_grids(&mut self, bullet: &Bullet, slot: u8) {
-        let width = self.table_word(bullet.shape);
-        let height = self.table_word(bullet.shape.wrapping_add(2));
-        self.set_shape_width(width);
-        self.stamp_grid3(bullet, width, height);
-        self.stamp_grid2(bullet, width, height, slot);
+        let tables = self.tables();
+        let shape = tables.shape(bullet.shape);
+        self.set_shape_width(shape.width);
+        self.stamp_grid3(bullet, shape);
+        self.stamp_grid2(bullet, shape, slot);
     }
 
     /// 形狀以 `or` 寫進 G3 髒格（原版 `sub_177D2`、`sub_17821`）。
@@ -788,12 +850,13 @@ impl Core {
     /// 高度（有號）不大於 0 的形狀同樣不寫。其餘逐列寫，列 >= 12h 的剩餘列整個放棄。
     /// 每列只准寫在該列的範圍內（欄 0 至 39），超出的格略過，不像特效（`fx.rs`）可以溢進相鄰的列。
     /// 列距 50h 是從第一列累加，不是每列重查列表。
-    fn stamp_grid3(&mut self, bullet: &Bullet, width: u16, height: u16) {
+    fn stamp_grid3(&mut self, bullet: &Bullet, shape: &Shape) {
+        let (width, height) = (shape.width, shape.height);
         let mut row = bullet.row;
         if (row as i16) < 0 || (height as i16) <= 0 {
             return;
         }
-        let mut src = bullet.shape.wrapping_add(4);
+        let mut src = 0u16;
         let mut cell = self.grid3_cell_addr(row, bullet.col);
         let mut first = self.grid3_cell_addr(row, 0);
         for _ in 0..height {
@@ -802,14 +865,14 @@ impl Core {
             }
             let mut at = cell;
             for _ in 0..loop_count(width) {
-                let v = self.table_byte(src);
+                let v = shape.cell(src);
                 self.grid3_or_in_row(first, at, v);
                 at = at.wrapping_add(2);
                 src = src.wrapping_add(1);
             }
             row = row.wrapping_add(1);
-            cell = cell.wrapping_add(crate::mirror::GRID3_ROW_BYTES);
-            first = first.wrapping_add(crate::mirror::GRID3_ROW_BYTES);
+            cell = cell.wrapping_add(GRID3_ROW_BYTES);
+            first = first.wrapping_add(GRID3_ROW_BYTES);
         }
     }
 
@@ -819,15 +882,15 @@ impl Core {
     /// 8 位元相加，不處理進位：槽號 15 以上低四位繞回並進位到高四位，道具判定與刪除都會錯。
     /// `Fixes::bullet_slot_carry` 開啟時格值只留形狀，槽號另存在 `g2_slots`。
     /// 列基底、可寫範圍與列 >= 14h（含負列）別名到 G1 的行為在 `Core::grid2_row_base`、`Core::grid2_writable`。
-    pub(crate) fn stamp_grid2(&mut self, bullet: &Bullet, width: u16, height: u16, slot: u8) {
-        let mut src = bullet.shape.wrapping_add(4);
+    pub(crate) fn stamp_grid2(&mut self, bullet: &Bullet, shape: &Shape, slot: u8) {
+        let mut src = 0u16;
         let mut row = bullet.row;
-        for _ in 0..loop_count(height) {
+        for _ in 0..loop_count(shape.height) {
             let base = self.grid2_row_base(row);
             let mut at = base.wrapping_add(bullet.col);
-            for _ in 0..loop_count(width) {
+            for _ in 0..loop_count(shape.width) {
                 if self.grid2_writable(base, at) {
-                    let shape_cell = self.table_byte(src);
+                    let shape_cell = shape.cell(src);
                     if shape_cell != 0 {
                         let cell = if self.fixes.bullet_slot_carry {
                             let index = self.grid2_index(at);
@@ -876,17 +939,12 @@ mod tests {
     use crate::game::{Fixes, Start};
 
     fn core() -> Core {
-        let image = vec![0u8; rs2_formats::DSEG_IMAGE_OFFSET + 0x10000];
-        Core::new(&image, &[], Start::Demo, Fixes::NONE)
+        Core::for_test(Start::Demo, Fixes::NONE)
     }
 
     /// 在 `at` 擺一個 `w` × `h` 的形狀，格值全為 `cell`。
     fn put_shape(c: &mut Core, at: u16, w: u16, h: u16, cell: u8) {
-        c.ds.w16(at, w);
-        c.ds.w16(at + 2, h);
-        for i in 0..w * h {
-            c.ds.w8(at + 4 + i, cell);
-        }
+        c.tables_mut().put_shape(at, w, h, cell);
     }
 
     impl Heading {
@@ -1104,7 +1162,7 @@ mod tests {
         c.fire_enemy_bullets(b'F' as u16, 12, 7);
         let s0 = c.eb.slots[0];
         assert!(s0.is_active());
-        assert_eq!(s0.link, crate::mirror::record_link(0));
+        assert_eq!(s0.link, record_link(0));
         assert_eq!((s0.bullet.col, s0.bullet.blit_x, s0.bullet.row, s0.bullet.blit_y), (12, 12, 7, 70));
         c.fire_enemy_bullets(b'Z' as u16, 1, 2);
         assert_eq!(c.eb.slots[1].bullet.col, 1);
@@ -1142,9 +1200,7 @@ mod tests {
     fn script_f7_loops_the_last_seven_codes() {
         let mut c = core();
         let script = 0x7000u16;
-        for (i, b) in [1u8, 2, 3, 4, 5, 6, 7, 0xF7].into_iter().enumerate() {
-            c.ds.w8(script + i as u16, b);
-        }
+        c.tables_mut().put_bytes(script, &[1, 2, 3, 4, 5, 6, 7, 0xF7]);
         let mut b = Bullet { script, ..Bullet::default() };
         let codes: Vec<u8> = (0..10).map(|_| c.read_script_code(&mut b)).collect();
         // 第 8 次讀到 F7：指標（已前進到 8）減 7 回到第二個位元組，以它的碼 2 當本幀，指標不再前進；
@@ -1238,15 +1294,11 @@ mod tests {
         c.fill_row_tables();
         // 腳本：往右兩格後結束。形狀 1 × 1，格值 1。
         let (script, shape, frames) = (0x7000u16, 0x7100u16, 0x7200u16);
-        c.ds.w8(script, 3);
-        c.ds.w8(script + 1, 3);
-        c.ds.w8(script + 2, 0);
+        c.tables_mut().put_bytes(script, &[3, 3, 0]);
         put_shape(&mut c, shape, 1, 1, 1);
-        for i in 0..9u16 {
-            c.ds.w16(frames + 2 * i, 40 + i);
-        }
+        c.tables_mut().put_words(frames, &(0..9u16).map(|i| 40 + i).collect::<Vec<_>>());
         c.eb.slots[2] = Slot {
-            link: crate::mirror::record_link(2),
+            link: record_link(2),
             bullet: Bullet {
                 frames,
                 col: 5,
@@ -1276,8 +1328,8 @@ mod tests {
         assert!(blits.iter().all(|x| x.x == 6 && x.y == 40 && x.index == 43), "圖框取移動碼 3 的項");
         assert!(blits.iter().all(|x| x.obj.map(|o| (o.pool, o.slot)) == Some((Pool::EnemyBullet, 2))));
         assert_eq!(c.cur_obj, None, "更新完清掉目前物件");
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
-        assert_eq!(c.ds.r8(c.grid2_row_base(4) + 6), 1 + 2, "形狀格值加槽號寫進 G2");
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(4, 6)), 1, "形狀寫進 G3");
+        assert_eq!(c.grids.peek8(c.grid2_row_base(4) + 6), 1 + 2, "形狀格值加槽號寫進 G2");
 
         c.update_enemy_bullets();
         assert_eq!(c.eb.slots[2].bullet.col, 7);
@@ -1291,9 +1343,7 @@ mod tests {
         let mut c = core();
         let (shape, frames) = (0x7100u16, 0x7200u16);
         put_shape(&mut c, shape, 1, 1, 1);
-        for i in 0..9u16 {
-            c.ds.w16(frames + 2 * i, 42);
-        }
+        c.tables_mut().put_words(frames, &[42; 9]);
         let mut b = Bullet { library: MY_LIBRARY, frames, shape, blit_x: 3, blit_y: 50, col: 3, row: 5, ..Bullet::default() };
         c.draws.clear();
         c.draw_bullet(&b, 0);
@@ -1319,9 +1369,7 @@ mod tests {
         let mut c = core();
         let frames = 0x7200u16;
         put_shape(&mut c, 0x7100, 1, 1, 1);
-        for i in 0..9u16 {
-            c.ds.w16(frames + 2 * i, 100 + i);
-        }
+        c.tables_mut().put_words(frames, &(0..9u16).map(|i| 100 + i).collect::<Vec<_>>());
         let b = Bullet { frames, shape: 0x7100, ..Bullet::default() };
         for (code, want) in [(0u8, 100u16), (3, 103), (8, 108), (9, 100), (15, 100)] {
             c.draws.clear();
@@ -1332,12 +1380,34 @@ mod tests {
     }
 
     #[test]
+    fn clear_link_word_past_the_table_lands_in_the_records() {
+        let mut eb = EnemyBullets::default();
+        for s in eb.slots.iter_mut() {
+            s.link = 0x1234;
+            s.bullet = Bullet::from_words([0xFFFF; 15]);
+        }
+        eb.clear_link_word(3);
+        assert_eq!(eb.slots[3].link, 0);
+        eb.clear_link_word(20);
+        assert_eq!(eb.slots[0].bullet.heading, 0, "項 20 是槽 0 的 w0");
+        eb.clear_link_word(20 + 15 + 14);
+        assert_eq!(eb.slots[1].bullet.shape, 0, "槽 1 的 w14");
+        eb.clear_link_word(255);
+        assert_eq!(eb.slots[15].bullet.row, 0, "項 255 是槽 15 的 w10");
+        // 只動一個字組。
+        let zeros = eb.slots.iter().map(|s| s.bullet.to_words().iter().filter(|&&w| w == 0).count()).sum::<usize>();
+        assert_eq!(zeros, 3);
+        assert_eq!(eb.slots.iter().filter(|s| s.link == 0).count(), 1);
+    }
+
+    #[test]
     fn trail_bullets_play_the_effect_at_their_cell() {
         let mut c = core();
         put_shape(&mut c, 0x7100, 1, 1, 0);
-        c.ds.w8(0x7000, 0x0A);
-        let b = Bullet { trail: YES, script: 0x7000, shape: 0x7100, col: 8, row: 3, ..Bullet::default() };
-        c.eb.slots[0] = Slot { link: crate::mirror::record_link(0), bullet: b };
+        c.tables_mut().put_bytes(0x7000, &[0x0A]);
+        c.tables_mut().put_words(0x7200, &[0; 9]);
+        let b = Bullet { trail: YES, script: 0x7000, shape: 0x7100, frames: 0x7200, col: 8, row: 3, ..Bullet::default() };
+        c.eb.slots[0] = Slot { link: record_link(0), bullet: b };
         c.update_enemy_bullets();
         assert_eq!((c.fx.slots[0].x, c.fx.slots[0].y), (8, 3));
         assert!(c.fx.slots[0].is_active());
@@ -1348,68 +1418,57 @@ mod tests {
         let mut c = core();
         c.fill_row_tables();
         let shape = 0x7100u16;
-        c.ds.w16(shape, 2);
-        c.ds.w16(shape + 2, 3);
-        for (i, v) in [1u8, 2, 3, 4, 5, 6].into_iter().enumerate() {
-            c.ds.w8(shape + 4 + i as u16, v);
-        }
+        c.tables_mut().put_shape_cells(shape, 2, 3, &[1, 2, 3, 4, 5, 6]);
+        let tables = c.tables();
         // 列 -1：原版什麼都不寫（見 stamp_grid3 的說明），不是只跳過上方那一列。
-        let before = c.ds.bytes().to_vec();
+        let before = c.snapshot();
         let b = Bullet { shape, col: 10, row: 0xFFFF, ..Bullet::default() };
-        c.stamp_grid3(&b, 2, 3);
-        assert_eq!(c.ds.bytes(), &before[..]);
+        c.stamp_grid3(&b, tables.shape(shape));
+        assert_eq!(c.snapshot(), before);
         // 列 0 起正常寫三列。
         let b = Bullet { shape, col: 10, row: 0, ..Bullet::default() };
-        c.stamp_grid3(&b, 2, 3);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(0, 10)), 1);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(0, 11)), 2);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(2, 10)), 5);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(2, 11)), 6);
+        c.stamp_grid3(&b, tables.shape(shape));
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(0, 10)), 1);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(0, 11)), 2);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(2, 10)), 5);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(2, 11)), 6);
         // 欄 39 的下一格在該列之外：略過，不溢進下一列的欄 0。
         let mut c = core();
         c.fill_row_tables();
-        c.ds.w16(shape, 2);
-        c.ds.w16(shape + 2, 1);
-        c.ds.w8(shape + 4, 7);
-        c.ds.w8(shape + 5, 9);
+        c.tables_mut().put_shape_cells(shape, 2, 1, &[7, 9]);
+        let tables = c.tables();
         let b = Bullet { shape, col: 39, row: 4, ..Bullet::default() };
-        c.stamp_grid3(&b, 2, 1);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(4, 39)), 7);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(5, 0)), 0, "不溢進下一列");
+        c.stamp_grid3(&b, tables.shape(shape));
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(4, 39)), 7);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(5, 0)), 0, "不溢進下一列");
         // 列 12h 以後整列放棄。
         let mut c = core();
         c.fill_row_tables();
-        c.ds.w16(shape, 1);
-        c.ds.w16(shape + 2, 3);
-        for i in 0..3 {
-            c.ds.w8(shape + 4 + i, 1);
-        }
+        c.tables_mut().put_shape(shape, 1, 3, 1);
+        let tables = c.tables();
         let b = Bullet { shape, col: 3, row: 0x10, ..Bullet::default() };
-        c.stamp_grid3(&b, 1, 3);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(0x10, 3)), 1);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(0x11, 3)), 1);
-        assert_eq!(c.ds.r8(c.grid3_cell_addr(0x12, 3)), 0);
+        c.stamp_grid3(&b, tables.shape(shape));
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(0x10, 3)), 1);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(0x11, 3)), 1);
+        assert_eq!(c.grids.peek8(c.grid3_cell_addr(0x12, 3)), 0);
     }
 
     #[test]
     fn g2_stamp_adds_the_slot_and_stays_inside_columns_1_to_38() {
         let mut c = core();
         let shape = 0x7100u16;
-        c.ds.w16(shape, 3);
-        c.ds.w16(shape + 2, 1);
-        for (i, v) in [1u8, 0, 1].into_iter().enumerate() {
-            c.ds.w8(shape + 4 + i as u16, v);
-        }
+        c.tables_mut().put_shape_cells(shape, 3, 1, &[1, 0, 1]);
+        let tables = c.tables();
         let b = Bullet { shape, col: 37, row: 4, ..Bullet::default() };
-        c.stamp_grid2(&b, 3, 1, 5);
+        c.stamp_grid2(&b, tables.shape(shape), 5);
         let base = c.grid2_row_base(4);
-        assert_eq!(c.ds.r8(base + 37), 1 + 5);
-        assert_eq!(c.ds.r8(base + 38), 0, "格值 0 不寫");
-        assert_eq!(c.ds.r8(base + 39), 0, "欄 39 不可寫");
+        assert_eq!(c.grids.peek8(base + 37), 1 + 5);
+        assert_eq!(c.grids.peek8(base + 38), 0, "格值 0 不寫");
+        assert_eq!(c.grids.peek8(base + 39), 0, "欄 39 不可寫");
         // 欄 0 不可寫。
         let b = Bullet { shape, col: 0, row: 4, ..Bullet::default() };
-        c.stamp_grid2(&b, 3, 1, 1);
-        assert_eq!(c.ds.r8(base), 0);
+        c.stamp_grid2(&b, tables.shape(shape), 1);
+        assert_eq!(c.grids.peek8(base), 0);
     }
 
     #[test]
@@ -1417,24 +1476,24 @@ mod tests {
         let mut c = core();
         let shape = 0x7100u16;
         put_shape(&mut c, shape, 1, 1, 0x81);
+        let tables = c.tables();
         let b = Bullet { shape, col: 5, row: 4, ..Bullet::default() };
-        c.stamp_grid2(&b, 1, 1, 16);
-        assert_eq!(c.ds.r8(c.grid2_row_base(4) + 5), 0x91, "81h + 16 進位到高四位");
+        c.stamp_grid2(&b, tables.shape(shape), 16);
+        assert_eq!(c.grids.peek8(c.grid2_row_base(4) + 5), 0x91, "81h + 16 進位到高四位");
         let mut c = core();
-        c.ds.w16(shape, 1);
-        c.ds.w16(shape + 2, 1);
-        c.ds.w8(shape + 4, 0xF0);
-        c.stamp_grid2(&b, 1, 1, 0x20);
-        assert_eq!(c.ds.r8(c.grid2_row_base(4) + 5), 0x10, "8 位元相加，溢位丟掉");
+        c.tables_mut().put_shape(shape, 1, 1, 0xF0);
+        let tables = c.tables();
+        c.stamp_grid2(&b, tables.shape(shape), 0x20);
+        assert_eq!(c.grids.peek8(c.grid2_row_base(4) + 5), 0x10, "8 位元相加，溢位丟掉");
     }
 
     #[test]
     fn g2_rows_at_or_past_20_alias_the_row_table_end_into_g1() {
         // 列 >= 14h（含負列）的列基底取自 G1 的前兩格。
         let mut c = core();
-        c.ds.w16(crate::mirror::GRID1_START, 0x0003);
+        c.grids.poke16(crate::grid::GRID1_START, 0x0003);
         let base = c.grid2_row_base(20);
-        assert_eq!(base, crate::mirror::GRID2_START + 3);
+        assert_eq!(base, crate::grid::GRID2_START + 3);
         assert_eq!(c.grid2_row_base(0xFFFF), base);
         assert_eq!(c.grid2_row_base(1234), base);
     }
