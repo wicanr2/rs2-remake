@@ -27,8 +27,23 @@ HD 素材由 Codex 重繪，Claude Code 負責抽取、排版、切圖、衍生�
 | `placeholder-nearest` | 20 | 高 1 列的佔位圖，直接放大 |
 | `map-blank` | 1 | 全黑的空白圖塊 |
 | 調色盤變體 `palette-recolor` | 326 | 依色號對應重新上色，未經生成模型。沒有涵蓋的組合由 `rs2-gfx` 在執行時換色 |
-| 單色 `mono-derived-dither` | 1,273 | 由 HD 彩色圖轉灰階再抖動成 1bpp，是推導結果，未經生成模型 |
-| 單色 `mono-nearest`、`mono-mask-nearest` | 253 | 佔位圖、彩色地圖沒有對應內容的單色圖塊、單色遮罩，直接放大 |
+單色 1,526 張（`workspace/hd/assets/mono/`，每張的方法與雜湊在 `assets/mono-manifest.json`）。使用者 2026-11-06 選定 m2 灰階賽璐璐（`tools/hd-styles/m2-gray-cel-r2.txt`），Codex 畫灰階，工具以 4×4 Bayer 有序抖動轉 1-bit。批次 `full-mono-m2-r1`（89 張表）與 `full-mono-m2-r2`（3 張重畫）：
+
+| 單色方法 | 數量 | 說明 |
+|---|---|---|
+| `mono-map-tile-codex+bayer4` | 1,006 | 第三關圖塊。單色用 `SHT.SCR` 的配置，排成 12 個物件、15 個面板重繪，每種圖塊取縮回單色格後最像原版的出現位置 |
+| `mono-codex-redraw+bayer4` | 224 | 一般圖 |
+| `mono-codex-redraw+thr128` | 28 | 文字類，抖動會把筆畫打成點線，改用門檻 128 |
+| `mono-codex-redraw+bayer4+sd-overlay` | 17 | 開場飛船與噴焰，只重繪物件，矩形其餘部分維持原版 |
+| `mono-mask-from-hd-alpha` | 173 | 遮罩，由重繪圖的 alpha 反推 |
+| `mono-mask-nearest` | 35 | 沒有重繪配對的遮罩，直接放大 |
+| `mono-derived-shift` | 14 | `BH2` 像素位移相位，由基礎磚位移 |
+| `mono-nearest-placeholder`、`mono-nearest-unused`、`mono-nearest-blank` | 25 | 佔位圖、遊戲不畫的項、全黑圖塊 |
+| `mono-credits-nearest` | 4 | `MY` 第 15、26、47、48 項署名與商標，不送 Codex，原版單色最近鄰放大 |
+
+- 子彈、道具、爆炸：提示詞要求淺色本體、純白核心加一圈純黑細輪廓，在黑太空與亮地面上都看得見。轉 1-bit 後亮點比例低於原版 0.8 倍的再提高 gamma（4 項）。
+- `BH1` 第 1 項是橫向重複的 32 像素窄條，取 Codex 稿每列平均只留垂直漸層再抖動，左右必接得上，代價是沒有煙霧紋理。
+- 先前由彩色 HD 推導的抖動版備份在 `workspace/hd/mono-derived-v1/`。`hd_variants.py` 看到 `assets/mono-manifest.json` 就不再推導單色。
 
 遮罩庫的 201 張中，有配對使用的由 HD alpha 反推並外擴一個邏輯像素，重現原版的黑邊；沒配對的殘留遮罩直接放大。
 
@@ -47,6 +62,18 @@ tools/hd_docker.sh hd_variants.py /in /w
 tools/hd_docker.sh hd_basepal.py /in /w                        # 每張圖的基準調色盤，執行時換色用
 tools/hd_docker.sh hd_overview.py /in /w
 ```
+
+單色 HD 的重繪（m2）另走一條：
+
+```sh
+tools/hd_docker.sh hd_mono_full_plan.py /in /w full-mono-m2-r1
+tools/hd_docker.sh hd_mono_full_ref.py /in /w full-mono-m2-r1 /tools/hd-styles/m2-gray-cel-r2.txt
+tools/hd_run.sh workspace/hd/full-mono-m2-r1 4
+tools/hd_docker.sh hd_mono_full_cut.py /in /w mono-m2-candidate full-mono-m2-r1 full-mono-m2-r2
+# 候選 workspace/hd/mono-m2-candidate/ 看過實機對照、使用者同意後，複製 mono/ 與 mono-manifest.json 進 assets/
+```
+
+`hd_mono_full_*` 的參數細節見各檔開頭；`r2` 的參考表用 `--plan-from full-mono-m2-r1` 取同一份計畫。
 
 `hd_run.sh` 的實際呼叫：
 
@@ -89,7 +116,7 @@ codex exec --skip-git-repo-check -s read-only -C <ref> -i <ref.png> [-i <extra.p
 - `MY` 第 31 項重畫後，砲座影格的輪廓 IoU 約 0.98。
 - 調色盤變體是色彩映射，同色階的細節會比基礎版扁平，爆炸類最明顯。第二關頭目在 `stage2_c` 下，石塊邊緣略帶紅色。
 - 原版循環少數幾個色號做火焰閃爍，HD 圖沒有色號，所以 HD 的火焰是靜止的。
-- 單色版與調色盤變體都是推導結果。要真正重繪單色版，需要另外送 Codex。
+- 調色盤變體是推導結果。單色版已由 Codex 重繪；開場飛船的矩形邊緣仍看得出細微痕跡，`MY` 第 30 至 40 項砲座的輪廓 IoU 約 0.72 至 0.82，約 16 張地圖圖塊和原版單色的相關為負（最低 `MAP` 第 241 項 -0.17）。
 - 第 48 項署名的中間字未確認，放大後也是原點陣。
 - 破解組 intro 不做 HD，它不是大宇的素材。音樂沒做 HD，本文件只涵蓋圖像。
 

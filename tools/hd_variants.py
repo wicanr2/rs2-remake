@@ -113,6 +113,13 @@ def corr(a, b):
     return float(np.corrcoef(a.ravel(), b.ravel())[0, 1])
 
 
+# 2026-11-06 起單色 HD 改由 Codex 重繪（m2 灰階賽璐璐，見 CONTEXT.md），成品帶 mono-manifest.json。
+# 有這個檔就不再推導單色，免得重跑本工具把重繪結果蓋回抖動版。推導版的備份在 workspace/hd/mono-derived-v1/。
+CODEX_MONO = os.path.exists(os.path.join(out, "mono-manifest.json"))
+if CODEX_MONO:
+    print("單色由 Codex 重繪批次產生（mono-manifest.json），略過推導")
+    MONO_IMG, MONO_MASK = {}, {}
+
 for fname, lib in MONO_IMG.items():
     d = os.path.join(out, "mono", fname)
     os.makedirs(d, exist_ok=True)
@@ -159,7 +166,7 @@ scn = np.array(struct.unpack_from("<12000H", unrle(open(os.path.join(src, "SHT.S
 scr = np.array(struct.unpack_from("<12000H", unrle(open(os.path.join(src, "SHT.SCR"), "rb").read(), 0)[0], 0), np.int32).reshape(20, 600)
 same_geo = float(((scn != 0) == (scr != 0)).mean())
 full = np.array(Image.open(os.path.join(out, "maps", "SHT.SCN.hd.png")).convert("RGB"), np.float32).mean(axis=2)
-bank = mono_bank("MAP.BDB")
+bank = [] if CODEX_MONO else mono_bank("MAP.BDB")
 d = os.path.join(out, "mono", "MAP.BDB")
 os.makedirs(d, exist_ok=True)
 TW, TH = 8 * SCALE, 10 * SCALE

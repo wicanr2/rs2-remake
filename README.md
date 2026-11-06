@@ -137,7 +137,7 @@ Linux 發行包（AppImage）的實際視窗，第一關示範模式，HD 圖。
 <img src="docs/images/game/stage3-map.png" alt="第三關地圖一段，上方原版，下方 HD" width="100%">
 </details>
 
-CGA 與 MGA 的單色版另有 1,526 張，由 HD 彩色圖推導，這裡沒有列出。
+CGA 與 MGA 的單色版另有 1,526 張，由 Codex 以灰階賽璐璐重繪，再轉成黑白點陣，署名與公司標誌照舊用原版放大，這裡沒有列出。
 
 ## 現況
 

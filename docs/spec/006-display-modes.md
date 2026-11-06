@@ -13,7 +13,7 @@
 | 不變 | 切換不改模擬：每步資料段雜湊相同。所有接收端永遠一起吃同一批繪製命令，切換只換顯示哪一個，所以切換當下的畫面一定正確 |
 | 繪製 | VGA 沿用 `VgaSink`。EGA 與 VGA 用同一份平面，只換色表。CGA、MGA 用 `MonoSink`，逐位元組重現原版顯示記憶體 |
 | 載入 | 單色圖庫 21 個檔，啟動時驗雜湊。缺檔或雜湊不符時 CGA、MGA 不可選，VGA、EGA 不受影響 |
-| HD | VGA 沿用 `LayerSink`。EGA 的 HD 是 VGA HD 量化到 EGA 色表。CGA、MGA 的 HD 用 `MonoHdSink`（`workspace/hd/assets/mono/` 的 1,526 張推導結果，使用者之前決定單色不送生成模型），輸出 1280×800 |
+| HD | VGA 沿用 `LayerSink`。EGA 的 HD 是 VGA HD 量化到 EGA 色表。CGA、MGA 的 HD 用 `MonoHdSink`（`workspace/hd/assets/mono/` 的 1,526 張，2026-11-06 起是 Codex 的 m2 灰階賽璐璐重繪再以 4×4 Bayer 轉 1-bit，方法見 `docs/hd/codex-handoff.md`），輸出 1280×800 |
 | 喇叭附帶音 | 單色沒有。原版 `sub_18DCC`（特效 blit）在 E 才驅動 PC 喇叭。CGA、MGA 時不產生 `AudioMsg::Speaker`，AdLib 音樂不受影響 |
 
 ## 輸入
@@ -203,7 +203,7 @@ dosgolem `rs2dyn` 補 `0008-rs2dyn-mono-vram.patch`：`waittrace` 在 M 為 `C` 
 
 - 實機（CGA、Hercules、EGA 顯示卡與螢幕）。EGA 的 oracle 只有屬性暫存器的值（核心 `EgaAttr` 對 dosgolem 收據相同）；色表是 EGA 硬體的定義，dosgolem 在 VGA 的 EGA 模式的 DAC 預設值不是 rgbRGB 色表，不能當色表的 oracle。
 - EGA 在補間或 HD 時的量化沒有原版對照。
-- 單色 HD 沒有原版 oracle。推導圖與 SD 圖的相關係數中位數：`MY` 0.47、`SHT1～5` 0.49～0.68、`BH1`、`BH2`、`BH4` 0.28～0.43、`BEG1` 0.35，`MAP.BDB` 只有 0.046（第三關地形圖塊的細節與 SD 不像）。操作語意以「HD 圖換成 SD 最近鄰放大」的嚴格比對驗證（14,884 筆相同），圖本身的品質由使用者決定要不要重畫。
+- 單色 HD 沒有原版 oracle。Codex 重繪版與 SD 圖的相關係數中位數 0.521（有變化的 1,493 張），`MAP.BDB` 圖塊 0.422；先前的推導版是 0.47 左右，`MAP.BDB` 只有 0.046。操作語意以「HD 圖換成 SD 最近鄰放大」的嚴格比對驗證（14,884 筆相同），與 HD 圖的內容無關。圖的品質由使用者看實機對照決定（`workspace/hd/mono-m2-review/`）。
 - 手感與畫面觀感沒有真人驗證。
 - Android 資料包要含 21 個單色圖庫檔，否則 CGA、MGA 在那邊不可選。
 - 狀態列的 `ST_MONO_MISSING` 字樣受內附點陣字型的字集限制，要更清楚的措辭需重烘 `ui-font.bin`。

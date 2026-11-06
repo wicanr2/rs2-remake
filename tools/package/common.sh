@@ -23,7 +23,7 @@ IMG_LINUX="mm45-rust-desktop:1.99.1-r3"             # Debian 12（glibc 2.36）�
 IMG_SQUASH="hr-appimage:runtime-recovery-r1"        # mksquashfs 4.5.1
 IMG_VERIFY="yuan-wine-verify:noble-r2"               # Ubuntu 24.04：Xvfb、Wine 9.0、ImageMagick、python3；沒有 SDL2 與專案檔案
 
-DEFAULT_VERSION="v.1.0.0-20261106"
+DEFAULT_VERSION="v.1.0.1-20261106"
 
 die() { echo "build: $*" >&2; exit 1; }
 say() { echo "[$(date +%H:%M:%S)] $*" >&2; }
