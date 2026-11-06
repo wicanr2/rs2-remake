@@ -32,7 +32,7 @@ DROP = [
     ("final", re.compile(r"/_final/")),
     ("maps", re.compile(r"^maps/")),
     ("MAP-objects", re.compile(r"^MAP/objects/")),
-    ("records", re.compile(r"^hd-[a-z-]+\.json$")),
+    ("records", re.compile(r"^(?:hd|mono)-[a-z-]+\.json$")),
 ]
 
 

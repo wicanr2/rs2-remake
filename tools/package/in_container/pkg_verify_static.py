@@ -179,7 +179,7 @@ def expected_original():
     return {**color, **mono}
 
 
-FORBIDDEN = re.compile(r"(?:^|/)(SEN\.EXE|SEN\.PAS|RS2\.BAT|RS2\.JOY|JOYMOUSE\.CFG|FILE_ID\.DIZ|ASMDRV\.EXE|JGAME\.EXE)$|/overview/|/_final/|hd-manifest\.json|hd-postfix\.json|hd-variants-manifest\.json|/maps/|/MAP/objects/", re.I)
+FORBIDDEN = re.compile(r"(?:^|/)(SEN\.EXE|SEN\.PAS|RS2\.BAT|RS2\.JOY|JOYMOUSE\.CFG|FILE_ID\.DIZ|ASMDRV\.EXE|JGAME\.EXE)$|/overview/|/_final/|hd-manifest\.json|hd-postfix\.json|hd-variants-manifest\.json|mono-manifest\.json|/maps/|/MAP/objects/", re.I)
 
 
 def content_checks(label, files: dict, manifest: dict, prefix: str, data_root: str, doc_roots):
