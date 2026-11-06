@@ -38,7 +38,6 @@ pub const USAGE: &str = "\
   --tween on|off        覆寫補間開關的初值
   --feel on|off         覆寫玩家機預測與短按保留的初值（F5）
   --feedback on|off     覆寫打擊回饋選項的初值（只在 HD 畫面生效）
-|off         覆寫玩家機預測與短按保留的初值（F5）
   --touch               畫觸控控制鈕並用手機版工具列（Android 預設，桌面版驗證用）
   --counter on|off      覆寫幀計數開關的初值
   --mode vga|ega|cga|mga
