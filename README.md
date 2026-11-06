@@ -209,13 +209,13 @@ tools/rust.sh play              # 有 workspace/hd/assets 就用 HD，加 --no-h
 ### 發行包
 
 ```sh
-bash tools/package/build_all.sh v.1.0.0-YYYYMMDD
-ANDROID_SRC=$PWD tools/package/android_apk.sh v.1.0.0-YYYYMMDD arm64-v8a x86_64
+bash tools/package/build_all.sh v.1.0.1-YYYYMMDD
+ANDROID_SRC=$PWD tools/package/android_apk.sh v.1.0.1-YYYYMMDD arm64-v8a x86_64
 ```
 
-成品放在 `dist-all/`，內含原版資料與 HD 圖，只供自己保存，不上傳。步驟與驗證見[規格 004](docs/spec/004-rewrite-and-delivery.md)。目前的版本是 v1.0.0（`v.1.0.0-20261106`），另有一支 72 秒的推廣影片，由 `tools/promo/make.sh` 產生，同樣只留本機。
+成品放在 `dist-all/`，內含原版資料與 HD 圖，只供自己保存，不上傳。步驟與驗證見[規格 004](docs/spec/004-rewrite-and-delivery.md)。目前的版本是 v1.0.1（`v.1.0.1-20261106`），單色 HD 換成 Codex 重繪版；另有一支 72 秒的推廣影片，由 `tools/promo/make.sh` 產生，同樣只留本機。
 
-下面的畫面都取自 v.1.0.0-20261106 的發行包：桌面版由 `tools/package/readme_shots.sh` 在容器裡執行 AppImage 截取，Android 版取自模擬器的煙霧測試（`tools/package/android_smoke.sh`）。
+下面的畫面都取自 v.1.0.1-20261106 的發行包：桌面版由 `tools/package/readme_shots.sh` 在容器裡執行 AppImage 截取，Android 版取自模擬器的煙霧測試（`tools/package/android_smoke.sh`）。
 
 | | |
 |---|---|

@@ -401,6 +401,18 @@ Android 煙霧測試第二次啟動的失敗：
 
 執行邊界：試稿代理在主機跑過三次 `python3 -c`、一次直接執行 `tools/hd_mono_root.py`（缺參數立即結束）；兩個 docker 探測指令沒帶 `-u`、記憶體、CPU、log 輪替等旗標；截圖時兩個容器同時各用 4 核。
 
+### 單色 HD m2 全量重繪與 v1.0.1（2026-11-06）
+
+- 使用者從試稿選 m2。全量批次 `full-mono-m2-r1`（89 張表）與 `-r2`（3 張重畫），Codex 93 次，失敗 0。重畫的原因：磁片提示字母與「disk A」明暗畫反、`SHT5` END 字母外框與本體顛倒、閃電道具太灰。另一次重呼叫是代理把畫布設成 1024×1024，Codex 的方形輸出是 1254×1254，不能用。
+- 文字核對：ACT 卡、選單字樣、磁片提示、道具球 L、B、K、S、開場 RS-2 都正確。單色原版第 85 項就是「2 PLAYER」，彩色版才是「2 PLAYERS」。END 只在表層級核對。
+- 使用者看過對照後同意替換。舊的推導版備份到 `workspace/hd/mono-derived-v1/`，候選複製進 `assets/mono`，`hd_variants.py` 加上看到 `mono-manifest.json` 就略過單色的保護，重跑確認沒有蓋回。
+- 替換後 `verify` 602 項（含 1,526 張的尺寸稽核）、`play-test` 全過。
+- 打包第一次在 payload 步驟中止：`mono-manifest.json` 沒有歸類。歸為不帶的紀錄檔，靜態驗收也禁止它出現。同一輪的 Android APK 是從中止的 payload 建的，作廢重建。
+- v1.0.1（`v.1.0.1-20261106`）：靜態 72 項、資料子集 8 項、Linux 28 項、Windows 22 項，失敗 0，包內單色 1,526 張。Android 從完整 payload 重建，煙霧測試通過，ANR 0 筆。Android 建置快取先前已刪，這次從頭建，在 `--network none` 下成功。
+- 推廣影片的錄影在結案清理時刪了，用 v1.0.1 的 AppImage 全部重錄再合成，72 秒，CGA、MGA 段落是新的單色 HD，片尾是 v1.0.1。
+- README 的 CGA 截圖與 Android 截圖換成 v1.0.1 的；其餘桌面截圖和 v1.0.0 逐位元組相同。
+- v1.0.0 的發行目錄保留，沒有刪。
+
 ### workspace/dosgolem 的復原
 
 - `workspace/dosgolem` 的復原：照 `tools/dosgolem-patches/README.md` 從 `~/cht/dosgolem` 的 f79eab6 複製並套 8 個補丁。刪除前在暫存目錄重做一次，原始碼和刪掉的副本逐檔相同（不含 `workplace/`）。`workplace/` 的 Go 模組快取要重新下載，需要網路。

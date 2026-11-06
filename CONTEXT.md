@@ -14,7 +14,7 @@
 | HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出，單色版是 Codex 的 m2 重繪。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。全流程接入無缺圖，四關目視過，配色與第一關接縫已修 |
 | remake | 從標題玩到片尾：規格 [001](docs/spec/001-rust-first-stage.md)、[002](docs/spec/002-full-game.md)、[003](docs/spec/003-audio.md) 都是 CONFORMED。E 模式的模擬、畫面與音樂暫存器和原版逐筆相同。核心是有型別的重寫（規格 [004](docs/spec/004-rewrite-and-delivery.md)）。CGA、MGA 可在遊戲中切換，有 HD（規格 [006](docs/spec/006-display-modes.md) CONFORMED） |
 | 強化選項 | 規格 [005](docs/spec/005-enhanced-mode.md) 十二個選項都已實作，CONFORMED。手感、平衡與難度沒有真人驗證 |
-| 發行包 | v1.0.0（`v.1.0.0-20261106`）：Linux AppImage、Windows zip、macOS universal、Android APK 與 72 秒推廣影片，放 `dist-all/v.1.0.0-20261106/`，只留本機。macOS 與 Android 沒有實機跑過 |
+| 發行包 | v1.0.1（`v.1.0.1-20261106`）：Linux AppImage、Windows zip、macOS universal、Android APK 與 72 秒推廣影片，放 `dist-all/v.1.0.1-20261106/`，只留本機。和 v1.0.0 的差別是單色 HD 換成 Codex 重繪版。macOS 與 Android 沒有實機跑過 |
 | 版控 | 私人 repo `wicanr2/rs2-remake`，推送前跑 `tools/leak_check.py`。`docs/images/` 有含原版美術的對照圖，公開前要清歷史 |
 | LICENSE | RRSAL-1.0 |
 
