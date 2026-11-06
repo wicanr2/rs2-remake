@@ -388,4 +388,19 @@ Android 煙霧測試第二次啟動的失敗：
 - 刪除：`dist-all/v.0.9.0-*`；三個 `agent-*` worktree（其中一個被本 session 自己鎖住，對應的代理早已結束，解鎖後移除；Go 模組快取是唯讀的，加寫入權限後刪）；workspace 的編譯產物、打包暫存、各批截圖、影片的錄影與分段、worktree 歸檔裡的截圖、`workspace/dosgolem`、Android 的 `cache` 與 `out`。workspace 從 4.3 GB 降到 1.1 GB。
 - 保留：HD 全部、`dosrun`、`dosrun-modes`、`extracted`、`unpacked`、IDA 匯出、`cargo`、`cargo-play`、打包輸入、SDL 快取、Android 簽章金鑰 `debug.keystore` 與煙霧測試截圖、`rs2/audio`、測試用的輸入紀錄、`review`、`progress`、`promo/replays`。
 - 清理後重跑：`verify` 602 項、`play-test`（lib 366、a6 12、field 3、modes 5）、`wait_test.sh` 20 份 19284/19284 筆全部通過，測試重新產生的編譯產物與截圖跑完再刪，workspace 收在 1.1 GB。
+- `workspace/dosgolem` 的復原（見下）。
+
+### 單色 HD 改送 Codex：畫風試稿（2026-11-06）
+
+- 使用者選方案 D（送 Codex 重繪），取代 2026-11-04 的決定；授權範圍記在 `CONTEXT.md`。HD 介面風格同日定案。
+- 試稿三種：m1 黑白漫畫（`thr:128`）、m2 灰階賽璐璐加 4×4 Bayer 抖動、m3 版畫排線（`thr:128`）。範圍是第一關示範畫面看得到的 `BH1`、`MY`、`SHT1` 與第三關 `SHT.SCR` 第 45 至 88 欄的面板。Codex 18 次，失敗 0。
+- 單色的第三關用 `SHT.SCR` 的圖塊配置，不是 `SHT.SCN`，所以面板依 SCR 重排，彩色地圖只當第二張參考圖。地圖圖塊與原版單色的相關中位數：現況 0.04，m1 0.285，m2 0.374，m3 0.345。
+- Bayer 4×4 的週期 4 整除位元組寬 16 與掃描線高 4，圖塊擺在任何位置抖動晶格都對齊。
+- 全量要處理的：`BH1` 第 1 項窄條重複時圖樣明顯，要改提示詞；小子彈與道具要加亮度規則；道具球與頭目本體這次沒畫；96×56 以下的小圖在 1-bit 下細節有限。
+- 新工具 `tools/hd_mono_*.py`、`hd_mono_*.sh` 與 `tools/hd-styles/m1`～`m3`，沒改既有工具。批次在 `workspace/hd/pilot-mono-m1`～`m3`，對照在 `workspace/hd/pilot-mono-review/`。
+
+執行邊界：試稿代理在主機跑過三次 `python3 -c`、一次直接執行 `tools/hd_mono_root.py`（缺參數立即結束）；兩個 docker 探測指令沒帶 `-u`、記憶體、CPU、log 輪替等旗標；截圖時兩個容器同時各用 4 核。
+
+### workspace/dosgolem 的復原
+
 - `workspace/dosgolem` 的復原：照 `tools/dosgolem-patches/README.md` 從 `~/cht/dosgolem` 的 f79eab6 複製並套 8 個補丁。刪除前在暫存目錄重做一次，原始碼和刪掉的副本逐檔相同（不含 `workplace/`）。`workplace/` 的 Go 模組快取要重新下載，需要網路。
