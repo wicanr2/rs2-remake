@@ -378,3 +378,14 @@ Android 煙霧測試第二次啟動的失敗：
 沒驗證：沒有人用耳朵聽過配樂，只有音量數字；`make.sh` 各步驟分別跑過，沒有從頭整體重跑。
 
 執行邊界：影片代理在主機跑過一次 `python3 -c 1`。
+
+### v1.0.0 與結案清理（2026-11-06）
+
+- 使用者宣布結案，指定發行 v1.0.0、包含推廣影片，舊版刪除，workspace 只留必要檔案，dosgolem 副本與 Android 建置快取也刪。
+- `build_all.sh v.1.0.0-20261106`：靜態 72 項、資料子集 8 項、Linux 28 項、Windows 22 項，失敗 0；`--version` 是 `rs2-play v.1.0.0-20261106`。Android APK 煙霧測試通過，ANR 0 筆。版本碼 1000000，可以覆蓋安裝 v0.9.0 的 9000。
+- 推廣影片沒有重錄，只重新合成，片尾字卡改成 v1.0.0。遊玩片段錄自 v.0.9.0-20261106 的 AppImage，和 v1.0.0 只差版本字串與 `--help` 說明的一行；Android 段用 v1.0.0 的煙霧測試截圖。成品與 `.sha256` 在 `dist-all/v.1.0.0-20261106/promo/`。
+- README 的桌面截圖用 v1.0.0 重截，和 v0.9.0 的逐位元組相同；Android 截圖換成 v1.0.0 的。
+- 刪除：`dist-all/v.0.9.0-*`；三個 `agent-*` worktree（其中一個被本 session 自己鎖住，對應的代理早已結束，解鎖後移除；Go 模組快取是唯讀的，加寫入權限後刪）；workspace 的編譯產物、打包暫存、各批截圖、影片的錄影與分段、worktree 歸檔裡的截圖、`workspace/dosgolem`、Android 的 `cache` 與 `out`。workspace 從 4.3 GB 降到 1.1 GB。
+- 保留：HD 全部、`dosrun`、`dosrun-modes`、`extracted`、`unpacked`、IDA 匯出、`cargo`、`cargo-play`、打包輸入、SDL 快取、Android 簽章金鑰 `debug.keystore` 與煙霧測試截圖、`rs2/audio`、測試用的輸入紀錄、`review`、`progress`、`promo/replays`。
+- 清理後重跑：`verify` 602 項、`play-test`（lib 366、a6 12、field 3、modes 5）、`wait_test.sh` 20 份 19284/19284 筆全部通過，測試重新產生的編譯產物與截圖跑完再刪，workspace 收在 1.1 GB。
+- `workspace/dosgolem` 的復原：照 `tools/dosgolem-patches/README.md` 從 `~/cht/dosgolem` 的 f79eab6 複製並套 8 個補丁。刪除前在暫存目錄重做一次，原始碼和刪掉的副本逐檔相同（不含 `workplace/`）。`workplace/` 的 Go 模組快取要重新下載，需要網路。

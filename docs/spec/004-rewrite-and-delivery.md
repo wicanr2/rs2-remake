@@ -102,7 +102,7 @@
 | macOS | universal `.app` 的 Zip | `dosgolem-rust-cross`（osxcross、SDK 15.5） | `lipo`、Mach-O 靜態檢查。沒有 Mac，不能宣稱實機驗過 |
 | Android | APK | NDK 27.2（`rich2-go-android`），另裝 Rust 的 Android 目標，SDL 的 `android-project` 在 `sdl2-sys` 內 | `rich2-android-emulator` 跑實際產物 |
 
-v.0.9.0-20261106 的驗證結果（`dist-all/v.0.9.0-20261106/verify/` 與 `workspace/pkg/android/smoke/`）：
+v1.0.0（`v.1.0.0-20261106`）的驗證結果（`dist-all/v.1.0.0-20261106/verify/` 與 `workspace/pkg/android/smoke/`）：
 
 | 平台 | 結果 |
 |---|---|

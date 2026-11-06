@@ -14,7 +14,7 @@
 | HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。全流程接入無缺圖，四關目視過，配色與第一關接縫已修 |
 | remake | 從標題玩到片尾：規格 [001](docs/spec/001-rust-first-stage.md)、[002](docs/spec/002-full-game.md)、[003](docs/spec/003-audio.md) 都是 CONFORMED。E 模式的模擬、畫面與音樂暫存器和原版逐筆相同。核心是有型別的重寫（規格 [004](docs/spec/004-rewrite-and-delivery.md)）。CGA、MGA 可在遊戲中切換，有 HD（規格 [006](docs/spec/006-display-modes.md) CONFORMED） |
 | 強化選項 | 規格 [005](docs/spec/005-enhanced-mode.md) 十二個選項都已實作，CONFORMED。手感、平衡與難度沒有真人驗證 |
-| 發行包 | Linux AppImage、Windows zip、macOS universal、Android APK，放 `dist-all/`，只留本機。macOS 與 Android 沒有實機跑過 |
+| 發行包 | v1.0.0（`v.1.0.0-20261106`）：Linux AppImage、Windows zip、macOS universal、Android APK 與 72 秒推廣影片，放 `dist-all/v.1.0.0-20261106/`，只留本機。macOS 與 Android 沒有實機跑過 |
 | 版控 | 私人 repo `wicanr2/rs2-remake`，推送前跑 `tools/leak_check.py`。`docs/images/` 有含原版美術的對照圖，公開前要清歷史 |
 | LICENSE | RRSAL-1.0 |
 
@@ -40,6 +40,7 @@
 - 2026-11-05 使用者定位：這是台灣自製的 R-Type 類射擊遊戲，有文化保存的必要。原版規則永遠保留，強化全部是選項（規格 005）。
 - 2026-11-05 使用者要求介面也要 HD、要現代化：HD 模式重新設計 HUD、選單高亮與打擊回饋，工具列與設定畫面改現代風格，原貌模式維持 1990 年的樣子（規格 005「HD 介面」）。
 - 2026-11-05 使用者決定強化範圍（規格 005）：戰場真的變大（工具列切 100%、120%、150%）；射擊要波動砲充能、打擊回饋、按住連射、砲座像 Force；要無敵選項；改善 DOS 操控不佳的問題，支援手把；AI 要瞄準更準、火力加強、敵人會反應、頭目新招式，當作設定選項，預設關閉。工具列與手把設定參考 `~/cht/快打至尊`。代理把「只影響顯示與聲音的選項預設開啟，其餘改變規則的選項預設關閉」當作預設，使用者可以改。
+- 2026-11-06 使用者宣布結案：發行 v1.0.0，包含推廣影片；舊的 v0.9.0 發行包刪除；workspace 只留必要的檔案，dosgolem 副本與 Android 建置快取也刪，要用時再復原（`tools/dosgolem-patches/README.md`）。推廣影片只留本機，主軸是文化保存，也有實際遊玩畫面。
 - 2026-11-06 代理決定（remake-owned，使用者可以改）：戰場大小只加寬水平方向；寬戰場時自由飛行的敵人腳本結束後繼續飛出畫面，景物綁定的敵人提前生成，對齊地圖欄位（規格 005「戰場大小」）。
 
 ## 重要發現

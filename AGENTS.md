@@ -7,7 +7,7 @@
 保存這款台灣早期 DOS 射擊遊戲的素材、邏輯與製作者資訊，為之後的 clean-room remake 與 decomp 備妥證據。
 
 - 判準是完整性。每張圖、每個顯示模式、每首曲子都要收齊，不以投報率放棄。做不完時寫明未完成項目與下一步方法。
-- 目前是分析階段，沒有 remake 程式碼。現況只看 [CONTEXT.md](CONTEXT.md)，本檔不記進度。
+- remake 在 `crates/`，已發行 v1.0.0。現況只看 [CONTEXT.md](CONTEXT.md)，本檔不記進度。
 
 ## 文件入口
 
