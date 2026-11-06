@@ -12,7 +12,7 @@ set -euo pipefail
 PROMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$PROMO_TOOLS/../.." && pwd)"
 WP="$ROOT/workspace/promo"
-VERSION="${VERSION:-v.0.9.0-20261106}"
+VERSION="${VERSION:-v.1.0.0-20261106}"
 DIST="$ROOT/dist-all/$VERSION/full"
 OUT_DIR="$ROOT/dist-all/$VERSION/promo"
 FINAL="$OUT_DIR/RS-2-remake-promo-$VERSION.mp4"

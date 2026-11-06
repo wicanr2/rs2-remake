@@ -3,7 +3,7 @@
 #
 #   tools/package/build_all.sh [版本] [選項]
 #
-# 版本格式 v.0.9.0-20261105，預設 v.0.9.0-20261105。
+# 版本格式 v.1.0.0-20261106，預設 v.1.0.0-20261106。
 # 產出：dist-all/<版本>/full/
 #   RS-2-remake-<版本>-full-linux-x86_64.AppImage
 #   RS-2-remake-<版本>-full-windows-x86_64.zip

@@ -107,7 +107,9 @@ assets() {
   # 片尾
   txt "$A/e_rs2.png" "$FONT_BLACK" 230 "$ACCENT_HI" "RS-2"
   txt "$A/e_orig.png" "$FONT_BOLD" 56 "$TEXT" "原作　大宇資訊 1990　程式設計　施文馮"
-  txt "$A/e_remake.png" "$FONT_MED" 42 "$DIM" "保存與重製　RS-2 remake v.0.9.0"
+  # 發行版本 v.1.0.0-20261106 顯示成 v1.0.0。
+  short="${VERSION#v.}"; short="v${short%%-*}"
+  txt "$A/e_remake.png" "$FONT_MED" 42 "$DIM" "保存與重製　RS-2 remake $short"
   txt "$A/e_note.png" "$FONT_MED" 30 "$DIM" "本片含原版美術與音樂，只供本機保存"
   rm -f "$A"/_*.png
   ls "$A" | tr '\n' ' '; echo
