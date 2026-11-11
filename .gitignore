@@ -1,5 +1,6 @@
 # 原版素材與所有衍生物不進版控
 *.zip
+*.rar
 original/
 workspace/
 dist-all/

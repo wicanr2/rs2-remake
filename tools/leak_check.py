@@ -7,7 +7,7 @@
 有命中就以 1 結束。例外列在 tools/leak_allow.txt，每行「完整字串<TAB>原因」。只放行那段字串本身，檔案其他內容照查，
 密碼表不受例外影響。
 
-README 對照圖（docs/images/）是唯一放行的圖片，規則見 README_IMAGE 與 png_outside_idat。
+README 對照圖與指定的手冊閱讀圖是放行的圖片，規則見 README_IMAGE、MANUAL_IMAGE 與 png_outside_idat。
 """
 import hashlib
 import os
@@ -16,7 +16,7 @@ import struct
 import sys
 import zlib
 
-DENY_EXT = {".png", ".jpg", ".exe", ".zip", ".mid", ".vgm", ".wav", ".bin", ".i64", ".go", ".gob", ".got", ".bdb", ".bdh", ".bdt",
+DENY_EXT = {".png", ".jpg", ".rar", ".exe", ".zip", ".mid", ".vgm", ".wav", ".bin", ".i64", ".go", ".gob", ".got", ".bdb", ".bdh", ".bdt",
             ".bd1", ".bd2", ".bd3", ".bd4", ".mix", ".lck", ".scn", ".scr", ".joy", ".cfg", ".diz", ".bat", ".pas"}
 # 工具本身的 Go 原始碼（dosgolem patch 內）副檔名是 .patch，不受影響。原版的 .GO 與 Go 原始碼同副檔名，以大小寫與所在目錄區分。
 SOURCE_GO_OK = re.compile(r"^(tools/|crates/).*\.go$")
@@ -26,6 +26,9 @@ MAX_SIZE = 300 * 1024
 # 在壓縮串流裡會碰巧對上，實測 26 MB 的對照圖有 9 張命中，全部落在 IDAT。
 # IDAT 以外只允許必要區塊，所以文字區塊與檔尾都夾帶不了東西。
 README_IMAGE = re.compile(r"^docs/images/(?:game|overview)/[A-Za-z0-9-]+\.png$")
+# 使用者 2026-11-11 授權手冊含截圖進私人 repo。第 5 張只保留左頁，密碼表不輸出。
+# 固定檔名由 tools/manual_images.py 產生，來源索引在 docs/manual.md。
+MANUAL_IMAGE = re.compile(r"^docs/images/manual/(?:packaging|cover-spread|contents-story|setup-controls|player2-weapons|disk-[abc])\.png$")
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 MAX_IMAGE = 8 * 1024 * 1024
 PNG_CHUNKS_OK = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
@@ -82,7 +85,7 @@ def scan(name, data, win, hexwin, pw_raw, pw_letters, allow):
     """allow 是可放行的完整字串（bytes）集合。"""
     hits = []
     ext = os.path.splitext(name)[1].lower()
-    readme_image = bool(README_IMAGE.match(name)) and data.startswith(PNG_SIG)
+    readme_image = bool(README_IMAGE.fullmatch(name) or MANUAL_IMAGE.fullmatch(name)) and data.startswith(PNG_SIG)
     font = name == FONT_ASSET and hashlib.sha256(data).hexdigest() == FONT_SHA256
     if ext in DENY_EXT and not (ext == ".go" and SOURCE_GO_OK.match(name)) and not readme_image and not font:
         hits.append(("副檔名", ext))
@@ -162,6 +165,14 @@ def selftest(orig, unp):
     good = ok_png()
     secret = table[10:40]
     cases.append(("docs/images/game/a-hd.png", good, False))
+    cases.append(("docs/images/manual/cover-spread.png", good, False))
+    cases.append(("docs/images/manual/player2-weapons.png", good, False))
+    cases.append(("docs/images/manual/disk-c.png", good, False))
+    cases.append(("docs/images/manual/password.png", good, True))
+    cases.append(("docs/images/manual/cover-spread.jpg", good, True))
+    cases.append(("docs/images/manual/cover-spread.png", good + secret, True))
+    cases.append(("docs/images/manual/cover-spread.png", ok_png(extra=[(b"tEXt", secret)]), True))
+    cases.append(("manual.rar", b"archive", True))
     cases.append(("docs/images/overview/SHT1.png", ok_png(b"x" * (MAX_SIZE + 1)), False))
     # 壓縮串流裡的低熵短字串不算命中，這是例外的代價，條件寫在 README_IMAGE 上方。
     cases.append(("docs/images/game/a.png", ok_png(secret), False))

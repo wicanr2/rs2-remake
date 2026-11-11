@@ -14,6 +14,7 @@
 | 檔案 | 職責 |
 |---|---|
 | [CONTEXT.md](CONTEXT.md) | 目前狀態、有效決策、術語表 |
+| [docs/manual.md](docs/manual.md) | 原版說明書整理、掃描插圖、來源與雜湊；密碼表不收錄 |
 | [WORKLIST.md](WORKLIST.md) | 待辦與完成條件 |
 | [WORKLOG.md](WORKLOG.md) | 按時間追加的操作、驗證與勘誤 |
 | [source-manifest.json](source-manifest.json) | 輸入 zip 與 55 個檔案的 SHA-256、角色分類 |
@@ -37,7 +38,7 @@
 1. 分析、搜尋、轉檔、建置、測試、IDA、模擬器一律在 Docker 內執行。主機只做 docker／git 控制、狀態檢查與檔案編輯。Codex 生圖例外，因為它本身是外部服務入口，見「HD 素材」。
 2. 一次性工作用 `docker run --rm`，帶目前 UID/GID、`--memory`、`--cpus`、`--pids-limit`、`--log-opt max-size=10m --log-opt max-file=3` 與 timeout，預設 `--network none`。原始輸入唯讀掛載。掛載前確認 host 來源存在。不對整庫或 `$HOME` 遞迴 chown。
 3. 不碰共用 docker 資源。禁止任何 prune 與 `docker rmi`，只清自己建立的 container。不動 `~/.cache/`。
-4. 原版位元組與其衍生物不進版控，也不進公開發行包：`RS-2_DOS_EN.zip`、`original/`、`workspace/`、`.i64`、解包後的 EXE、抽出的 PNG、MIDI、表格 JSON。`source-manifest.json` 只有雜湊與檔名，可以進版控。 例外只有 `docs/images/` 的 README 對照圖（使用者 2026-11-05 決定），內容含原版美術與 HD 圖，`tools/leak_check.py` 只放行這個路徑。repo 要維持私人，這批圖不進公開發行包。改 repo 可見度前要先問使用者，並從 git 歷史移除這批圖。
+4. 原版位元組與其衍生物不進版控，也不進公開發行包：`RS-2_DOS_EN.zip`、`original/`、`workspace/`、`.i64`、解包後的 EXE、抽出的 PNG、MIDI、表格 JSON。`source-manifest.json` 只有雜湊與檔名，可以進版控。例外為 `docs/images/` 的 README 對照圖（使用者 2026-11-05 決定），以及 `docs/images/manual/` 的八張說明書閱讀圖（使用者 2026-11-11 要求整理到私人 repo，密碼表排除）；由 `tools/manual_images.py` 重建，索引見 `docs/manual.md`。`tools/leak_check.py` 只放行列明的路徑。repo 要維持私人，這批圖不進公開發行包。改 repo 可見度前要先問使用者，並從 git 歷史移除這批圖。
 5. git 身分一律 `wicanr2@gmail.com`，不符就設 repo-local，並查 `git log --format=%ae | sort -u`。commit message 不放 `Claude-Session:`。私人 repo 是 `wicanr2/rs2-remake`。每次推送前跑 `tools/leak_check.py`，有命中就不推，閘門規則改動後要重跑 `--selftest`。建 PR、改 repo 可見度、外部發訊息先問。
 6. 只在本專案目錄寫檔。其他 repo、`~/.claude`、`~/.codex` 與客戶資料不因位於家目錄就能寫入。
 7. 不寫出密碼畫面的查表內容或答案。判定邏輯的位址與證據照常記錄，查表資料位移可寫，內容不展開。不散布改過的原版執行檔與破解工具，`SEN.*` 也一樣，只在文件中記錄其行為。

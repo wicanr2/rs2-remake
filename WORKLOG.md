@@ -416,3 +416,12 @@ Android 煙霧測試第二次啟動的失敗：
 ### workspace/dosgolem 的復原
 
 - `workspace/dosgolem` 的復原：照 `tools/dosgolem-patches/README.md` 從 `~/cht/dosgolem` 的 f79eab6 複製並套 8 個補丁。刪除前在暫存目錄重做一次，原始碼和刪掉的副本逐檔相同（不含 `workplace/`）。`workplace/` 的 Go 模組快取要重新下載，需要網路。
+# 2026-11-11：說明書整理與海報試稿
+
+- 使用者提供 `大宇資訊-RS2.rar`，SHA-256 `a28beac84835d62d7d1f1161bfa4d1d13fc6386e66c481a1ddc6ef30fdb84c15`，內含八張 JPEG 與兩份來源註記。以既有 `mm45-rust-desktop:1.99.1-r3` 的 `libarchive.so.13` 唯讀解壓，工具保存為 `tools/manual_extract.py`，未新增映像。
+- `docs/manual.md` 整理故事、原版需求、啟動、雙人按鍵、寶物、搖桿、售後服務及三片磁片外觀。README 與 AGENTS 都加入入口。附八張閱讀用 PNG，工具為 `tools/manual_images.py`，使用 `rs2-hdtools:r1` 的 Pillow 11.3.0。第 5 張固定只保留左頁 `x=0..1049`，不刊載密碼表。
+- 使用者明確授權說明書及插圖進既有私人 repo。外洩閘門只增加八個固定手冊圖檔名，仍檢查 PNG 結構與原版位元組；加入 RAR 副檔名阻擋與忽略規則。閘門自測全部通過，八張圖、相對連結、裁切像素及擁有權驗證通過。原始 RAR、JPEG、完整掃描及兩款 HD 原稿皆只留本機。
+- GitHub 連線工具對此 repo 回傳 404；既有 Git 憑證可讀取遠端，停用憑證的讀取則要求登入，與 CONTEXT 的私人狀態一致。本輪不改 repo 可見度。
+- 原始強化封面在 `workspace/hd/manual-cover-r1/`，現代手繪封面在 `workspace/hd/manual-cover-modern-r1/`，均保存提示詞、來源與輸出雜湊；工具為內建 `image_gen.imagegen`，實際模型版本未提供。使用者先要求開場展示，之後改成遊戲內左右海報，指定參考 `/home/anr2/cht/logh3`，再要求背面的飛機也美化、左右填滿。因此早期的開場及縮小封面外框預覽不作正式設計。
+- 本節為本輪追加紀錄；海報接入、正式驗證、commit／push 與容器清理結果待後續追加。
+
