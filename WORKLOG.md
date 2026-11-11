@@ -423,5 +423,8 @@ Android 煙霧測試第二次啟動的失敗：
 - 使用者明確授權說明書及插圖進既有私人 repo。外洩閘門只增加八個固定手冊圖檔名，仍檢查 PNG 結構與原版位元組；加入 RAR 副檔名阻擋與忽略規則。閘門自測全部通過，八張圖、相對連結、裁切像素及擁有權驗證通過。原始 RAR、JPEG、完整掃描及兩款 HD 原稿皆只留本機。
 - GitHub 連線工具對此 repo 回傳 404；既有 Git 憑證可讀取遠端，停用憑證的讀取則要求登入，與 CONTEXT 的私人狀態一致。本輪不改 repo 可見度。
 - 原始強化封面在 `workspace/hd/manual-cover-r1/`，現代手繪封面在 `workspace/hd/manual-cover-modern-r1/`，均保存提示詞、來源與輸出雜湊；工具為內建 `image_gen.imagegen`，實際模型版本未提供。使用者先要求開場展示，之後改成遊戲內左右海報，指定參考 `/home/anr2/cht/logh3`，再要求背面的飛機也美化、左右填滿。因此早期的開場及縮小封面外框預覽不作正式設計。
-- 本節為本輪追加紀錄；海報接入、正式驗證、commit／push 與容器清理結果待後續追加。
+- 說明書提交 `5dd79dc` 已推送私人 `main`，遠端由 `17ce422` 更新。推送前全庫 596 檔掃描命中 0 檔。
+- 新要求的兩組長幅海報完成候選：`workspace/hd/poster-classic-r1/`、`workspace/hd/poster-modern-r1/`，各保存兩張參考圖雜湊、提示詞、原稿及切片雜湊。每組左飛機右女主角，原稿 1024×1536，無損切成四張 512×1536；尺寸、全不透明、切片像素、收據及擁有權驗證通過。`game-preview.png` 為合成預覽，不能當遊戲實跑證據。
+- `tools/rust.sh play-build` 使用既有 `mm45-rust-desktop:1.99.1-r3`，Rust 1.99.1，離線 release 建置通過；尚未改遊戲程式。已取得與既有介面相同的固定版本 Noto Sans CJK TC 字型，SHA-256 `dce08bd4fd91aa8aa76ed8fea4b694c2dfb8550f67871e326843212ddbeb88b4`，暫存 `workspace/hd/NotoSansCJKtc-Regular.otf`，供後續新增海報設定字串。
+- 兩組長幅試稿與填滿側欄版面已展示，等待使用者定案。未加入開場延遲，未把未定案候選接進 production path。後續從 READY 海報規格、設定切換與資料保存開始，驗證正常玩家路徑、兩組切換、缺圖回退及原有顯示模式。
 

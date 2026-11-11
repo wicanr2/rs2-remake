@@ -4,6 +4,25 @@ HD 素材由 Codex 重繪，Claude Code 負責抽取、排版、切圖、衍生�
 
 ## 看成品
 
+### 說明書海報候選
+
+使用者 2026-11-11 新增說明書並授權重繪，來源與掃描入口見 [說明書整理](../manual.md)。最新要求為左飛機、右女主角，左右填滿；原始強化、現代手繪各一組。以下均為候選，尚未正式接入遊戲。
+
+| 批次 | 內容 |
+|---|---|
+| `workspace/hd/poster-classic-r1/` | 原始強化長幅海報，左飛機右女主角 |
+| `workspace/hd/poster-modern-r1/` | 現代手繪美化長幅海報，左飛機右女主角 |
+| 各批次 `master.png` | 內建 `image_gen.imagegen` 原稿，1024×1536，左右各一幅 |
+| 各批次 `left.png`、`right.png` | 原稿無損切片，512×1536，RGBA，全不透明 |
+| 各批次 `game-preview.png` | 與既有遊戲截圖合成的 1920×1080 版面預覽，非遊戲實跑截圖 |
+| 各批次 `prompt.txt`、`receipt.json` | 完整提示詞、兩張參考圖 SHA-256、原稿與切片 SHA-256；工具未提供實際模型版本 |
+
+原始強化原稿 SHA-256 為 `e9ddd7dd7e4a957c9beac27e12ee76138366b40d805c6c1713884e2fdcdf020c`，現代手繪原稿為 `760f123f40a39be29823f1a2d31684ecd9d9412de3c7002e9eba0c348f96e77b`。完整封面早期試稿保留於 `workspace/hd/manual-cover-r1/` 與 `workspace/hd/manual-cover-modern-r1/`。早期開場展示、小張封面外框預覽已作廢，不作為正式版面。
+
+海報目前只留本機，等待使用者依試稿定案。原版署名保存在說明書掃描；長幅候選移除包裝文字，接入時須在介面保留來源與署名。未把海報稱為原版遊戲畫面或已完成接入。
+
+### 既有遊戲素材
+
 | 路徑 | 內容 |
 |---|---|
 | `workspace/hd/assets/overview/<庫>.png` | 原版與 HD 並排總覽，每組左原版右 HD |
