@@ -7,6 +7,38 @@ pub const TICK_SECS: f64 = 1.0 / 18.2065;
 /// 一次更新最多補的步數。卡頓之後不連跑。
 pub const MAX_STEPS_PER_ADVANCE: u32 = 2;
 
+pub const DISPLAY_FPS: u64 = 60;
+
+/// 與邏輯步進分開的顯示時槽。截止時間從固定起點計算，不累積整數除法誤差。
+#[derive(Clone, Debug)]
+pub struct DisplayClock {
+    freq: u64,
+    origin: u64,
+    next: u64,
+}
+
+impl DisplayClock {
+    pub fn new(freq: u64, now: u64) -> Self {
+        Self { freq: freq.max(DISPLAY_FPS), origin: now, next: now }
+    }
+
+    pub fn ready(&self, now: u64) -> bool {
+        now >= self.next
+    }
+
+    /// 使用開始繪製的時間，垂直同步本身的等待也算在同一個顯示時槽內。
+    pub fn submitted(&mut self, now: u64) {
+        let elapsed = now.saturating_sub(self.origin) as u128;
+        let slot = ((elapsed + 1) * DISPLAY_FPS as u128).div_ceil(self.freq as u128);
+        let offset = slot * self.freq as u128 / DISPLAY_FPS as u128;
+        self.next = self.origin.saturating_add(offset.min(u64::MAX as u128) as u64);
+    }
+
+    pub fn until_next(&self, now: u64) -> u64 {
+        self.next.saturating_sub(now)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Pacer {
     /// 一個 tick 等於多少計數值。
@@ -84,6 +116,49 @@ mod tests {
     use super::*;
 
     const F: u64 = 1_000_000_000; // 1 GHz，1 計數 = 1 ns
+
+    #[test]
+    fn display_sixty_slots_per_second_without_long_term_rounding_drift() {
+        for freq in [1_000_000, F, 18_206_500] {
+            let mut d = DisplayClock::new(freq, 500);
+            for n in 0..3600u64 {
+                let now = 500 + n * freq / DISPLAY_FPS;
+                assert!(d.ready(now));
+                if n > 0 { assert!(!d.ready(now - 1)); }
+                d.submitted(now);
+            }
+            assert_eq!(d.next, 500 + 60 * freq);
+        }
+    }
+
+    #[test]
+    fn display_skips_missed_frames_instead_of_replaying_them() {
+        let mut d = DisplayClock::new(F, 0);
+        d.submitted(0);
+        assert!(!d.ready(F / 120));
+        assert!(d.ready(2 * F));
+        d.submitted(2 * F);
+        assert_eq!(d.until_next(2 * F), F / 60);
+        assert!(!d.ready(2 * F + 1));
+    }
+
+    #[test]
+    fn display_schedule_keeps_logic_ticks_and_interpolation_independent() {
+        let mut reference = Pacer::new(F, 0);
+        let mut p = reference.clone();
+        let mut display = DisplayClock::new(F, 0);
+        let mut frames = 0;
+        for ms in 0..10_000u64 {
+            let now = ms * F / 1000;
+            assert_eq!(steps(&mut reference, now, 2), steps(&mut p, now, 2));
+            assert_eq!(p.alpha(), reference.alpha());
+            if display.ready(now) {
+                frames += 1;
+                display.submitted(now);
+            }
+        }
+        assert_eq!(frames, 600);
+    }
 
     /// 一次更新跑得出幾步，每步之後要等 `ticks`。
     fn steps(p: &mut Pacer, now: u64, ticks: u16) -> u32 {

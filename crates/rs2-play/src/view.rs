@@ -166,6 +166,14 @@ pub struct Presenter<'a> {
     pub poster: PosterMode,
     poster_art: Arc<PosterArt>,
     poster_textures: [Option<[Texture<'a>; 2]>; 2],
+    poster_cache: Option<PosterCache<'a>>,
+    poster_cache_supported: Option<bool>,
+}
+
+struct PosterCache<'a> {
+    mode: usize,
+    sizes: [(u32, u32); 2],
+    textures: [Texture<'a>; 2],
 }
 
 fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: ScaleMode) -> Result<Texture<'a>, String> {
@@ -193,12 +201,16 @@ impl<'a> Presenter<'a> {
             poster: PosterMode::Off,
             poster_art: Arc::new(PosterArt::default()),
             poster_textures: [None, None],
+            poster_cache: None,
+            poster_cache_supported: None,
         })
     }
 
     pub fn set_posters(&mut self, art: Arc<PosterArt>) {
         self.poster_art = art;
         self.poster_textures = [None, None];
+        self.poster_cache = None;
+        self.poster_cache_supported = None;
     }
 
     fn poster_active(&self) -> bool {
@@ -223,6 +235,42 @@ impl<'a> Presenter<'a> {
         canvas.set_draw_color(Color::RGB(8, 14, 25));
         canvas.fill_rect(Rect::new(0, bar as i32, w, h.saturating_sub(bar).max(1)))?;
         let l = poster::layout(w, h, bar);
+        let rects = [l.left, l.right];
+        let sizes = rects.map(|r| (r.w as u32, r.h as u32));
+        let supported = *self.poster_cache_supported.get_or_insert_with(|| canvas.render_target_supported());
+        let fresh = self.poster_cache.as_ref().is_some_and(|p| p.mode == i && p.sizes == sizes);
+        if supported && !fresh {
+            let build = (|| {
+                let pair = self.poster_textures[i].as_ref().unwrap();
+                let mut targets = Vec::new();
+                for (src, (w, h)) in pair.iter().zip(sizes) {
+                    let mut t = self.creator.create_texture_target(PixelFormatEnum::ABGR8888, w, h).map_err(|e| e.to_string())?;
+                    t.set_scale_mode(ScaleMode::Nearest);
+                    let mut result = Ok(());
+                    canvas.with_texture_canvas(&mut t, |c| {
+                        result = c.copy(src, None, None);
+                    }).map_err(|e| e.to_string())?;
+                    result?;
+                    targets.push(t);
+                }
+                let textures = targets.try_into().map_err(|_| "poster cache pair".to_string())?;
+                Ok::<_, String>(PosterCache { mode: i, sizes, textures })
+            })();
+            match build {
+                Ok(c) => self.poster_cache = Some(c),
+                Err(e) => {
+                    eprintln!("[海報] 縮放快取不可用，沿用原畫法：{e}");
+                    self.poster_cache = None;
+                    self.poster_cache_supported = Some(false);
+                }
+            }
+        }
+        if let Some(cache) = self.poster_cache.as_ref().filter(|p| p.mode == i && p.sizes == sizes) {
+            for (t, r) in cache.textures.iter().zip(rects) {
+                canvas.copy(t, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
+            }
+            return Ok(());
+        }
         let pair = self.poster_textures[i].as_ref().unwrap();
         for (t, r) in pair.iter().zip([l.left, l.right]) {
             canvas.copy(t, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
@@ -240,6 +288,8 @@ impl<'a> Presenter<'a> {
         self.layer = None;
         self.layer_key = None;
         self.poster_textures = [None, None];
+        self.poster_cache = None;
+        self.poster_cache_supported = None;
         Ok(())
     }
 
@@ -371,6 +421,45 @@ impl<'a> Presenter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "需要已定案的本機海報與 SDL"]
+    fn poster_cache_is_pixel_identical_after_resize_switch_and_device_reset() {
+        let root = std::env::var("RS2_HD").unwrap();
+        let (art, notes) = PosterArt::load(Some(Path::new(&root)));
+        assert!(notes.is_empty());
+        let art = Arc::new(art);
+        let sdl = sdl2::init().unwrap();
+        let video = sdl.video().unwrap();
+        let win = video.window("poster-cache-check", 1536, 972).hidden().build().unwrap();
+        let mut canvas = win.into_canvas().software().build().unwrap();
+        assert!(canvas.render_target_supported());
+        let creator = canvas.texture_creator();
+        let mut old = Presenter::new(&creator).unwrap();
+        old.set_posters(art.clone());
+        old.poster_cache_supported = Some(false);
+        let mut cached = Presenter::new(&creator).unwrap();
+        cached.set_posters(art);
+        for (mode, w, h) in [(PosterMode::Classic, 1536, 972), (PosterMode::Modern, 1536, 972), (PosterMode::Modern, 960, 670)] {
+            canvas.window_mut().set_size(w, h).unwrap();
+            old.poster = mode;
+            cached.poster = mode;
+            let bar = crate::toolbar::desktop_height(w);
+            canvas.set_draw_color(Color::RGB(0, 0, 0));
+            canvas.clear();
+            old.draw_posters(&mut canvas, w, h, bar).unwrap();
+            let direct = canvas.read_pixels(None, PixelFormatEnum::ABGR8888).unwrap();
+            for reset in [false, true] {
+                if reset { cached.invalidate().unwrap(); }
+                canvas.set_draw_color(Color::RGB(0, 0, 0));
+                canvas.clear();
+                cached.draw_posters(&mut canvas, w, h, bar).unwrap();
+                assert!(cached.poster_cache.is_some());
+                let actual = canvas.read_pixels(None, PixelFormatEnum::ABGR8888).unwrap();
+                assert_eq!(actual, direct, "cache must preserve approved artwork pixels");
+            }
+        }
+    }
 
     #[test]
     fn poster_center_preserves_each_mode_and_matches_the_approved_frame() {

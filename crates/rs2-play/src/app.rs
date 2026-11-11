@@ -5,7 +5,7 @@ use crate::audio::{Output, WavOut};
 use crate::controls::{Action, Controls, Effect, PanelChange, PanelOpen, Resize};
 use crate::input::{Hotkey, InputMapper, KeyResult, Source};
 use crate::keymap::{Btn, KeyMap, PadMap, split_pseudo};
-use crate::pacer::Pacer;
+use crate::pacer::{DisplayClock, Pacer, DISPLAY_FPS};
 use crate::poster::PosterArt;
 use crate::pad::{Devices, PadEvent, PadMapper, STICK_ENGAGE, STICK_RELEASE};
 use crate::resources::{self, Env, Os};
@@ -896,11 +896,11 @@ fn window_loop<'a>(
     let mut shot_ok = true;
     let mut stats = Stats::default();
     let mut dirty = true;
-    let frame_budget = Duration::from_micros(16_000);
+    let mut display_clock = DisplayClock::new(freq, t_start);
     let mut replay_note = !cx.replay.is_empty();
     let mut last_draw = timer.performance_counter();
     let mut logged_pos: Option<(i32, i32)> = None;
-    // 手機上每 5 秒記一次實際速度。邏輯應該是一秒 9.1 步，繪製跟螢幕更新率。
+    // 每 5 秒記一次實際速度。邏輯維持一秒約 9.1 步，顯示目標為 60fps。
     let mut perf_t = Instant::now();
     let mut perf_base = (0u64, 0u64, 0u64, 0u64);
     let mut was_paused = false;
@@ -911,7 +911,6 @@ fn window_loop<'a>(
     let mut banner: Option<(Vec<u8>, i32, i32, i32)> = None;
 
     'main: loop {
-        let iter_start = Instant::now();
         let now = timer.performance_counter();
         // 手機上的分離鈕跟著「砲座像 Force」選項。
         let force_pod = front.ctl.settings.rules().force_pod;
@@ -1279,7 +1278,7 @@ fn window_loop<'a>(
             }
         }
         log_missing(&mut session);
-        if ctl.mobile {
+        {
             let elapsed = perf_t.elapsed().as_secs_f32();
             if elapsed >= 5.0 {
                 let (steps, renders, render_us, present_us) = (stats.steps - perf_base.0, stats.renders - perf_base.1, stats.render_us - perf_base.2, stats.present_us - perf_base.3);
@@ -1293,6 +1292,8 @@ fn window_loop<'a>(
                 perf_t = Instant::now();
                 perf_base = (stats.steps, stats.renders, stats.render_us, stats.present_us);
             }
+        }
+        if ctl.mobile {
             // Android 的煙霧測試從 logcat 確認觸控真的移動了玩家機。
             let pos = session.player_pos();
             if pos != logged_pos {
@@ -1329,11 +1330,13 @@ fn window_loop<'a>(
         }
         let paused = front.ctl.frontend_paused();
         let animating = (front.ctl.settings.tween || session.hd_effective()) && !paused;
-        if dirty || animating || pending_shot.is_some() {
+        let want_frame = dirty || animating || pending_shot.is_some();
+        if want_frame && display_clock.ready(timer.performance_counter()) {
             // 存圖固定用 alpha 1.0：畫出剛跑完的那一步。
             let alpha = if pending_shot.is_some() { 1.0 } else { pacer.alpha() };
             // 玩家機預測看的是下一步會生效的按鍵。回放中的輸入不是鍵盤來的，不預測。暫停時玩家機不動，不預測。
             let draw_now = timer.performance_counter();
+            display_clock.submitted(draw_now);
             if !paused && cx.replay.get(session.steps() as usize).is_none() {
                 let dt = (draw_now - last_draw) as f64 / freq as f64;
                 session.predict(&front.mapper.next_state(), dt as f32, pacer.step_secs());
@@ -1389,19 +1392,18 @@ fn window_loop<'a>(
                 shots_taken += 1;
             }
             dirty = fading;
-            // 有垂直同步時 present 自己會等；仍然加一道下限，免得繪圖器宣稱有同步卻沒等時空轉。
-            let budget = if vsync { Duration::from_micros(2_000) } else { frame_budget };
-            let spent = iter_start.elapsed();
-            if spent < budget {
-                std::thread::sleep(budget - spent);
-            }
         } else {
-            let wait = Duration::from_micros((pacer.until_next() as u128 * 1_000_000 / freq.max(1) as u128).min(4_000) as u64);
-            std::thread::sleep(wait.max(Duration::from_micros(500)));
+            let now = timer.performance_counter();
+            let logic_wait = if paused { freq / 250 } else { pacer.until_next() };
+            let ticks = if want_frame { logic_wait.min(display_clock.until_next(now)) } else { logic_wait };
+            let ns = (ticks as u128 * 1_000_000_000 / freq.max(1) as u128).min(4_000_000) as u64;
+            std::thread::sleep(Duration::from_nanos(ns.max(100_000)));
         }
     }
 
     save_settings(&cx.cfg_dir, &front.ctl.settings);
+    let elapsed = (timer.performance_counter() - t_start) as f64 / freq as f64;
+    eprintln!("[display] target={DISPLAY_FPS} fps={:.2} frames={} seconds={elapsed:.3}", stats.renders as f64 / elapsed.max(0.001), stats.renders);
     stats.report();
     write_hashes(&cx.args.hash_out, &hashes)?;
     if let Some(p) = &cx.args.record {

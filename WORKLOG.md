@@ -440,3 +440,13 @@ Android 煙霧測試第二次啟動的失敗：
 - README、CONTEXT、HD 交接更新至已接入，規格 007 為 CONFORMED。既有 `dist-all/v.1.0.1-20261106/` 不改、不重打包、不新增 Release。可玩前端在 `workspace/target-play/release/rs2-play`，正常啟動入口沿用 `tools/rust.sh play`。
 - 收尾：文件相對連結、兩張定案原檔、重開前後左右海報像素一致檢查通過。全庫 607 檔外洩掃描命中 0 檔。`find` 無 root-owned 檔案或誤建 Markdown 目錄，`docker ps -a --filter name=rs2` 無殘留容器。使用者原有 `rs2_hd.txt` 未修改、未加入版控。
 
+## 2026-11-11：60fps 顯示
+
+- 使用者要求流暢度支援 60fps。基準為 `91fd9e1`。先核對既有補間與計時，建立規格 008 READY，再實作前端修正。原先同步分支只有 2ms 下限、無同步分支是 16ms；海報每幀縮放。相同 4 CPU／3GiB／SDL software／Xvfb 下，各 6 秒測得海報關閉 373 幀、現代海報 322 幀，約 62.2／53.7fps，邏輯都 55 步。基準日誌保留為 `workspace/rs2/fps-before-*.log`。
+- 新增與 `Pacer` 分開的 `DisplayClock`，目標 60Hz，截止時間從固定起點計算，過期時槽不補播。輸入與邏輯仍可在兩個顯示時槽間處理。保留原版邏輯速度與既有補間；CGA／MGA 不新增物件補間。桌面與手機均輸出實測幀率，結束時附有效秒數與平均 fps。
+- 海報依組別及輸出尺寸建立目標貼圖快取，平常 1:1 貼回。切換、改視窗大小與繪圖裝置重建會重建快取；不支援或建立失敗時回退原畫法。SDL 實圖測試證明兩組、兩種尺寸及裝置重建後都與原畫法逐像素相同，未改定案圖與構圖。
+- 計時測試 11 項與 SDL 快取測試通過，release 建置通過。`tools/rust.sh play-fps-check` 為新增重跑入口，工具 `tools/fps_verify.py` 區分展示效能量測與正常標題玩家路徑，收據只留 `workspace/rs2/fps-verification/`，不覆寫舊批次。
+- 最終三組 6 秒量測均為 358 幀、55 邏輯步，平均 59.59、59.60、59.59fps。正常第一關、切換、保存、重開及五組顯示路徑同輸入 244 步雜湊比較通過。GUI 全段平均含暫停設定畫面，不能拿它當持續動畫的效能值。
+- 程式 SHA-256 `124afe3e239b76ceeec87cd63a184af9f017204a67a72d95aaf8e0355ee5dc8c`，總收據 SHA-256 `178865f0e033bc643a374fdd768048dd1571cad4f61e8aeb09a3a756db16f831`。規格 008 為 CONFORMED；README 與 CONTEXT 記錄支援範圍，不宣稱全硬體鎖定 60fps。舊發行包與已發布 tag 不改。
+- 收尾：609 檔外洩掃描命中 0，文件入口連結與 staged diff 檢查通過。`find` 未見 root-owned 檔案或誤建 Markdown 目錄，RS-2 容器無殘留。使用者原有 `rs2_hd.txt` 未修改。
+
