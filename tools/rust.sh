@@ -10,6 +10,7 @@
 #   tools/rust.sh play [參數...]   在本機 X11 桌面開視窗玩；原版目錄、HD 資料夾、設定目錄由本腳本帶入
 #   tools/rust.sh play-test [參數...]  跑 rs2-play 的單元測試與 A6（SDL_VIDEODRIVER=dummy，需要原版檔）
 #   tools/rust.sh play-gui-check <名稱> <秒數> [參數...]  Xvfb 下開視窗跑指定秒數，存 PNG 到 workspace/rs2/shots
+#   tools/rust.sh play-poster-check 正常操作兩組海報、設定保存／重開及同輸入比較，收據在 workspace/rs2/poster-verification
 #
 # RS2_CPUS 限制容器核心數（預設 4）。
 # 專案目錄以唯讀掛載，輸出在 workspace/cargo、workspace/target、workspace/rs2。
@@ -176,6 +177,16 @@ case "$cmd" in
       sh -c 'mkdir -p -m 1777 /tmp/.X11-unix; Xvfb :99 -screen 0 1600x1000x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & xp=$!; sleep 2; DISPLAY=:99 "$@"; rc=$?; kill $xp 2>/dev/null; exit $rc' \
       sh /tool/rs2-play --orig /orig "${phd[@]}" --config /tmp/cfg --max-secs "$secs" \
         --shot-at "50:/shots/rs2play_${name}_s0050.png" --shot-at "120:/shots/rs2play_${name}_s0120.png" "$@"
+    ;;
+  play-poster-check)
+    # 規格 007：正常視窗按鍵、設定保存與重開、同輸入模擬及五組實跑截圖。
+    play_prepare; play_data_mounts
+    test -x "$PLAY_TARGET/release/rs2-play" || { echo "先跑 tools/rust.sh play-build" >&2; exit 1; }
+    test ! -e "$WP/rs2/poster-verification" || { echo "已有 poster-verification，先保存或移走該批收據" >&2; exit 1; }
+    timeout 240 "${pbase[@]}" --name "rs2-poster-check-$$" \
+      -e SDL_VIDEODRIVER=x11 -e SDL_RENDER_DRIVER=software -e SDL_AUDIODRIVER=dummy \
+      -v "$ROOT:/project:ro" -v "$PLAY_TARGET/release:/tool:ro" "${pdata[@]}" -v "$WP/rs2:/out" "$SDL_IMAGE" \
+      sh -c 'mkdir -p -m 1777 /tmp/.X11-unix; Xvfb :99 -screen 0 1920x1200x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & xp=$!; trap "kill $xp 2>/dev/null || true" EXIT INT TERM; sleep 1; DISPLAY=:99 python3 /project/tools/poster_verify.py /tool/rs2-play /out/poster-verification'
     ;;
   *)
     echo "未知子命令 $cmd，用法見檔頭" >&2

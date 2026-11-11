@@ -21,6 +21,8 @@ pub enum Action {
     Feel,
     /// 顯示模式循環（VGA、EGA、CGA、MGA）。
     Mode,
+    /// 紀念海報循環。
+    Poster,
     /// 工具列顯示或隱藏。
     Toolbar,
     Fullscreen,
@@ -139,6 +141,8 @@ impl Effect {
 pub struct Controls {
     pub settings: Settings,
     pub hd_available: bool,
+    /// 左右都驗證通過的海報組別。
+    pub poster_available: [bool; 2],
     /// 單色圖庫（CGA、MGA）載入成功。為假時循環跳過 CGA、MGA。用 `set_mono_available` 設。
     pub mono_available: bool,
     /// 這一關的戰場加大了（規格 005「戰場大小」），單色模式（CGA、MGA）不支援，循環跳過。每步由主迴圈從 `Session` 同步。
@@ -156,7 +160,7 @@ pub struct Controls {
 
 impl Controls {
     pub fn new(settings: Settings, hd_available: bool) -> Controls {
-        Controls { settings, hd_available, mono_available: true, field_wide: false, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
+        Controls { settings, hd_available, poster_available: [false; 2], mono_available: true, field_wide: false, fullscreen: false, mobile: false, dp: crate::toolbar::DEFAULT_DP, paused: false, panel_open: false }
     }
 
     /// CGA、MGA 現在選得到：單色圖庫可用，而且這一關的戰場沒有加大。
@@ -184,7 +188,28 @@ impl Controls {
         self.paused || self.panel_open
     }
 
+    pub fn set_poster_available(&mut self, available: [bool; 2]) {
+        self.poster_available = available;
+        if !self.settings.poster.available(available) {
+            self.settings.poster = crate::poster::PosterMode::Off;
+        }
+    }
+
+    pub fn cycle_poster(&mut self, delta: i32) -> Effect {
+        let prev = self.settings.poster;
+        let next = prev.next(self.poster_available, delta);
+        self.settings.poster = next;
+        Effect {
+            save: prev != next,
+            resize: if !self.fullscreen && !self.mobile && prev.index().is_some() != next.index().is_some() { Resize::Scale } else { Resize::None },
+            ..Effect::default()
+        }
+    }
+
     pub fn apply(&mut self, a: Action) -> Effect {
+        if a == Action::Poster {
+            return self.cycle_poster(1);
+        }
         let s = &mut self.settings;
         match a {
             Action::Tween => {
@@ -249,6 +274,7 @@ impl Controls {
                 if self.panel_open { self.close_panel() } else { self.open_panel(PanelOpen::Last) }
             }
             Action::ClosePanel => self.close_panel(),
+            Action::Poster => unreachable!(),
         }
     }
 
@@ -302,6 +328,28 @@ impl Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poster_cycle_saves_skips_missing_pairs_and_resizes_only_at_the_edges() {
+        use crate::poster::PosterMode::*;
+        let mut k = Controls::new(Settings::default(), true);
+        assert!(!k.apply(Action::Poster).save);
+        k.set_poster_available([true, true]);
+        let e = k.apply(Action::Poster);
+        assert_eq!(k.settings.poster, Classic);
+        assert!(e.save && e.resize == Resize::Scale);
+        let e = k.apply(Action::Poster);
+        assert_eq!(k.settings.poster, Modern);
+        assert!(e.save && e.resize == Resize::None);
+        assert_eq!(k.apply(Action::Poster).resize, Resize::Scale);
+        assert_eq!(k.settings.poster, Off);
+        k.set_poster_available([false, true]);
+        k.fullscreen = true;
+        assert_eq!(k.apply(Action::Poster).resize, Resize::None);
+        assert_eq!(k.settings.poster, Modern);
+        k.set_poster_available([false, false]);
+        assert_eq!(k.settings.poster, Off);
+    }
     use crate::options::INVINCIBLE_INDEX;
 
     fn c(hd: bool) -> Controls {

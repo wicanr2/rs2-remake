@@ -25,6 +25,7 @@ KEEP = [
     ("variant", re.compile(rf"^(?:{L})/variants/[a-z0-9_]+/\d{{4}}\.png$")),
     ("palette", re.compile(r"^base-palette\.tsv$")),
     ("mono", re.compile(r"^mono/[A-Za-z0-9_.]+/\d{4}\.png$")),
+    ("poster", re.compile(r"^posters/(?:classic|modern)-(?:left|right)\.png$")),
 ]
 # 執行時用不到的：審圖用的總覽、定稿暫存、第三關整張地圖與物件整圖（HdAssets 不讀）、各批次的紀錄檔。
 DROP = [

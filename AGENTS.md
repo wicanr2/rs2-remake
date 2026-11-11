@@ -27,6 +27,7 @@
 | [docs/re/12-stages-presentation.md](docs/re/12-stages-presentation.md) | blit、調色盤、各關流程、背景、頭目、過場、介面 |
 | [docs/re/13-audio-and-misc.md](docs/re/13-audio-and-misc.md) | AdLib、MIX、PC 喇叭、intro、文字模式、JOYMOUSE、編譯器指紋 |
 | [docs/hd/codex-handoff.md](docs/hd/codex-handoff.md) | HD 素材交給 Codex 的範圍、規則與驗收 |
+| [docs/spec/007-manual-posters.md](docs/spec/007-manual-posters.md) | 兩組紀念海報、設定、資產雜湊與前端驗收 |
 | [tools/run_all.sh](tools/run_all.sh) | 從 zip 重建 `original/` 與 `workspace/`。先跑過 `tools/ida_export.sh` 才會產生用途表 |
 | [tools/ida_export.sh](tools/ida_export.sh) | 用 IDA 匯出 `workspace/ida/s_export.json` 與 `s_disasm.txt` |
 | [tools/q.sh](tools/q.sh) | 查反組譯與資料段，用法見 `tools/q.py` |

@@ -428,3 +428,15 @@ Android 煙霧測試第二次啟動的失敗：
 - `tools/rust.sh play-build` 使用既有 `mm45-rust-desktop:1.99.1-r3`，Rust 1.99.1，離線 release 建置通過；尚未改遊戲程式。已取得與既有介面相同的固定版本 Noto Sans CJK TC 字型，SHA-256 `dce08bd4fd91aa8aa76ed8fea4b694c2dfb8550f67871e326843212ddbeb88b4`，暫存 `workspace/hd/NotoSansCJKtc-Regular.otf`，供後續新增海報設定字串。
 - 兩組長幅試稿與填滿側欄版面已展示，等待使用者定案。未加入開場延遲，未把未定案候選接進 production path。後續從 READY 海報規格、設定切換與資料保存開始，驗證正常玩家路徑、兩組切換、缺圖回退及原有顯示模式。
 
+## 2026-11-11：海報定案與前端接入
+
+- 使用者以「定案囉」確認兩組左右填滿試稿。先建立規格 007 的 READY 契約，再接入前端；保留定案合成圖 `docs/images/game/poster-approved-*.png`，原稿與單圖仍只留本機。左側飛機、右側女主角不改構圖、不鏡像。
+- 新增 `PosterMode`、固定雜湊與左右整組驗證、可重建圖形貼圖、16:9 外框與中央安全區。顯示設定新增海報循環與來源署名，預設關閉，`poster=off|classic|modern` 可保存、命令列可覆寫。切換到較寬視窗時重新置中。缺圖或損毀不載入半組、不影響遊戲啟動，沒有改模擬、音訊、關卡或遊戲存檔。
+- `tools/poster_assets.py` 以 Pillow 11.3.0 從固定原稿重建四張 `assets/posters/`，保留定案預覽、提示詞；可核對 GUI 收據後存三張實跑圖，原生 1536×972，像素不變。`pkg_payload.py` 增加四個限定海報路徑；乾淨組出本機中間資料 3442 檔、51.0 MiB，海報 4 張。
+- 原版 Noto 字型來源雜湊不變，重烘後 1404 筆共用字形與進位逐位元組相同。原快照的「值、實」已不在現行 UI 字集中，最初要求所有舊字形都還在的驗證腳本因此報 KeyError，修為比較共用字與現行字集。這是驗證腳本假設問題，沒有改字形來通過。新點陣 SHA-256 `7d18cea7ce8a3422c16dd458ef177bdeaf102bf0aad3a3bd4a58287c14c1afc2`，外洩閘門相應更新並通過全部自測。
+- `tools/rust.sh play-test --lib`：369 項通過；新增海報回歸以 `play-test poster` 再驗 7 項，全通過。release 建置通過。`play-poster-check` 使用 Xvfb、xdotool 與 ffmpeg，從預設標題實際操作設定、進第一關、切另一組、退出重開；原始強化、現代手繪、顯示設定都逐張目視確認。
+- GUI 驅動前幾批只拍到開場，開始按鍵與時機不足，未改產品規則；讀既有正常流程與按鍵測試後，採一般玩家的重按 A 鍵跨過等待點，兩組都拍到第一關與生命值 HUD。舊收據留 `poster-verification-r1/` 至 `r3/`，不當第一關驗收。最終正常輸入 238 步、SHA-256 `f061cc0d12b034f98ebd370b20253621403749bc8ff2d3345a00bb8577cd5673`；獨立用公開 `Session::in_play` 重播觀察到 128 個可控制步，沒有注入遊戲狀態。
+- 五組同輸入比較 `off-vga`、`classic-vga`、`modern-vga`、`modern-cga`、`modern-mga` 的 238 筆模擬雜湊相同，未把 GUI 與無頭截圖稱為像素對拍。最終程式 SHA-256 `ea9f29c3d62991d5381aec31ef568cb0ad7e3aca09c320b9df52c01be8148920`。收據與三張入庫截圖雜湊見規格 007。
+- README、CONTEXT、HD 交接更新至已接入，規格 007 為 CONFORMED。既有 `dist-all/v.1.0.1-20261106/` 不改、不重打包、不新增 Release。可玩前端在 `workspace/target-play/release/rs2-play`，正常啟動入口沿用 `tools/rust.sh play`。
+- 收尾：文件相對連結、兩張定案原檔、重開前後左右海報像素一致檢查通過。全庫 607 檔外洩掃描命中 0 檔。`find` 無 root-owned 檔案或誤建 Markdown 目錄，`docker ps -a --filter name=rs2` 無殘留容器。使用者原有 `rs2_hd.txt` 未修改、未加入版控。
+

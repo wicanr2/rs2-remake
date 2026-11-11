@@ -19,6 +19,16 @@ Linux 發行包（AppImage）的實際視窗，第一關示範模式，HD 圖。
 
 原版與 HD 的對照見[素材：原版與 HD](#素材原版與-hd)，發行包的其他畫面見[發行包](#發行包)。
 
+## 紀念海報
+
+在「遊戲設定 → 顯示 → 海報」切換關閉、原始強化與現代手繪。每組左側為說明書背面的飛機，右側為封面女主角，兩側填滿，中央保持遊戲比例。首次啟動預設關閉，選擇會保存。
+
+| 原始強化 | 現代手繪 |
+|---|---|
+| ![第一關實際視窗，原始強化海報](docs/images/game/poster-classic-window.png) | ![第一關實際視窗，現代手繪海報](docs/images/game/poster-modern-window.png) |
+
+以上是 Linux 前端由正常標題入口進入第一關的實跑截圖。海報原稿與四張單圖只留本機，`docs/images/` 保存定案與實跑對照。[規格與驗收](docs/spec/007-manual-posters.md) · [顯示設定截圖](docs/images/game/poster-settings.png)
+
 ## 原版素材
 
 [原版說明書整理](docs/manual.md)保存故事、設備、雙人操作、武器與磁片外觀，附掃描插圖。

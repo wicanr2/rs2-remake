@@ -20,6 +20,7 @@ pub mod pacer;
 pub mod pad;
 pub mod pak;
 pub mod predict;
+pub mod poster;
 pub mod resources;
 pub mod session;
 pub mod settings;

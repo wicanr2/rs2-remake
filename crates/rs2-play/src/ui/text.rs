@@ -259,6 +259,11 @@ pub const GAME_NOTE2: &str = "改變規則的選項開著時，狀態列顯示�
 // ---------------------------------------------------------------------------
 
 pub const DISP_MODE: &str = "顯示模式";
+pub const DISP_POSTER: &str = "海報";
+pub const POSTER_OFF: &str = "關閉";
+pub const POSTER_CLASSIC: &str = "原始強化";
+pub const POSTER_MODERN: &str = "現代手繪";
+pub const POSTER_CREDIT: &str = "海報取材自大宇資訊 1990 年 RS-2 說明書封面與封底，經美化重繪。";
 pub const DISP_TWEEN: &str = "補間";
 pub const DISP_COUNTER: &str = "幀計數";
 pub const DISP_SCALE: &str = "倍率";

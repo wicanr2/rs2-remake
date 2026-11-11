@@ -1,6 +1,7 @@
 //! 命令列參數。解析不依賴 SDL，可單元測試。
 
 use crate::mode::DisplayMode;
+use crate::poster::PosterMode;
 use crate::ui::panel::Page;
 use std::path::PathBuf;
 
@@ -40,6 +41,8 @@ pub const USAGE: &str = "\
   --feedback on|off     覆寫打擊回饋選項的初值（只在 HD 畫面生效）
   --touch               畫觸控控制鈕並用手機版工具列（Android 預設，桌面版驗證用）
   --counter on|off      覆寫幀計數開關的初值
+  --poster off|classic|modern
+                        紀念海報，覆寫設定檔；可在顯示設定切換，預設 off
   --mode vga|ega|cga|mga
                         起始的顯示模式，覆寫設定檔（驗證與截圖用）。cga、mga 需要單色圖庫，缺檔時退回 vga
   --toggle-at N:NAME    第 N 步之後切換開關，NAME 為 tween、counter、hd、feel、feedback 或 mode（mode 是換下一個顯示模式，測試用，可重複）
@@ -98,6 +101,7 @@ pub struct Args {
     pub mode: Option<DisplayMode>,
     /// 覆寫打擊回饋選項的初值。
     pub feedback: Option<bool>,
+    pub poster: Option<PosterMode>,
     /// 畫觸控控制鈕並用手機版工具列。Android 一律開著，桌面版給驗證用。
     pub touch: bool,
     pub counter: Option<bool>,
@@ -150,6 +154,7 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
         feel: None,
         mode: None,
         feedback: None,
+        poster: None,
         touch: cfg!(target_os = "android"),
         counter: None,
         toggles: Vec::new(),
@@ -209,6 +214,10 @@ pub fn parse(args: &[String]) -> Result<Args, String> {
                 a.mode = Some(DisplayMode::from_code(v).ok_or_else(|| format!("--mode 要是 vga、ega、cga 或 mga，收到 {v}"))?);
             }
             "--feedback" => a.feedback = Some(onoff("--feedback", val!("--feedback")?)?),
+            "--poster" => {
+                let v = val!("--poster")?;
+                a.poster = Some(PosterMode::from_code(v).ok_or_else(|| format!("--poster 要是 off、classic 或 modern，收到 {v}"))?);
+            }
             "--touch" => a.touch = true,
             "--counter" => a.counter = Some(onoff("--counter", val!("--counter")?)?),
             "--toggle-at" => {

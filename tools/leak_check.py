@@ -35,7 +35,7 @@ PNG_CHUNKS_OK = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"}
 # 介面字型（規格 005）：tools/ui_font_bake.py 從 Noto Sans CJK TC（OFL）烘出來的點陣，不含原版素材。
 # 只放行這個路徑加確切的雜湊，內容一變就重新擋下。重烘之後要更新雜湊並重跑 --selftest。原版位元組與密碼表照樣掃。
 FONT_ASSET = "crates/rs2-play/assets/ui-font.bin"
-FONT_SHA256 = "aef8095ef0e859c4781a25ffba540cbb77ac07a30b098dd056fde091009e0ee6"
+FONT_SHA256 = "7d18cea7ce8a3422c16dd458ef177bdeaf102bf0aad3a3bd4a58287c14c1afc2"
 WIN = 32
 HEXWIN = 24
 HEXRUN = re.compile(rb"(?:\b(?:0x)?[0-9A-Fa-f]{2}h?\b[ ,\t]*){%d,}" % HEXWIN)

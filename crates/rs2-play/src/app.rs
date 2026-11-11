@@ -6,6 +6,7 @@ use crate::controls::{Action, Controls, Effect, PanelChange, PanelOpen, Resize};
 use crate::input::{Hotkey, InputMapper, KeyResult, Source};
 use crate::keymap::{Btn, KeyMap, PadMap, split_pseudo};
 use crate::pacer::Pacer;
+use crate::poster::PosterArt;
 use crate::pad::{Devices, PadEvent, PadMapper, STICK_ENGAGE, STICK_RELEASE};
 use crate::resources::{self, Env, Os};
 use crate::session::{Begin, Outcome, Session, ViewOpts};
@@ -15,7 +16,7 @@ use crate::toolbar::{BarState, Button, desktop_height, metrics};
 use crate::touch::TouchMapper;
 use crate::ui::panel::{self, Cx, Page, Panel, PanelOut};
 use crate::ui::{self, text};
-use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size};
+use crate::view::{Fit, Overlay, Presenter, ShotInfo, UiLayer, window_size, window_size_with_poster};
 use rs2_audio::Engine;
 use rs2_game::{Fixes, Rules, Start};
 use rs2_gfx::{Assets, HdAssets, MonoAssets};
@@ -43,6 +44,7 @@ struct Ctx {
     cfg_dir: Option<PathBuf>,
     replay: Vec<Vec<u8>>,
     hd_dir: Option<PathBuf>,
+    posters: Arc<PosterArt>,
 }
 
 type HdResult = Result<(HdAssets, usize, usize, Duration, usize), String>;
@@ -187,16 +189,27 @@ fn prepare(args: Args) -> Result<Ctx, String> {
     if let Some(m) = args.mode {
         st.mode = m;
     }
+    if let Some(p) = args.poster {
+        st.poster = p;
+    }
     if let Some(f) = args.feedback {
         st.set_opt_value(HIT_FEEDBACK_INDEX, f as u8);
     }
     let hd_dir = found.hd;
-    Ok(Ctx { args, inputs, assets, mono, settings: st, cfg_dir, replay, hd_dir })
+    let (posters, notes) = PosterArt::load(hd_dir.as_deref());
+    for note in notes {
+        eprintln!("[海報] {note}");
+    }
+    if !st.poster.available(posters.available()) {
+        eprintln!("[海報] 選定組別不可用，回到關閉");
+    }
+    Ok(Ctx { args, inputs, assets, mono, settings: st, cfg_dir, replay, hd_dir, posters: Arc::new(posters) })
 }
 
 /// 前端開關狀態。告知單色圖庫能不能用：不能用時，設定或 `--mode` 要求的 CGA、MGA 退回 VGA。
 fn new_controls(cx: &Ctx) -> Controls {
     let mut ctl = Controls::new(cx.settings, cx.hd_dir.is_some());
+    ctl.set_poster_available(cx.posters.available());
     if ctl.set_mono_available(cx.mono.is_some()) {
         eprintln!("[單色] 要求的顯示模式 {} 需要單色圖庫，改用 vga", cx.settings.mode.code());
     }
@@ -373,7 +386,7 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
     let mut canvas: Option<WindowCanvas> = None;
     let mut ctl = new_controls(&cx);
     if let Some(v) = &video {
-        let (w, h) = window_size(ctl.settings.scale, ctl.settings.toolbar);
+        let (w, h) = window_size_with_poster(ctl.settings.scale, ctl.settings.toolbar, ctl.settings.poster);
         let built = v.window("RS-2 remake (headless)", w, h).hidden().build().map_err(|e| e.to_string()).and_then(|win| {
             win.into_canvas().build().map_err(|e| e.to_string())
         });
@@ -392,6 +405,10 @@ fn run_headless(cx: Ctx, steps: u64) -> Result<i32, String> {
         Some(t) => Some(Presenter::new(t)?),
         None => None,
     };
+    if let Some(p) = pres.as_mut() {
+        p.set_posters(cx.posters.clone());
+        p.poster = ctl.settings.poster;
+    }
     let hd = finish_hd(cx.hd_dir.clone().map(|d| spawn_hd(d, cx.assets.clone())))?;
     let mut session = build_session(&cx, hd, ctl.view(), ctl.settings.rules());
     sync_session(&mut session, &mut ctl);
@@ -676,9 +693,12 @@ fn apply_effect(eff: Effect, front: &mut Front, session: &mut Session, canvas: &
     match eff.resize {
         Resize::None => {}
         Resize::Scale => {
-            let target = window_size(front.ctl.settings.scale, front.ctl.settings.toolbar);
+            let target = window_size_with_poster(front.ctl.settings.scale, front.ctl.settings.toolbar, front.ctl.settings.poster);
             if let Err(e) = canvas.window_mut().set_size(target.0, target.1) {
                 eprintln!("[視窗] 調整大小失敗：{e}");
+            } else {
+                // 加上兩側海報後視窗變寬，重新置中，避免右半部落在螢幕外。
+                canvas.window_mut().set_position(sdl2::video::WindowPos::Centered, sdl2::video::WindowPos::Centered);
             }
         }
         Resize::Toolbar => {
@@ -749,7 +769,8 @@ fn dp_of(video: &sdl2::VideoSubsystem) -> f32 {
 fn run_window(cx: Ctx) -> Result<i32, String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
-    let (w, h) = window_size(cx.settings.scale, cx.settings.toolbar);
+    let ctl = new_controls(&cx);
+    let (w, h) = window_size_with_poster(ctl.settings.scale, ctl.settings.toolbar, ctl.settings.poster);
     let (canvas, vsync) = make_canvas(&video, w, h)?;
     let tc = canvas.texture_creator();
     let pres = Presenter::new(&tc)?;
@@ -798,6 +819,7 @@ fn window_loop<'a>(
     let timer = sdl.timer()?;
     let mut ctl = new_controls(&cx);
     ctl.mobile = cx.args.touch;
+    pres.set_posters(cx.posters.clone());
     ctl.dp = cx.args.dp.unwrap_or_else(|| dp_of(video));
     if ctl.mobile && cx.args.open_panels.is_empty() {
         // 手機上工具列預設收起來，按 ☰ 才展開。
@@ -1359,6 +1381,7 @@ fn window_loop<'a>(
             let bar_state = front.bar_state();
             // 打擊回饋的畫面震動：只改輸出位置。
             pres.shake = shake;
+            pres.poster = front.ctl.settings.poster;
             let info = pres.draw(&mut canvas, frame, fw, fh, fit, &tb, &bar_state, overlay, layer, shot_path.as_deref())?;
             stats.present(t2.elapsed().as_micros() as u64);
             if let (Some((s, path)), Some(info)) = (pending_shot.take(), info) {

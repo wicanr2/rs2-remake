@@ -4,9 +4,9 @@ HD 素材由 Codex 重繪，Claude Code 負責抽取、排版、切圖、衍生�
 
 ## 看成品
 
-### 說明書海報候選
+### 說明書紀念海報
 
-使用者 2026-11-11 新增說明書並授權重繪，來源與掃描入口見 [說明書整理](../manual.md)。最新要求為左飛機、右女主角，左右填滿；原始強化、現代手繪各一組。以下均為候選，尚未正式接入遊戲。
+使用者 2026-11-11 新增說明書並授權重繪，來源與掃描入口見 [說明書整理](../manual.md)。左飛機、右女主角，左右填滿；原始強化、現代手繪各一組，已經使用者定案並接入遊戲。顯示設定可切換、關閉並保存，首次預設關閉。[規格 007](../spec/007-manual-posters.md) 記錄固定雜湊、版面與驗收。
 
 | 批次 | 內容 |
 |---|---|
@@ -19,7 +19,9 @@ HD 素材由 Codex 重繪，Claude Code 負責抽取、排版、切圖、衍生�
 
 原始強化原稿 SHA-256 為 `e9ddd7dd7e4a957c9beac27e12ee76138366b40d805c6c1713884e2fdcdf020c`，現代手繪原稿為 `760f123f40a39be29823f1a2d31684ecd9d9412de3c7002e9eba0c348f96e77b`。完整封面早期試稿保留於 `workspace/hd/manual-cover-r1/` 與 `workspace/hd/manual-cover-modern-r1/`。早期開場展示、小張封面外框預覽已作廢，不作為正式版面。
 
-海報目前只留本機，等待使用者依試稿定案。原版署名保存在說明書掃描；長幅候選移除包裝文字，接入時須在介面保留來源與署名。未把海報稱為原版遊戲畫面或已完成接入。
+執行時四張圖在 `workspace/hd/assets/posters/`。原稿與單圖只留本機；`docs/images/game/poster-approved-*.png` 保存定案版面，`poster-*-window.png` 與 `poster-settings.png` 是正常玩家路徑的實際視窗。顯示設定內保留大宇資訊、1990 年與說明書來源，未稱為原版遊戲畫面。
+
+重建工具：`tools/poster_assets.py workspace/hd docs/images/game tools/hd-styles`，在 `rs2-hdtools:r1` 內執行，原稿唯讀。若第四個參數給 `workspace/rs2/poster-verification`，也會核對收據後保存實跑截圖，像素不變，只移除 PNG 額外中繼資料。定案提示詞在 `tools/hd-styles/poster-classic.txt`、`poster-modern.txt`。正常操作驗證入口為 `tools/rust.sh play-poster-check`。
 
 ### 既有遊戲素材
 

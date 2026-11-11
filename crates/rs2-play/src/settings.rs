@@ -5,6 +5,7 @@
 //! | `tween`、`counter`、`hd`、`toolbar`、`feel` | `on` 或 `off` |
 //! | `scale` | 1 到 8 |
 //! | `mode` | `vga`、`ega`、`cga` 或 `mga`（顯示模式，F6）。讀不到或不認得就是 `vga` |
+//! | `poster` | `off`、`classic`、`modern`，舊檔缺欄位時為 `off` |
 //! | `opt.<id>` | 遊戲選項（`options::OPTIONS`）。開關是 `on`、`off`，戰場大小是 `100`、`120`、`150` |
 //! | `key.p1.up` 等 | 鍵盤對應，值是 `ui::text::KEYS` 的存檔名稱，空值是未綁定。欄位 `up down left right upleft upright downleft downright fire turn split` |
 //! | `pad.fire` 等 | 手把按鍵，值是兩個按鈕 `A,RT`，`-` 是空。功能 `fire turn split pause confirm menu` |
@@ -13,6 +14,7 @@
 
 use crate::keymap::{Act, Btn, KeyMap, PadFn, PadMap};
 use crate::mode::DisplayMode;
+use crate::poster::PosterMode;
 use crate::options::{self, Options, FEEL_INDEX, HIT_FEEDBACK_INDEX, INVINCIBLE_INDEX, OPTIONS, index_of};
 use rs2_game::{FieldSize, Rules};
 use crate::resources::{Env, Os, non_empty};
@@ -41,6 +43,8 @@ pub struct Settings {
     pub feel: bool,
     /// 顯示模式（F6）：VGA、EGA、CGA、MGA。切換只換畫面，不影響模擬。
     pub mode: DisplayMode,
+    /// 紀念海報，預設關閉。
+    pub poster: PosterMode,
     /// 兩人的鍵盤對應。
     pub keys: KeyMap,
     /// 手把按鍵。
@@ -59,6 +63,7 @@ impl Default for Settings {
             toolbar: true,
             feel: true,
             mode: DisplayMode::Vga,
+            poster: PosterMode::Off,
             keys: KeyMap::default(),
             pad: PadMap::default(),
             opts: Options::default(),
@@ -150,6 +155,7 @@ impl Settings {
             b(self.feel),
             self.mode.code()
         );
+        s.push_str(&format!("poster={}\n", self.poster.code()));
         s.push_str("# 遊戲選項（戰場大小是 100、120、150，進關時才生效；其他是 on 或 off）\n");
         for (i, o) in OPTIONS.iter().enumerate() {
             if i != FEEL_INDEX {
@@ -197,6 +203,10 @@ impl Settings {
                 "mode" => match DisplayMode::from_code(v) {
                     Some(m) => s.mode = m,
                     None => warn.push(format!("第 {n} 行 mode 的值 {v:?} 不是 vga、ega、cga 或 mga，用 vga")),
+                },
+                "poster" => match PosterMode::from_code(v) {
+                    Some(p) => s.poster = p,
+                    None => warn.push(format!("第 {n} 行 poster 的值 {v:?} 不合法，用 off")),
                 },
                 _ if k.starts_with("opt.") => match options::index_of(&k[4..]) {
                     Some(idx) => match OPTIONS[idx].parse_value(v) {
@@ -305,6 +315,25 @@ mod tests {
         assert!(!s.invincible() && !s.rules_enhanced());
         assert_eq!(s.keys, KeyMap::default());
         assert_eq!(s.pad, PadMap::default());
+    }
+
+    #[test]
+    fn poster_preferences_roundtrip_and_old_settings_stay_off() {
+        for poster in PosterMode::ALL {
+            let s = Settings { poster, ..Settings::default() };
+            let dir = tmpdir(&format!("poster-{}", poster.code()));
+            s.save(&dir).unwrap();
+            let (back, warns) = Settings::load(&dir);
+            assert_eq!(back, s);
+            assert!(warns.is_empty());
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        let (old, warns) = Settings::parse("hd=off\nscale=2\nmode=cga\n");
+        assert_eq!(old.poster, PosterMode::Off);
+        assert!(!old.hd && old.scale == 2 && old.mode == DisplayMode::Cga && warns.is_empty());
+        let (bad, warns) = Settings::parse("poster=unexpected\n");
+        assert_eq!(bad.poster, PosterMode::Off);
+        assert_eq!(warns.len(), 1);
     }
 
     #[test]

@@ -3,12 +3,14 @@
 
 use crate::toolbar::{BarState, Rect as BarRect, Toolbar};
 use crate::touch::{self, Control};
+use crate::poster::{self, PosterArt, PosterMode};
 use rs2_gfx::png;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, ScaleMode, Texture, TextureCreator, WindowCanvas};
 use sdl2::video::WindowContext;
 use std::path::Path;
+use std::sync::Arc;
 
 /// 遊戲畫面的邏輯尺寸。
 pub const GAME_W: u32 = 320;
@@ -19,6 +21,27 @@ pub fn window_size(scale: u32, toolbar_visible: bool) -> (u32, u32) {
     let w = GAME_W * scale;
     let bar = if toolbar_visible { crate::toolbar::desktop_height(w) } else { 0 };
     (w, GAME_H * scale + bar)
+}
+
+pub fn window_size_with_poster(scale: u32, toolbar_visible: bool, mode: PosterMode) -> (u32, u32) {
+    if mode == PosterMode::Off {
+        return window_size(scale, toolbar_visible);
+    }
+    let w = poster::WIDTH * scale;
+    let bar = if toolbar_visible { crate::toolbar::desktop_height(w) } else { 0 };
+    (w, poster::HEIGHT * scale + bar)
+}
+
+/// 海報模式使用定案的中央安全區，原貌與 HD 都保持各自的顯示比例。
+pub fn game_rect_with_poster(w: u32, h: u32, bar: u32, fit: Fit, mobile: bool, on: bool) -> BarRect {
+    if !on {
+        return fit_rect_for(w, h, bar, fit, mobile);
+    }
+    let center = poster::layout(w, h, bar).center;
+    let mut r = fit_rect_for(center.w as u32, center.h as u32, 0, Fit { integer: false, ..fit }, mobile);
+    r.x += center.x;
+    r.y += center.y;
+    r
 }
 
 /// 遊戲畫面怎麼放進視窗：顯示比例、要不要整數倍、縮放濾鏡。由 `Session::fit` 依顯示模式給。
@@ -140,6 +163,9 @@ pub struct Presenter<'a> {
     layer_key: Option<(u64, u32, u32)>,
     /// 畫面震動的位移（HD 像素，規格 005「打擊回饋」）。只改遊戲畫面貼到視窗的位置，內容不動，不蓋到工具列。
     pub shake: (i32, i32),
+    pub poster: PosterMode,
+    poster_art: Arc<PosterArt>,
+    poster_textures: [Option<[Texture<'a>; 2]>; 2],
 }
 
 fn make_tex<'a>(c: &'a TextureCreator<WindowContext>, w: u32, h: u32, mode: ScaleMode) -> Result<Texture<'a>, String> {
@@ -164,7 +190,44 @@ impl<'a> Presenter<'a> {
             layer: None,
             layer_key: None,
             shake: (0, 0),
+            poster: PosterMode::Off,
+            poster_art: Arc::new(PosterArt::default()),
+            poster_textures: [None, None],
         })
+    }
+
+    pub fn set_posters(&mut self, art: Arc<PosterArt>) {
+        self.poster_art = art;
+        self.poster_textures = [None, None];
+    }
+
+    fn poster_active(&self) -> bool {
+        self.poster.index().is_some() && self.poster.available(self.poster_art.available())
+    }
+
+    fn draw_posters(&mut self, canvas: &mut WindowCanvas, w: u32, h: u32, bar: u32) -> Result<(), String> {
+        if !self.poster_active() {
+            return Ok(());
+        }
+        let i = self.poster.index().unwrap();
+        if self.poster_textures[i].is_none() {
+            let pair = self.poster_art.pairs[i].as_ref().unwrap();
+            let upload = |im: &png::Image| -> Result<Texture<'a>, String> {
+                let mut t = make_tex(self.creator, im.w as u32, im.h as u32, ScaleMode::Linear)?;
+                t.update(None, &im.rgba, im.w * 4).map_err(|e| e.to_string())?;
+                Ok(t)
+            };
+            // 兩張均上傳成功才提交整組。
+            self.poster_textures[i] = Some([upload(&pair[0])?, upload(&pair[1])?]);
+        }
+        canvas.set_draw_color(Color::RGB(8, 14, 25));
+        canvas.fill_rect(Rect::new(0, bar as i32, w, h.saturating_sub(bar).max(1)))?;
+        let l = poster::layout(w, h, bar);
+        let pair = self.poster_textures[i].as_ref().unwrap();
+        for (t, r) in pair.iter().zip([l.left, l.right]) {
+            canvas.copy(t, None, Rect::new(r.x, r.y, r.w as u32, r.h as u32))?;
+        }
+        Ok(())
     }
 
     /// 繪圖裝置重置（Android 切回前景時 GL context 可能重建）：貼圖都要重建。內容每次繪製都會重新上傳。
@@ -176,6 +239,7 @@ impl<'a> Presenter<'a> {
         self.overlay_key = None;
         self.layer = None;
         self.layer_key = None;
+        self.poster_textures = [None, None];
         Ok(())
     }
 
@@ -223,13 +287,16 @@ impl<'a> Presenter<'a> {
         if (self.game.1, self.game.2, self.game.3) != want {
             self.game = (make_tex(self.creator, want.0, want.1, scale_mode(want.2))?, want.0, want.1, want.2);
         }
+        self.draw_posters(canvas, ww, wh, bar_h)?;
+        let on = self.poster_active();
         let tex = &mut self.game.0;
         tex.update(None, frame, fw * 4).map_err(|e| format!("更新畫面貼圖失敗：{e}"))?;
-        let r = fit_rect_for(ww, wh, bar_h, fit, toolbar.mobile);
+        let r = game_rect_with_poster(ww, wh, bar_h, fit, toolbar.mobile, on);
         // 震動：只有 HD 畫面，位移從 HD 像素換成視窗像素；夾在遊戲區內，不蓋到工具列。
         let (sx, sy) = shake_px(self.shake, fw, r.w);
         if (sx, sy) != (0, 0) {
-            canvas.set_clip_rect(Rect::new(0, bar_h as i32, ww, wh.saturating_sub(bar_h).max(1)));
+            let clip = if on { poster::layout(ww, wh, bar_h).center } else { BarRect { x: 0, y: bar_h as i32, w: ww as i32, h: wh.saturating_sub(bar_h).max(1) as i32 } };
+            canvas.set_clip_rect(Rect::new(clip.x, clip.y, clip.w as u32, clip.h as u32));
         }
         canvas.copy(tex, None, Rect::new(r.x + sx, r.y + sy, r.w as u32, r.h as u32))?;
         if (sx, sy) != (0, 0) {
@@ -304,6 +371,22 @@ impl<'a> Presenter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poster_center_preserves_each_mode_and_matches_the_approved_frame() {
+        let r = game_rect_with_poster(1920, 1080, 0, Fit::HD, false, true);
+        assert_eq!((r.x, r.y, r.w, r.h), (360, 165, 1200, 750));
+        for fit in [Fit::SD, Fit::HD, Fit::MONO, Fit::frame(48, true), Fit::frame(60, true)] {
+            let r = game_rect_with_poster(1536, 904, 40, fit, false, true);
+            let c = poster::layout(1536, 904, 40).center;
+            assert!(r.x >= c.x && r.y >= c.y && r.x + r.w <= c.x + c.w && r.y + r.h <= c.y + c.h);
+            assert!((r.w * fit.aspect.1 as i32 - r.h * fit.aspect.0 as i32).abs() <= fit.aspect.0 as i32);
+            assert_eq!(game_rect_with_poster(960, 626, 26, fit, false, false), fit_rect_for(960, 626, 26, fit, false));
+        }
+        assert_eq!(window_size_with_poster(3, true, PosterMode::Off), window_size(3, true));
+        let (w, h) = window_size_with_poster(3, true, PosterMode::Modern);
+        assert_eq!((w, h - crate::toolbar::desktop_height(w)), (1536, 864));
+    }
 
     #[test]
     fn window_size_adds_the_toolbar_on_top() {

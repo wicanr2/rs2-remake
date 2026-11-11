@@ -109,6 +109,7 @@ pub enum Id {
     Scale,
     Toolbar,
     Mode,
+    Poster,
 }
 
 /// 設定畫面碰得到的前端狀態。
@@ -709,16 +710,19 @@ impl Panel {
             rows.push((Id::Scale, text::DISP_SCALE, text::scale_value(s.scale), INK));
         }
         rows.push((Id::Toolbar, text::DISP_TOOLBAR, (if s.toolbar { text::DISP_SHOWN } else { text::DISP_HIDDEN }).to_string(), INK));
+        rows.push((Id::Poster, text::DISP_POSTER, s.poster.label().to_string(), INK));
         let vw = display_control_width(&p, self.geom.mobile);
         b.begin_card();
         for (id, label, value, ink) in rows {
             let label_w = (b.cw - vw - p.gap).max(1);
             b.push(None, CK::Label, Rect::new(0, b.y, label_w, p.rh), label.to_string(), INK, true, p.fh, Align::Left);
-            b.push(Some(id), CK::Box, Rect::new(b.cw - vw, b.y, vw, p.rh), value, ink, true, p.fh, Align::Center);
+            let enabled = id != Id::Poster || ctl.poster_available.into_iter().any(|a| a);
+            b.push(Some(id), CK::Box, Rect::new(b.cw - vw, b.y, vw, p.rh), value, ink, enabled, p.fh, Align::Center);
             b.y += p.rh + p.gap;
         }
         b.end_card();
         b.note(text::DISP_NOTE, INK_NOTE);
+        b.note(text::POSTER_CREDIT, INK_NOTE);
         if !self.geom.mobile {
             b.note(text::DISP_KEYS, INK_NOTE);
         }
@@ -860,6 +864,7 @@ impl Panel {
         match c.id {
             None => Widget::Static,
             Some(Id::PadAssign { .. }) | Some(Id::PadReset) | Some(Id::KeyReset) => Widget::Button,
+            Some(Id::Poster) => Widget::Button,
             Some(Id::Key { .. }) | Some(Id::PadFn { .. }) => Widget::Field,
             Some(Id::Tween) => Widget::Switch(ctl.settings.tween),
             Some(Id::Counter) => Widget::Switch(ctl.settings.counter),
@@ -1096,7 +1101,7 @@ impl Panel {
             K::Left | K::Right => {
                 let d = if key == K::Left { Dir::Left } else { Dir::Right };
                 match cur {
-                    Some(id @ (Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode)) => {
+                    Some(id @ (Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode | Id::Poster)) => {
                         self.adjust(id, if d == Dir::Left { -1 } else { 1 }, cx, &mut out);
                     }
                     _ => self.move_focus(&lay, cur, d),
@@ -1249,7 +1254,7 @@ impl Panel {
                 self.msg = text::KB_RESET_DONE.to_string();
                 out.eff.save = true;
             }
-            Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode => self.adjust(id, 1, cx, out),
+            Id::Opt(_) | Id::Tween | Id::Counter | Id::Scale | Id::Toolbar | Id::Mode | Id::Poster => self.adjust(id, 1, cx, out),
         }
     }
 
@@ -1274,6 +1279,7 @@ impl Panel {
             Id::Counter => out.eff.merge(cx.ctl.apply(Action::Counter)),
             Id::Scale => out.eff.merge(cx.ctl.apply(Action::Scale)),
             Id::Toolbar => out.eff.merge(cx.ctl.apply(Action::Toolbar)),
+            Id::Poster => out.eff.merge(cx.ctl.cycle_poster(delta)),
             Id::Mode => {
                 // 動作只有「下一個」，往前等於繞一圈少一步。單色圖庫不可用時只有 VGA 與 EGA 兩個。
                 let available = if cx.ctl.mono_selectable() { DisplayMode::ALL.len() } else { 2 };
@@ -2155,6 +2161,25 @@ mod tests {
         let out = click_id(&mut p, &mut c, &mut d, Id::Toolbar);
         assert!(!c.settings.toolbar && out.eff.resize == crate::controls::Resize::Toolbar);
         assert_eq!(find(&p, &c, &d, Id::Toolbar).text, "隱藏");
+    }
+
+    #[test]
+    fn poster_row_clicks_and_arrow_keys_use_the_persisted_frontend_setting() {
+        use crate::poster::PosterMode::*;
+        let (mut c, mut d) = (ctl(), Devices::new());
+        c.set_poster_available([true, true]);
+        let mut p = panel(Page::Display);
+        let out = click_id(&mut p, &mut c, &mut d, Id::Poster);
+        assert!(out.eff.save);
+        assert_eq!(c.settings.poster, Classic);
+        assert_eq!(find(&p, &c, &d, Id::Poster).text, text::POSTER_CLASSIC);
+        let out = p.key_down(K::Right, false, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert!(out.eff.save);
+        assert_eq!(c.settings.poster, Modern);
+        let _ = p.key_down(K::Left, false, &mut Cx { ctl: &mut c, devs: &mut d });
+        assert_eq!(c.settings.poster, Classic);
+        c.set_poster_available([false, false]);
+        assert!(!find(&p, &c, &d, Id::Poster).enabled);
     }
 
     #[test]
