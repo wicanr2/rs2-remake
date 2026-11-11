@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把三個平台的產物收進 dist-all/<版本>/full/，並寫總覽文件、SHA256SUMS 與 manifest.json。在 docker 內跑。
+"""把三個平台的產物收進 dist-all/<版本>/full-local/，並寫總覽文件、SHA256SUMS 與 manifest.json。在 docker 內跑。
 
 用法：pkg_finalize.py <版本>
 讀：/stage（pack.sh 與 appimage.sh 的輸出）、/payload/payload.json、/notices、/LICENSE、環境變數 RS2_IMAGES（JSON，映像名稱與 id）。

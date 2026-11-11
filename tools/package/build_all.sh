@@ -3,13 +3,13 @@
 #
 #   tools/package/build_all.sh [版本] [選項]
 #
-# 版本格式 v.1.0.1-20261106，預設 v.1.0.1-20261106。
-# 產出：dist-all/<版本>/full/
+# 版本格式 v.1.0.2-20261111，預設 v.1.0.2-20261111。
+# 產出：dist-all/<版本>/full-local/
 #   RS-2-remake-<版本>-full-linux-x86_64.AppImage
 #   RS-2-remake-<版本>-full-windows-x86_64.zip
 #   RS-2-remake-<版本>-full-macos-universal.zip      （universal .app，無簽章，未在實機驗過）
 #   LICENSE、README.txt、THIRD-PARTY-NOTICES.txt、SDL2-LICENSE.txt、SHA256SUMS、manifest.json
-# 驗證輸出（截圖、日誌）：dist-all/<版本>/verify/
+# 驗證輸出（截圖、日誌）：dist-all/<版本>/smoke/
 #
 # 選項：
 #   --list           列出步驟後結束
@@ -55,7 +55,7 @@ for img in "$IMG_CROSS" "$IMG_LINUX" "$IMG_SQUASH" "$IMG_VERIFY"; do need_image 
 [ -d "$HD_SRC" ] || die "缺 HD 素材 $HD_SRC"
 ensure_dir "$PKG" "$PKG/logs"
 LOG="$PKG/logs/build_all-$VERSION.log"
-: > "$LOG"
+if [ -z "$FROM$ONLY" ]; then : > "$LOG"; fi
 
 started=0; [ -z "$FROM" ] && started=1
 summary=()
@@ -78,7 +78,7 @@ done
 check_no_root_files
 say "完成，共 $((SECONDS - t_all)) 秒"
 printf '  %s\n' "${summary[@]}"
-if [ -d "$ROOT/dist-all/$VERSION/full" ]; then
-  echo "--- dist-all/$VERSION/full"
-  (cd "$ROOT/dist-all/$VERSION/full" && ls -l && cat SHA256SUMS 2>/dev/null)
+if [ -d "$ROOT/dist-all/$VERSION/full-local" ]; then
+  echo "--- dist-all/$VERSION/full-local"
+  (cd "$ROOT/dist-all/$VERSION/full-local" && ls -l && cat SHA256SUMS 2>/dev/null)
 fi

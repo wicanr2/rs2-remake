@@ -450,3 +450,30 @@ Android 煙霧測試第二次啟動的失敗：
 - 程式 SHA-256 `124afe3e239b76ceeec87cd63a184af9f017204a67a72d95aaf8e0355ee5dc8c`，總收據 SHA-256 `178865f0e033bc643a374fdd768048dd1571cad4f61e8aeb09a3a756db16f831`。規格 008 為 CONFORMED；README 與 CONTEXT 記錄支援範圍，不宣稱全硬體鎖定 60fps。舊發行包與已發布 tag 不改。
 - 收尾：609 檔外洩掃描命中 0，文件入口連結與 staged diff 檢查通過。`find` 未見 root-owned 檔案或誤建 Markdown 目錄，RS-2 容器無殘留。使用者原有 `rs2_hd.txt` 未修改。
 
+## 2026-11-11：四平台重打包與旁白推廣影片
+
+- 使用者要求重新打包、更新影片，再要求用 agy CLI 試作旁白。新版本為 `v.1.0.2-20261111`，上一版與已發布 tag 不改。重新載入版號、`dist-all`、文件職責與推廣片來源契約，現行輸出改為 `full-local/`、`promo/`、`smoke/`，版本根目錄保存 `SHA256SUMS.json`。沿用既有 Docker 工具鏈，沒有建立映像或清理共用資源。
+- 以 `f151251` 的程式重新擷取 141 份 Rust／Cargo 檔案的快照，`SOURCE.sha256` 彙總為 `54a7d2a0a8c7334f7041cbda835bd9679c7cf9e90430a55a62371e38f79993a7`。重新驗外部輸入及原版 47 檔，資料包為 3442 檔，含四張固定雜湊海報。Linux、Windows、macOS universal、Android arm64-v8a／x86_64 均從快照重建。
+- Linux 單元測試 328 項、Windows Wine 329 項通過，各 49 項需外部資料的測試依既有設定略過。桌面靜態驗收、原版資料與 HD 子集比對、Linux AppImage 與 Windows Wine 啟動／音訊驗收均 FAIL 0。macOS 檢查雙架構、相依與 arm64 簽章逐頁雜湊。Android 直接讀 APK，CRC、兩種 ELF 架構、版本及資料包內 3442 檔逐項雜湊通過，四張海報俱在。
+- 新版 AppImage 另跑正常 GUI：從預設標題切原始強化、進第一關、切現代手繪、保存並重開，五種顯示組合的同輸入模擬一致。收據與實跑畫面在 `smoke/posters/`。Android 模擬器實裝 APK，移動、開火、暫停、工具列、關於頁、回前景與重開通過，閒置輸入事件 8→8、ANR 0 筆。未新增 macOS 或 Android 真機驗收聲明。
+- 首次 Linux 啟動驗收時主機負載很高，30 秒只走到第 215 步，未達第 260 步截圖，磁碟音訊約 18 秒。暫停本專案錄影、待建置結束後，以同一容器與同一命令乾淨重跑，全部通過，沒有降低門檻或修改產品規則。重跑的流程末段因執行期間編輯包裝腳本而出現 shell EOF；兩平台內層驗收記錄均 FAIL 0，落盤腳本另經 `bash -n` 通過。之後只在程序結束後編輯它。另修正新 APK 驗證器的假設：Android 原生庫會剔除未使用的 CLI 版本字串，版本應驗 APK manifest，並由實裝後的 package manager 再確認。
+- agy 容器登入不可用。擴大搜尋主機認證路徑遭自動審核拒絕後停止；使用者指定「use host agy」。主機預設模型回報配額 429，列出的 `gemini-3.8-flash-medium` 可用，但確認沒有內建 TTS。自動審核拒絕授予代理廣泛 Docker 命令權限，因此改為讓 agy 只輸出程式碼，由 Codex 審查並用固定 Docker 命令執行。沒有把代理設為跳過所有權限。
+- Edge TTS 第一次生成命令因服務授權不足遭自動審核拒絕，未執行。使用者之後明確同意，才把 `tools/promo/narration.json` 的 11 段文字送到 Microsoft Edge TTS。聲音為 `zh-TW-HsiaoChenNeural`，工具鎖為 edge-tts 7.3.1；不傳遊戲素材、主機 HOME 或憑證。生成腳本由 agy CLI 產生，Codex 增加段落 ID、收據與原子寫入檢查，實際音訊不稱為 Gemini 原生語音。
+- 11 段全部生成成功，依時碼以保留音高的方式適度加速與補靜音，不截斷句尾。配樂沿用原版 A／B 曲的 Nuked OPL3 輸出，旁白出現時壓低配樂。原片增加兩組海報各 4 秒，總長 80 秒；由新版 AppImage 重新實錄，輸出 1920×1080、60fps、H.264、AAC 48kHz stereo，附內嵌中文字幕及獨立 SRT。錄影負載下實測幀率隨場景變動，60fps 檔案規格不代表每個場景都有 60 個不同動作影格。
+- `tools/package/complete.sh` 實際跑通，統整成片、完整旁白 WAV、14 秒試聽、字幕、21 張抽樣幀、contact sheet、語音收據、來源及 8 項正式交付物雜湊。影片為 4800 幀、80.000 秒，平均音量約 −20.6dBFS、峰值約 −5.0dBFS，11 段音訊各別解碼均非靜音；沒有全黑段或遊玩段非預期凍結。字卡與片尾的靜止區間屬預期，抽樣檢查字幕未裁切。技術檢查不代替使用者的人耳試聽。
+
+本機交付根目錄為 `dist-all/v.1.0.2-20261111/`。完整雜湊也保存於該版本的 `SHA256SUMS.json`：
+
+| 交付物 | SHA-256 |
+|---|---|
+| Linux AppImage | `200076c7e53a46cce103f4889c746cac55c59426e2cbb28204be460b74a593a6` |
+| Windows zip | `6ebb36293029fb9d8fa275fe3df7cecf0e4c6c4eed86b681c19add0e1746a94e` |
+| macOS universal zip | `7c8d7d2405103ec125f3a93132b26a96329656dec5b6a5b7056988935897f24c` |
+| Android APK | `b2819d8f9c129d5c24690fbfda513528df0857b50b65f43222ae9ded1d1781c9` |
+| 有旁白推廣影片 | `2fc407699bc45ba4f1861329fe385cce49600a82d52e03db66fdb31447067024` |
+| 完整旁白 WAV | `d6a945b12218a76a047fc2a6deb5e292a7ba2cfc96a1c77c0f7c32dcf7fc7dbd` |
+
+四平台段落最初仍指向舊 Android 煙霧截圖，來源稽核後改為本版 `smoke/android/06-moved.png`，只重合成該段與成片，再驗音畫與交付索引。`promo/rights.json` 保存當版截圖路徑與雜湊，避免後續重跑混用舊圖。影片、音檔、封包與原始素材均不進 Git；本輪只推送腳本、旁白稿與文件。
+
+收尾核對：版本根目錄 8 項交付物的大小與 SHA-256、完整版目錄 `SHA256SUMS` 全數相符；所有文件入口與腳本語法通過。本專案沒有執行中或已停止的殘留容器，沒有 root-owned 檔案或誤建 Markdown 目錄。使用者原有 `rs2_hd.txt` 未修改、未加入版控。
+

@@ -18,9 +18,10 @@ FONT_BLACK="Noto-Sans-CJK-TC-Black"    # 大標，硬派、近 HUD 的粗黑
 FONT_BOLD="Noto-Sans-CJK-TC-Bold"
 FONT_MED="Noto-Sans-CJK-TC-Medium"
 
-VW=1920; VH=1080; FPS=30
+VW=1920; VH=1080; FPS=60
 MOTIF="scanline"       # 字卡與側邊底圖疊 CRT 掃描線；框線用 HUD 風格的琥珀細線
 
-# 節奏（秒），總長 72：字卡 6、標題 8、遊玩 8、模式 8、字卡 6、對照 8、快切 8、頭目 6、四平台 6、片尾 8。
+# 節奏（秒），總長 80：字卡 6、標題 8、遊玩 8、模式 8、字卡 6、對照 8、快切 8、海報 8、頭目 6、四平台 6、片尾 8。
 PACE_CARD1=6; PACE_TITLE=8; PACE_PLAY=8; PACE_MODES=8; PACE_CARD2=6
 PACE_SBS=8; PACE_CUTS=8; PACE_BOSS=6; PACE_WIDE=6; PACE_END=8
+PACE_POSTERS=8

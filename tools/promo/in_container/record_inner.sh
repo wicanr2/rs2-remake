@@ -1,5 +1,5 @@
 #!/bin/bash
-# 容器內：在 Xvfb 裡跑發行包的 AppImage，用 x11grab 即時錄影（30 fps、veryfast、crf 14）。
+# 容器內：在 Xvfb 裡跑發行包的 AppImage，用 x11grab 即時錄影（60 fps、veryfast、crf 14）。
 # 環境由 record.sh 帶入：/dist（唯讀，AppImage）、/rpl（唯讀，輸入腳本）、/tools（唯讀）、/out（可寫）、VERSION。
 # 用法：record_inner.sh 工作名稱   （工作定義在 /tools/jobs/<名稱>.sh）
 #
@@ -67,8 +67,8 @@ done
 # 錄影從遊戲啟動就開始，開頭的黑畫面之後用 .t0 修掉。
 inputs=""; maps=""
 for d in $(seq 1 "$NDISP"); do
-  inputs="$inputs -f x11grab -framerate 30 -draw_mouse 0 -video_size ${W}x${H} -i :$((98 + d))"
-  maps="$maps -map $((d - 1)):v -c:v libx264 -preset veryfast -crf 14 -pix_fmt yuv420p -g 30 -threads 3 -t $SECS /out/$NAME-$d.mp4"
+  inputs="$inputs -f x11grab -framerate 60 -draw_mouse 0 -video_size ${W}x${H} -i :$((98 + d))"
+  maps="$maps -map $((d - 1)):v -c:v libx264 -preset veryfast -crf 14 -pix_fmt yuv420p -g 60 -threads 2 -t $SECS /out/$NAME-$d.mp4"
 done
 # shellcheck disable=SC2086
 ffmpeg -nostdin -hide_banner -loglevel warning -y $inputs $maps >"/out/$NAME-ffmpeg.log" 2>&1 &

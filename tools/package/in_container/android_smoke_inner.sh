@@ -14,6 +14,15 @@ cfg="$ANDROID_AVD_HOME/rs2.avd/config.ini"
 
 emulator -avd rs2 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect \
   -camera-back none -camera-front none >/out/emulator.log 2>&1 &
+EMU_PID=$!
+cleanup() {
+  adb emu kill >/dev/null 2>&1 || true
+  kill "$EMU_PID" 2>/dev/null || true
+  wait "$EMU_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 adb wait-for-device
 for _ in $(seq 1 240); do
   [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ] && break

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 步驟：Windows 驗證。用 Wine 9.0 跑 dist-all/<版本>/full 裡 zip 解開的 rs2-play.exe（rulebook/82），
+# 步驟：Windows 驗證。用 Wine 9.0 跑 dist-all/<版本>/full-local 裡 zip 解開的 rs2-play.exe（rulebook/82），
 # 乾淨容器、Xvfb、SDL_AUDIODRIVER=disk、解開位置唯讀、沒有 --orig。Wine 不是 Windows，只能證明 PE 能載入與執行、
 # 路徑邏輯對；真機行為（Direct3D、主控台視窗等）沒有驗到。
 # 用法：verify_windows.sh <版本>
@@ -9,10 +9,10 @@ VERSION="${1:-$DEFAULT_VERSION}"; check_version "$VERSION"
 IMG_V="$IMG_VERIFY"
 
 need_image "$IMG_V"
-DIST="$ROOT/dist-all/$VERSION/full"
-OUT="$ROOT/dist-all/$VERSION/verify/windows"
+DIST="$ROOT/dist-all/$VERSION/full-local"
+OUT="$ROOT/dist-all/$VERSION/smoke/windows"
 rm -rf "$OUT"
-ensure_dir "$ROOT/dist-all/$VERSION/verify" "$OUT"
+ensure_dir "$ROOT/dist-all/$VERSION/smoke" "$OUT"
 m=()
 mount_dir m "$PKG_TOOLS/in_container" /pkgtools ro
 mount_dir m "$DIST" /dist ro

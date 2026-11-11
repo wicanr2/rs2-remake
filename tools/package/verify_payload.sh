@@ -6,9 +6,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 VERSION="${1:-$DEFAULT_VERSION}"; check_version "$VERSION"
 
 need_image "$IMG_LINUX"
-OUT="$ROOT/dist-all/$VERSION/verify/payload"
+OUT="$ROOT/dist-all/$VERSION/smoke/payload"
 rm -rf "$OUT"
-ensure_dir "$ROOT/dist-all/$VERSION/verify" "$OUT"
+ensure_dir "$ROOT/dist-all/$VERSION/smoke" "$OUT"
 m=()
 mount_dir m "$PKG_TOOLS/in_container" /pkgtools ro
 mount_dir m "$PKG/cargo-target/linux/release" /bin-rs2 ro

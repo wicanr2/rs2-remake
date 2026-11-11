@@ -101,6 +101,9 @@ assets() {
 19,284 筆相同"
   # 頭目、四平台
   txt "$A/cap_boss.png" "$FONT_BOLD" 58 "$TEXT" "雙人同時、四段難度、開發者熱鍵，原樣保留"
+  txt "$A/cap_posterclassic.png" "$FONT_BOLD" 52 "$TEXT" "說明書盒裝海報：原始強化"
+  txt "$A/cap_postermodern.png" "$FONT_BOLD" 52 "$TEXT" "說明書盒裝海報：現代手繪"
+  txt "$A/cap_fps.png" "$FONT_BOLD" 52 "$TEXT" "目標 60fps 顯示，原版遊戲速度不變"
   txt "$A/cap_plat.png" "$FONT_BOLD" 62 "$TEXT" "Linux、Windows、macOS、Android 四平台"
   txt "$A/lab_wide.png" "$FONT_BLACK" 52 "$ACCENT_HI" "戰場 150%"
   txt "$A/lab_android.png" "$FONT_BLACK" 52 "$COOL" "Android"
@@ -126,10 +129,10 @@ audio() {
   # 開頭 A（標題曲），30 秒左右的「三十多年後」字卡處交叉淡變到 B（關卡曲），B 不夠長就循環。
   # A 取到 30.8 秒、淡變 1.6 秒，所以 B 在 29.2 秒進來、30.8 秒完全取代，淡變中心在 30.0 秒。
   # B 的平均音量比 A 低約 8 dB（volumedetect），只加 6.5 dB 的增益讓兩曲相近，加完最大音量 -4.6 dB，沒有削波。
-  local total=72
+  local total=80
   $FF -f s16le -ar 49716 -ac 1 -i /rsaudio/A.nuked.pcm -f s16le -ar 49716 -ac 1 -i /rsaudio/B.nuked.pcm -filter_complex \
     "[0:a]aresample=48000,aloop=loop=-1:size=2000000000,atrim=0:30.8,asetpts=N/SR/TB[a];
-     [1:a]aresample=48000,volume=6.5dB,aloop=loop=-1:size=2000000000,atrim=0:50,asetpts=N/SR/TB[b];
+     [1:a]aresample=48000,volume=6.5dB,aloop=loop=-1:size=2000000000,atrim=0:$total,asetpts=N/SR/TB[b];
      [a][b]acrossfade=d=1.6:c1=tri:c2=tri[m];
      [m]atrim=0:$total,afade=t=in:st=0:d=0.8,afade=t=out:st=$((total - 3)):d=3,pan=stereo|c0=c0|c1=c0,aformat=sample_fmts=s16:sample_rates=48000[o]" \
     -map "[o]" "$W/music.wav"
@@ -265,6 +268,14 @@ seg_end() {
     -map "[v]" $ENC -t "$dur" "$out"
 }
 
+# 16:9 的實際海報視窗完整保留，字幕位於中央遊戲畫面下方。
+seg_poster() {
+  local out="$1" clip="$2" cap="$3"
+  $FF -ss 9 -t 4 -i "$clip" -loop 1 -t 4 -i "$cap" -filter_complex \
+    "[0:v]scale=1920:1080:flags=lanczos,setsar=1[g];[g]drawbox=x=0:y=936:w=1920:h=144:color=$DEEP@0.78:t=fill[b];[b][1:v]overlay=x=(W-w)/2:y=936+(144-h)/2,format=yuv420p[v]" \
+    -map "[v]" $ENC -t 4 "$out"
+}
+
 segs() {
   ANDROID_IMG=/android/06-moved.png
   [ -f "$ANDROID_IMG" ] || { echo "缺 $ANDROID_IMG"; exit 1; }
@@ -281,7 +292,9 @@ segs() {
   w 07b && seg_framed "$S/07b-cut.mp4"  "$C/flow-1.mp4" "$CUT2_SS" 2 "$A/cap_cut2.png" 0 0
   w 07c && seg_full   "$S/07c-cut.mp4"  "$C/flow-1.mp4" "$CUT3_SS" 2 "$A/cap_cut1.png" 0 0
   w 07d && seg_framed "$S/07d-cut.mp4"  "$C/flow-1.mp4" "$CUT4_SS" 2 "$A/cap_cut2.png" 0 0
-  w 08  && seg_full   "$S/08-boss.mp4"  "$C/boss-1.mp4" "$BOSS_SS" "$PACE_BOSS" "$A/cap_boss.png" 0 0
+  w 07e && seg_poster "$S/07e-posterclassic.mp4" "$C/posterclassic-1.mp4" "$A/cap_posterclassic.png"
+  w 07f && seg_poster "$S/07f-postermodern.mp4" "$C/postermodern-1.mp4" "$A/cap_postermodern.png"
+  w 08  && seg_full   "$S/08-boss.mp4"  "$C/boss-1.mp4" "$BOSS_SS" "$PACE_BOSS" "$A/cap_fps.png" 0 0
   w 09  && seg_wide   "$S/09-wide.mp4"  "$C/wide150-1.mp4" "$WIDE_SS" "$PACE_WIDE" 0 0.3
   w 10  && seg_end    "$S/10-end.mp4"   "$C/flow-1.mp4" "$END_SS" "$PACE_END" 0.4 1.2
   ls -la "$S"
@@ -291,11 +304,19 @@ final() {
   echo "[final] 串接與混音"
   : > "$S/list.txt"
   local f
-  for f in 01-card1 02-title 03-play 04-modes 05-card2 06-sbs 07a-cut 07b-cut 07c-cut 07d-cut 08-boss 09-wide 10-end; do
+  for f in 01-card1 02-title 03-play 04-modes 05-card2 06-sbs 07a-cut 07b-cut 07c-cut 07d-cut 07e-posterclassic 07f-postermodern 08-boss 09-wide 10-end; do
     echo "file '$S/$f.mp4'" >> "$S/list.txt"
   done
   mkdir -p /outd
-  $FF -f concat -safe 0 -i "$S/list.txt" -i "$W/music.wav" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -ar 48000 \
+  local track="$W/music.wav" subs=()
+  if [ -s "$W/narration/mix.wav" ] && [ -s "$W/narration/narration.zh-TW.srt" ]; then
+    track="$W/narration/mix.wav"
+    subs=(-i "$W/narration/narration.zh-TW.srt" -map 2:s -c:s mov_text -metadata:s:s:0 language=zho)
+  else
+    echo "缺少旁白混音或字幕，先執行 compose.sh narration" >&2
+    exit 1
+  fi
+  $FF -f concat -safe 0 -i "$S/list.txt" -i "$track" "${subs[@]}" -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -ar 48000 \
     -movflags +faststart "$W/final.tmp.mp4"
   mv "$W/final.tmp.mp4" "/outd/RS-2-remake-promo-$VERSION.mp4"
   ls -la /outd
@@ -312,11 +333,11 @@ review() {
   local i=0 name t
   # 名稱:秒數。前 12 張進 4x3 拼圖（分鏡每個區間一張，另加 CGA 與第二個快切），x 開頭的補看用
   for spec in "01-card1:4.5" "02-title:12" "03-play:18" "04-modes-vga:22.8" "04-modes-cga:26.5" "05-card2:34" "06-sbs:40" \
-              "07-cut-a:45" "07-cut-b:47" "08-boss:55" "09-wide:61" "10-end:69"; do
+              "07-cut-a:45" "07-cut-b:47" "08-boss:63" "09-wide:69" "10-end:77"; do
     name="${spec%%:*}"; t="${spec##*:}"; i=$((i + 1))
     $FF -ss "$t" -i "$f" -frames:v 1 "$W/review/$(printf %02d $i)-$name.png"
   done
-  for spec in "x1-07-cut-c:49" "x2-07-cut-d:51" "x3-04-modes-ega:24.8" "x4-04-modes-mga:28.8" "x5-02-title-early:7" "x6-02-title-late:13.5" "x7-02-title-logo:11"; do
+  for spec in "x1-07-cut-c:49" "x2-07-cut-d:51" "x3-04-modes-ega:24.8" "x4-04-modes-mga:28.8" "x5-02-title-early:7" "x6-02-title-late:13.5" "x7-02-title-logo:11" "x8-posterclassic:54" "x9-postermodern:58"; do
     name="${spec%%:*}"; t="${spec##*:}"
     $FF -ss "$t" -i "$f" -frames:v 1 "$W/review/$name.png"
   done
@@ -326,7 +347,7 @@ review() {
   ls -la "$W/review"
 }
 
-# 成片檢查：靜止畫面與全黑畫面的時段。字卡（0 至 6、30 至 36、64 至 72 秒）有靜止段是預期的，遊玩段不該有。
+# 成片檢查：靜止畫面與全黑畫面的時段。字卡（0 至 6、30 至 36、72 至 80 秒）有靜止段是預期的，遊玩段不該有。
 verify() {
   local f="/outd/RS-2-remake-promo-$VERSION.mp4"
   echo "[verify] freezedetect（n=0.003、至少 0.6 秒）"

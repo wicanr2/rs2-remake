@@ -14,7 +14,7 @@ AND="$PKG/android"
 OUT="$AND/out"
 rm -rf "$OUT"
 ensure_dir "$AND" "$AND/cache" "$AND/cargo-target" "$OUT" "$PKG/logs"
-FINAL="$ROOT/dist-all/$VERSION/full"
+FINAL="$ROOT/dist-all/$VERSION/full-local"
 ensure_dir "$FINAL"
 APK="$FINAL/RS-2-remake-$VERSION-android-full.apk"
 
@@ -90,6 +90,14 @@ dk android-apk 900 "$IMG_ANDROID" --memory 2g --cpus 2 "${m[@]}" -e HOME=/tmp -e
   sha256sum final.apk
 '
 cp "$OUT/final.apk" "$APK"
+m=()
+mount_dir m "$PKG_TOOLS/in_container" /pkgtools ro
+mount_dir m "$FINAL" /dist ro
+mount_dir m "$PKG/payload" /payload ro
+ensure_dir "$ROOT/dist-all/$VERSION/smoke"
+dk android-static 180 "$IMG_ANDROID" --memory 1g --cpus 1 "${m[@]}" -- \
+  python3 /pkgtools/pkg_verify_android.py "/dist/$(basename "$APK")" /payload/payload.json "$VERSION" \
+  > "$ROOT/dist-all/$VERSION/smoke/android-static.json"
 sha256sum "$APK" | sed "s#$FINAL/##" > "$APK.sha256"
 ls -l "$APK"
 check_no_root_files

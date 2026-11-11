@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 VERSION="${1:?版本，例如 v.0.9.0-20261106}"; check_version "$VERSION"
 
 need_image "$IMG_VERIFY"
-DIST="$ROOT/dist-all/$VERSION/full"
+DIST="$ROOT/dist-all/$VERSION/full-local"
 [ -f "$DIST/RS-2-remake-$VERSION-full-linux-x86_64.AppImage" ] || die "缺 AppImage：$DIST"
 OUT="$WP/readme-shots/$VERSION"
 rm -rf "$OUT"

@@ -11,9 +11,9 @@ set -euo pipefail
 
 PROMO_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$PROMO_TOOLS/../.." && pwd)"
-WP="$ROOT/workspace/promo"
-VERSION="${VERSION:-v.1.0.1-20261106}"
-DIST="$ROOT/dist-all/$VERSION/full"
+WP="$ROOT/workspace/promo/${VERSION:-v.1.0.2-20261111}"
+VERSION="${VERSION:-v.1.0.2-20261111}"
+DIST="$ROOT/dist-all/$VERSION/full-local"
 OUT_DIR="$ROOT/dist-all/$VERSION/promo"
 FINAL="$OUT_DIR/RS-2-remake-promo-$VERSION.mp4"
 
@@ -62,7 +62,7 @@ dk() {
     --name "rs2-promo-${name}-$$" \
     -u "$(id -u):$(id -g)" \
     --memory "${DK_MEM:-4g}" --cpus "$cpus" --pids-limit "${DK_PIDS:-512}" \
-    --network none \
+    --network "${DK_NETWORK:-none}" \
     --log-opt max-size=10m --log-opt max-file=3 \
     "${opts[@]}" "$image" "$@"
 }

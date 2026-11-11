@@ -21,4 +21,4 @@ timeout --kill-after=30 1500 docker run --rm --init --name "rs2-pkg-android-smok
   --log-opt max-size=10m --log-opt max-file=3 \
   -e HOME=/tmp -e "APK=/apk/$APK_NAME" \
   -v "$APK_DIR:/apk:ro" -v "$OUT:/out" -v "$PKG_TOOLS/in_container:/pkgtools:ro" \
-  "$IMG" bash /pkgtools/android_smoke_inner.sh
+  "$IMG" bash /pkgtools/android_smoke_inner.sh 2>&1 | tee "$OUT/verify.log"

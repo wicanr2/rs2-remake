@@ -12,8 +12,14 @@ m=()
 mount_dir m "$WP" /w rw
 mount_dir m "$PROMO_TOOLS" /ptools ro
 mount_dir m "$ROOT/workspace/rs2/audio" /rsaudio ro
-mount_dir m "$ROOT/workspace/pkg/android/smoke" /android ro
+mount_dir m "$ROOT/dist-all/$VERSION/smoke/android" /android ro
 mount_dir m "$OUT_DIR" /outd rw
-DK_CPUS=2 DK_MEM=4g dk "compose" "${COMPOSE_TIMEOUT:-1200}" "$IMG_MIX" --entrypoint bash --tmpfs /tmp:rw,exec,size=1g,mode=1777 -w /tmp "${m[@]}" \
-  -e "VERSION=$VERSION" -e "SEGS=${SEGS:-}" -- /ptools/in_container/compose_inner.sh "$@"
+if [ "$*" = narration ]; then
+  need_image "$IMG_REC"
+  DK_CPUS=2 DK_MEM=2g dk "narration-mix" 300 "$IMG_REC" "${m[@]}" -- \
+    python3 /ptools/in_container/narration_mix.py /w/narration /w/music.wav
+else
+  DK_CPUS=2 DK_MEM=4g dk "compose" "${COMPOSE_TIMEOUT:-1200}" "$IMG_MIX" --entrypoint bash --tmpfs /tmp:rw,exec,size=1g,mode=1777 -w /tmp "${m[@]}" \
+    -e "VERSION=$VERSION" -e "SEGS=${SEGS:-}" -- /ptools/in_container/compose_inner.sh "$@"
+fi
 check_no_root_files

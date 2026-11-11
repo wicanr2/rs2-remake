@@ -34,6 +34,10 @@
 | [tools/q.sh](tools/q.sh) | 查反組譯與資料段，用法見 `tools/q.py` |
 | [tools/dos/](tools/dos/) | 重跑動態收據。`tools/dosgolem-patches/` 是套在 `workspace/dosgolem` 上的修改 |
 | [crates/](crates/) | Rust 重製。`rs2-formats` 解碼、`rs2-game` 遊戲本體、`rs2-gfx` 繪製、`rs2-audio` 音樂與喇叭、`rs2-trace` 對拍、`rs2-play` 視窗。建置與測試走 [tools/rust.sh](tools/rust.sh) |
+| [tools/package/build_all.sh](tools/package/build_all.sh) | 桌面完整版打包與驗收；Android 由 [android_apk.sh](tools/package/android_apk.sh) 接續，APK 靜態驗證在 [pkg_verify_android.py](tools/package/in_container/pkg_verify_android.py) |
+| [tools/promo/make.sh](tools/promo/make.sh) | 推廣影片入口；[旁白稿與時碼](tools/promo/narration.json)、[agy 生成並審查的語音腳本](tools/promo/in_container/narration_generate.py)、[生成包裝](tools/promo/narrate.sh)、[旁白混音與字幕](tools/promo/in_container/narration_mix.py)，海報錄影工作見 `tools/promo/in_container/jobs/poster*.sh` |
+| [影片驗收](tools/promo/in_container/media_verify.py) · [交付雜湊索引](tools/package/in_container/release_manifest.py) | 檢查 80 秒影片、音訊、字幕與生成收據，記錄 `dist-all/<版本>/` 四平台及影片的大小與 SHA-256 |
+| [tools/package/complete.sh](tools/package/complete.sh) | 四平台與有旁白影片完成後的收尾入口，統整驗收、聲音來源、字幕、抽樣幀與 `SHA256SUMS.json` |
 
 ## 硬規則
 

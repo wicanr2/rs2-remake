@@ -6,11 +6,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 VERSION="${1:-$DEFAULT_VERSION}"; check_version "$VERSION"
 
 need_image "$IMG_CROSS"
-OUT="$ROOT/dist-all/$VERSION/verify"
+OUT="$ROOT/dist-all/$VERSION/smoke"
 ensure_dir "$OUT"
 m=()
 mount_dir m "$PKG_TOOLS/in_container" /pkgtools ro
-mount_dir m "$ROOT/dist-all/$VERSION/full" /dist ro
+mount_dir m "$ROOT/dist-all/$VERSION/full-local" /dist ro
 mount_dir m "$PKG/src" /src ro
 mount_dir m "$PKG/payload" /payload ro
 mount_dir m "$INPUTS" /inputs ro

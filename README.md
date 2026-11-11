@@ -223,11 +223,13 @@ tools/rust.sh play              # 有 workspace/hd/assets 就用 HD，加 --no-h
 ### 發行包
 
 ```sh
-bash tools/package/build_all.sh v.1.0.1-YYYYMMDD
-ANDROID_SRC=$PWD tools/package/android_apk.sh v.1.0.1-YYYYMMDD arm64-v8a x86_64
+bash tools/package/build_all.sh v.1.0.2-20261111
+tools/package/android_apk.sh v.1.0.2-20261111 arm64-v8a x86_64
 ```
 
-成品放在 `dist-all/`，內含原版資料與 HD 圖，只供自己保存，不上傳。步驟與驗證見[規格 004](docs/spec/004-rewrite-and-delivery.md)。目前的版本是 v1.0.1（`v.1.0.1-20261106`），單色 HD 換成 Codex 重繪版；另有一支 72 秒的推廣影片，由 `tools/promo/make.sh` 產生，同樣只留本機。
+成品放在 `dist-all/<版本>/full-local/`，內含原版資料與 HD 圖，只供自己保存，不上傳。步驟與驗證見[規格 004](docs/spec/004-rewrite-and-delivery.md)。目前版本是 `v.1.0.2-20261111`，包含兩組紀念海報與目標 60fps 顯示。80 秒推廣影片放在同版本的 `promo/`，包含實際遊戲錄影、兩組海報與台灣國語旁白；生成腳本由 agy CLI 產生並經 Codex 審查，實際聲音來自 Microsoft Edge TTS 的 HsiaoChen。
+
+影片入口是 [tools/promo/make.sh](tools/promo/make.sh)，稿件與時碼見[旁白稿](tools/promo/narration.json)。完成 Android 模擬器與影片驗收後，以 `bash tools/package/complete.sh <版本>` 統整字幕、抽樣幀、音訊檢查、來源與版本根目錄的 `SHA256SUMS.json`。所有影片與音檔同樣只留本機。
 
 下面的畫面都取自 v.1.0.1-20261106 的發行包：桌面版由 `tools/package/readme_shots.sh` 在容器裡執行 AppImage 截取，Android 版取自模擬器的煙霧測試（`tools/package/android_smoke.sh`）。
 

@@ -8,7 +8,7 @@
 |---|---|
 | 輸入驗證 | 完成，55 個檔案已記雜湊 |
 | 說明書 | [docs/manual.md](docs/manual.md) 與八張閱讀圖已推送私人 repo，提交 `5dd79dc`；第 5 張裁除右頁密碼表。包含故事、操作、設備、售後服務與磁片外觀 |
-| 海報 | [規格 007](docs/spec/007-manual-posters.md) 已實作並驗證。左飛機、右女主角，兩組為原始強化與現代手繪，遊戲設定的「顯示」頁可切換、關閉並保存。四張 512×1536 成品在 `workspace/hd/assets/posters/`，定案原稿保留在 `workspace/hd/poster-classic-r1/`、`poster-modern-r1/`。Linux 正常第一關、重開保存、缺圖回退及五條顯示組合同輸入比較通過；既有發行包未重打包 |
+| 海報 | [規格 007](docs/spec/007-manual-posters.md) 已實作並驗證。左飛機、右女主角，原始強化與現代手繪可在「顯示」頁切換、關閉並保存。四張 512×1536 成品已納入新版四平台資料包。定案原稿保留在 `workspace/hd/poster-classic-r1/`、`poster-modern-r1/`。新版 AppImage 正常標題進第一關、切換、保存、重開與五條顯示路徑同輸入比較通過，收據在新版 `smoke/posters/` |
 | 60fps 顯示 | [規格 008](docs/spec/008-sixty-fps.md)：顯示時槽固定目標 60fps，遊戲速度不變；海報縮放快取與舊畫法逐像素相同。同一 Docker／軟體繪圖器的 6 秒測量，海報關閉、原始強化、現代手繪均約 59.6fps；各 55 邏輯步。正常第一關、切換與重開通過。CGA／MGA 仍維持原版動作節奏，未新增物件補間 |
 | `S.EXE` 解包 | 完成，IDA 資料庫 622 個函式 |
 | 素材抽取 | 彩色、單色、遮罩、調色盤、地圖、音樂、音效、展示錄影、intro、文字畫面都解出並過結構驗證 |
@@ -17,11 +17,14 @@
 | HD | 全部 1,337 個圖庫索引、201 張遮罩、第三關地圖、326 張調色盤變體、1,526 張單色版都有輸出，單色版是 Codex 的 m2 重繪。成品在 `workspace/hd/assets/`，說明見 `docs/hd/codex-handoff.md`。全流程接入無缺圖，四關目視過，配色與第一關接縫已修 |
 | remake | 從標題玩到片尾：規格 [001](docs/spec/001-rust-first-stage.md)、[002](docs/spec/002-full-game.md)、[003](docs/spec/003-audio.md) 都是 CONFORMED。E 模式的模擬、畫面與音樂暫存器和原版逐筆相同。核心是有型別的重寫（規格 [004](docs/spec/004-rewrite-and-delivery.md)）。CGA、MGA 可在遊戲中切換，有 HD（規格 [006](docs/spec/006-display-modes.md) CONFORMED） |
 | 強化選項 | 規格 [005](docs/spec/005-enhanced-mode.md) 十二個選項都已實作，CONFORMED。手感、平衡與難度沒有真人驗證 |
-| 發行包 | v1.0.1（`v.1.0.1-20261106`）：Linux AppImage、Windows zip、macOS universal、Android APK 與 72 秒推廣影片，放 `dist-all/v.1.0.1-20261106/`，只留本機。和 v1.0.0 的差別是單色 HD 換成 Codex 重繪版。macOS 與 Android 沒有實機跑過 |
+| 發行包 | `v.1.0.2-20261111` 四平台已重新建置，放 `dist-all/v.1.0.2-20261111/full-local/`，包含海報與 60fps 顯示排程，只留本機。Linux、Windows Wine 啟動與音訊驗收通過；Android 模擬器移動、暫停、關於頁、回前景及重開通過，ANR 0 筆。macOS universal 通過靜態與簽章逐頁檢查，macOS 與 Android 未上實機。上一版不改 |
+| 推廣影片 | 新版 80 秒、1080p／60fps 成片與 11 段 HsiaoChen 台灣國語旁白完成，包含兩組海報實錄、原曲壓低混音、MP4 內嵌字幕與獨立 SRT。`promo/media-verification.json` 記錄 4800 幀、音量、各段非靜音、無全黑或非預期凍結；另有完整旁白 WAV 與 14 秒試聽。稿件在 `tools/promo/narration.json`；生成腳本由 agy 產生，實際語音服務為經使用者同意的 Microsoft Edge TTS。版本根目錄 `SHA256SUMS.json` 統整 8 項交付物，只留本機 |
 | 版控 | 私人 repo `wicanr2/rs2-remake`，推送前跑 `tools/leak_check.py`。`docs/images/` 有含原版美術的對照圖，公開前要清歷史 |
 | LICENSE | RRSAL-1.0 |
 
 ## 有效決策
+
+- 2026-11-11 使用者要求重新打包、更新推廣影片並試用 agy CLI 加入旁白。使用者另明確指定這次 agy 在主機執行，並同意把 `tools/promo/narration.json` 的 11 段文字送到 Microsoft Edge TTS，採 HsiaoChen 台灣女聲。此例外只涵蓋主機 agy CLI；建置、測試、語音生成、錄影與合成仍在 Docker。agy 沒有內建語音合成工具，本次由它產生腳本，經 Codex 審查後執行，不宣稱為 Gemini 原生語音。完整版與影片維持只留本機，上一版不改。
 
 - 2026-11-11 使用者要求流暢度支援 60fps。沿用既有畫面補間與原版邏輯速度，新增前端 60Hz 顯示排程及靜態海報快取；不改存檔與玩法。測試與平台範圍見規格 008。
 

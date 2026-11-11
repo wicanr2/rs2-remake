@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""靜態驗收：直接讀 dist-all/<版本>/full 裡的成品，不解到磁碟。在 docker 內跑，離線。
+"""靜態驗收：直接讀 dist-all/<版本>/full-local 裡的成品，不解到磁碟。在 docker 內跑，離線。
 
 用法：pkg_verify_static.py <版本>
 讀：/dist（成品，唯讀）、/src（原始碼快照，取 EXPECTED）。
